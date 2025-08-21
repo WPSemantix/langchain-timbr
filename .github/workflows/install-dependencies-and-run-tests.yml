@@ -1,0 +1,59 @@
+name: Install Dependencies and Run Tests
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  run-tests:
+    runs-on: ubuntu-latest
+    # strategy:
+    #   matrix:
+    #     python-version: [3.9, '3.10']
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    # - name: Set up Python ${{ matrix.python-version }}
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
+        # python-version: ${{ matrix.python-version }}
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+        if [ -f requirements-dev.txt ]; then pip install -r requirements-dev.txt; fi
+        pip install pytest
+        
+    - name: Run tests
+      env:
+          TIMBR_URL: ${{ secrets.TIMBR_URL }}
+          TIMBR_TOKEN: ${{ secrets.TIMBR_TOKEN }}
+          LLM_TYPE: ${{ secrets.LLM_TYPE }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          JWT_TIMBR_URL: ${{ secrets.JWT_TIMBR_URL }}
+          JWT_TIMBR_ONTOLOGY: ${{ secrets.JWT_TIMBR_ONTOLOGY }}
+          JWT_TENANT_ID: ${{ secrets.JWT_TENANT_ID }}
+          JWT_CLIENT_ID: ${{ secrets.JWT_CLIENT_ID }}
+          JWT_USERNAME: ${{ secrets.JWT_USERNAME }}
+          JWT_PASSWORD: ${{ secrets.JWT_PASSWORD }}
+          JWT_SCOPE: ${{ secrets.JWT_SCOPE }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+      run: |
+        python -m pytest -v --maxfail=1 --disable-warnings -q
+        
+    # - name: Upload test results
+    #   uses: actions/upload-artifact@v4
+    #   if: always()
+    #   with:
+    #     name: test-results-${{ matrix.python-version }}
+    #     path: |
+    #       .pytest_cache
+    #       test-reports/
