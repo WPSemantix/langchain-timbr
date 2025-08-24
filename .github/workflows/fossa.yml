@@ -1,0 +1,15 @@
+# .github/workflows/fossa.yml
+name: fossa
+on:
+  push: { branches: ["main"] }
+  pull_request: {}
+jobs:
+  fossa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run FOSSA Scan
+        uses: fossas/fossa-action@v1
+        with:
+          api-key: ${{ secrets.FOSSA_API_KEY }}
+          run-tests: true
