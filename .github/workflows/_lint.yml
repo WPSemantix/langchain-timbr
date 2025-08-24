@@ -5,15 +5,12 @@ on:
     branches: [ main, master ]
 
 env:
-  POETRY_VERSION: "1.7.1"
-  WORKDIR: "."
-
   # This env var allows us to get inline annotations when ruff has complaints.
   RUFF_OUTPUT_FORMAT: github
 
 jobs:
   build:
-    name: "make lint #${{ matrix.python-version }}"
+    name: "lint #${{ matrix.python-version }}"
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -30,69 +27,40 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }} + Poetry ${{ env.POETRY_VERSION }}
-        uses: "./.github/actions/poetry_setup"
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          poetry-version: ${{ env.POETRY_VERSION }}
-          working-directory: "."
-          cache-key: lint-with-extras
 
-      - name: Check Poetry File
-        shell: bash
-        working-directory: "."
-        run: |
-          poetry check
-
-      - name: Check lock file
-        shell: bash
-        working-directory: "."
-        run: |
-          poetry lock --check
+      - name: Cache pip dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
-        # Also installs dev/lint/test/typing dependencies, to ensure we have
-        # type hints for as many of our libraries as possible.
-        # This helps catch errors that require dependencies to be spotted, for example:
-        # https://github.com/langchain-ai/langchain/pull/10249/files#diff-935185cd488d015f026dcd9e19616ff62863e8cde8c0bee70318d3ccbca98341
-        #
-        # If you change this configuration, make sure to change the `cache-key`
-        # in the `poetry_setup` action above to stop using the old cache.
-        # It doesn't matter how you change it, any change will cause a cache-bust.
-        working-directory: "."
         run: |
-          poetry install --with lint,typing,mmr
+          python -m pip install --upgrade pip
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install flake8 black isort mypy
 
-      - name: Get .mypy_cache to speed up mypy
-        uses: actions/cache@v4
-        env:
-          SEGMENT_DOWNLOAD_TIMEOUT_MIN: "2"
-        with:
-          path: |
-            ${{ env.WORKDIR }}/.mypy_cache
-          key: mypy-lint-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('poetry.lock') }}
-
-
-      - name: Analysing the code with our lint
-        working-directory: "."
+      - name: Lint with flake8
         run: |
-          make lint_package
+          # stop the build if there are Python syntax errors or undefined names
+          flake8 src/ --count --select=E9,F63,F7,F82 --show-source --statistics
+          # exit-zero treats all errors as warnings. The GitHub editor is 127 chars wide
+          flake8 src/ --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-      - name: Install unit+integration test dependencies
-        working-directory: "."
+      - name: Check code formatting with black
         run: |
-          poetry install --with test,test_integration
+          black --check src/
 
-      - name: Get .mypy_cache_test to speed up mypy
-        uses: actions/cache@v4
-        env:
-          SEGMENT_DOWNLOAD_TIMEOUT_MIN: "2"
-        with:
-          path: |
-            ${{ env.WORKDIR }}/.mypy_cache_test
-          key: mypy-test-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-${{ hashFiles('poetry.lock') }}
-
-      - name: Analysing the code with our lint
-        working-directory: "."
+      - name: Check import sorting with isort
         run: |
-          make lint_tests
+          isort --check-only src/
+
+      - name: Type checking with mypy
+        run: |
+          mypy src/ --ignore-missing-imports
