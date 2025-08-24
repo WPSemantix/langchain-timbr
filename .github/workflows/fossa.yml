@@ -12,19 +12,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install FOSSA CLI
+      # Install latest FOSSA CLI v3 into ~/.local/bin (no sudo)
+      - name: Install FOSSA CLI v3
         run: |
-          curl -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/fossas/fossa-cli/master/install.sh | bash
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          curl -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/fossas/fossa-cli/master/install-latest.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          fossa --version
 
-      # Analyze (uploads SBOM for this commit SHA)
+      # Upload analysis for this commit SHA so the revision exists
       - name: FOSSA Analyze
+        env:
+          FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
         run: fossa analyze
-        env:
-          FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
 
-      # Test (waits for FOSSA to process that analysis)
+      # Then run policy tests against that exact revision
       - name: FOSSA Test
-        run: fossa test
         env:
           FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
+        run: fossa test
