@@ -1,0 +1,76 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "langchain-timbr"
+version = "1.5.0"
+description = "LangChain & LangGraph extensions that parse LLM prompts into Timbr semantic SQL and execute them."
+readme = "README.md"
+requires-python = ">=3.9,<3.13"
+license = {text = "MIT"}
+authors = [{ name = "Bar Cohen", email = "barco@timbr.ai" }]
+keywords = ["LLM", "LangChain", "LangGraph", "Timbr", "Semantic Layer", "Knowledge Graph", "SQL", "Agents"]
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Intended Audience :: Developers",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+  "cryptography>=44.0.3",
+  "langchain>=0.3.25",
+  "langchain_community>=0.3.20",
+  "langchain-core>=0.3.58",
+  "langgraph>=0.3.20",
+  "pydantic==2.10.4",
+  "pytimbr-api>=2.0.0",
+  "tiktoken==0.8.0",
+  "transformers>=4.51.3"
+]
+
+[project.optional-dependencies]
+# LLM providers
+openai = ["openai==1.77.0", "langchain-openai>=0.3.16"]
+anthropic = ["anthropic==0.42.0", "langchain-anthropic>=0.3.1"]
+google = ["langchain-google-genai>=2.0.9", "google-generativeai==0.8.4"]
+snowflake = ["snowflake>=0.8.0", "snowflake-snowpark-python>=1.6.0"]
+
+# Development and testing
+dev = [
+  "pytest==8.3.4",
+  "langchain-tests>=0.3.20",
+  "pyarrow<19.0.0",
+  "uvicorn==0.34.0"
+]
+
+# All optional dependencies
+all = [
+  "anthropic==0.42.0",
+  "google-generativeai==0.8.4",
+  "langchain-anthropic>=0.3.1",
+  "openai==1.77.0", 
+  "langchain-openai>=0.3.16",
+  "langchain-google-genai>=2.0.9",
+  "snowflake>=0.8.0",
+  "snowflake-snowpark-python>=1.6.0",
+  "pytest==8.3.4",
+  "langchain-tests>=0.3.20",
+  "pyarrow<19.0.0",
+  "uvicorn==0.34.0"
+]
+
+[project.urls]
+Homepage = "https://github.com/WPSemantix/langchain-timbr"
+Documentation = "https://docs.timbr.ai/doc/docs/integration/langchain-sdk/"
+Source = "https://github.com/WPSemantix/langchain-timbr"
+Issues = "https://github.com/WPSemantix/langchain-timbr/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/langchain_timbr"]

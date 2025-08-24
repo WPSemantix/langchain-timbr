@@ -1,10 +1,20 @@
-env
-*.pyo
+# IDE
+.vscode
+
+# build artifacts
+dist/
+build/
+*.egg-info/
+output/
+
+# Python cache
+__pycache__/
 *.pyc
 **/*.pyc
-.vscode
-venv*/
+*.pyo
+
+# virtualenvs
 .env
-output/
+env
+venv
 .DS_Store
-__pycache__/

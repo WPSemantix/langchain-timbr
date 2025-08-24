@@ -1,17 +1,28 @@
 ![Timbr logo description](https://timbr.ai/wp-content/uploads/2025/01/logotimbrai230125.png)
 <!-- [![FOSSA Status](https://app.fossa.com/api/projects/custom%2B50508%2Fgithub.com%2FWPSemantix%2Ftimbr_python_http.svg?type=shield&issueType=license)](https://app.fossa.com/projects/custom%2B50508%2Fgithub.com%2FWPSemantix%2Ftimbr_python_http?ref=badge_shield&issueType=license) -->
-[![Python 3.9-3.12](https://img.shields.io/badge/python-3.9--3.12-blue.svg)](https://www.python.org/downloads/)
-
+[![Python 3.9](https://img.shields.io/badge/python-3.9-blue)](https://www.python.org/downloads/release/python-3921/)
+[![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-31017/)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-31112/)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3129/)
 
 # Timbr Langchain LLM SDK
 
 Timbr langchain LLM SDK is a Python SDK that extends LangChain and LangGraph with custom agents, chains, and nodes for seamless integration with the Timbr semantic layer. It enables converting natural language prompts into optimized semantic-SQL queries and executing them directly against your data.
+
+## Dependencies
+- Access to a timbr-server
+- Python from 3.9.13 or newer
 
 ## Installation
 
 ### Using pip
 ```bash
 python -m pip install langchain-timbr
+```
+
+### Using pip from github
+```bash
+pip install git+https://github.com/WPSemantix/langchain-timbr
 ```
 
 ## Documentation
