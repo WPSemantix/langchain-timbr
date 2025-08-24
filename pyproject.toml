@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.25"]
+requires = ["hatchling>=1.25", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
 name = "langchain-timbr"
-version = "1.5.0"
+dynamic = ["version"]
 description = "LangChain & LangGraph extensions that parse LLM prompts into Timbr semantic SQL and execute them."
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
@@ -72,5 +72,12 @@ Documentation = "https://docs.timbr.ai/doc/docs/integration/langchain-sdk/"
 Source = "https://github.com/WPSemantix/langchain-timbr"
 Issues = "https://github.com/WPSemantix/langchain-timbr/issues"
 
+[tool.hatch.version]
+source = "vcs"                                          # version comes from git
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/langchain_timbr/_version.py"        # generate a version file
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/langchain_timbr"]
+
