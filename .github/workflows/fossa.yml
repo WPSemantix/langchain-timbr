@@ -1,15 +1,30 @@
 # .github/workflows/fossa.yml
 name: fossa
 on:
-  push: { branches: ["main"] }
-  pull_request: {}
+  push:
+    branches: ["main"]
+  pull_request:
+
 jobs:
   fossa:
+    if: ${{ github.event.pull_request.head.repo.fork == false }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run FOSSA Scan
-        uses: fossas/fossa-action@v1
-        with:
-          api-key: ${{ secrets.FOSSA_API_KEY }}
-          run-tests: true
+
+      - name: Install FOSSA CLI
+        run: |
+          curl -H 'Cache-Control: no-cache' https://raw.githubusercontent.com/fossas/fossa-cli/master/install.sh | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      # Analyze (uploads SBOM for this commit SHA)
+      - name: FOSSA Analyze
+        run: fossa analyze
+        env:
+          FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
+
+      # Test (waits for FOSSA to process that analysis)
+      - name: FOSSA Test
+        run: fossa test
+        env:
+          FOSSA_API_KEY: ${{ secrets.FOSSA_API_KEY }}
