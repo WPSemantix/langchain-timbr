@@ -9,7 +9,7 @@ description = "LangChain & LangGraph extensions that parse LLM prompts into Timb
 readme = "README.md"
 requires-python = ">=3.9,<3.13"
 license = {text = "MIT"}
-authors = [{ name = "Bar Cohen", email = "barco@timbr.ai" }]
+authors = [{ name = "Timbr.ai", email = "contact@timbr.ai" }]
 keywords = ["LLM", "LangChain", "LangGraph", "Timbr", "Semantic Layer", "Knowledge Graph", "SQL", "Agents"]
 classifiers = [
   "License :: OSI Approved :: MIT License",
