@@ -6,6 +6,7 @@ dist/
 build/
 *.egg-info/
 output/
+_version.py
 
 # Python cache
 __pycache__/

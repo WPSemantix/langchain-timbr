@@ -8,9 +8,12 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-31112/)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3129/)
 
-# Timbr Langchain LLM SDK
+# Timbr LangChain LLM SDK
 
-Timbr langchain LLM SDK is a Python SDK that extends LangChain and LangGraph with custom agents, chains, and nodes for seamless integration with the Timbr semantic layer. It enables converting natural language prompts into optimized semantic-SQL queries and executing them directly against your data.
+Timbr LangChain LLM SDK is a Python SDK that extends LangChain and LangGraph with custom agents, chains, and nodes for seamless integration with the Timbr semantic layer. It enables converting natural language prompts into optimized semantic-SQL queries and executing them directly against your data.
+
+![Timbr LangGraph pipeline](https://docs.timbr.ai/doc/assets/images/timbr-langgraph-fcf8e2eb7e26dc9dfa8b56b62937281e.png)
+
 
 ## Dependencies
 - Access to a timbr-server
@@ -37,4 +40,4 @@ For comprehensive documentation and usage examples, please visit:
 
 ## Configuration
 
-The SDK requires several environment variables to be configured. See [`src/langchain_timbr/config.py`](src/langchain_timbr/config.py) for all available configuration options.
+The SDK requires several environment variables to be configured. See [`langchain_timbr/config.py`](https://github.com/WPSemantix/langchain-timbr/blob/main/src/langchain_timbr/config.py) for all available configuration options.
