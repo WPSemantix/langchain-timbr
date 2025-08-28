@@ -180,8 +180,6 @@ class LlmWrapper(LLM):
           "llama3.1-405b"
         ]
       elif is_llm_type(self._llm_type, LlmTypes.Databricks):
-        from databricks.sdk import WorkspaceClient
-        # w = WorkspaceClient(host="", token=api_key)  # Reads DATABRICKS_HOST / DATABRICKS_TOKEN env vars
         w = self.client.workspace_client
         models = [ep.name for ep in w.serving_endpoints.list()]
         
