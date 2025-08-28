@@ -165,6 +165,23 @@ def _calculate_token_count(llm: LLM, prompt: str) -> int:
     return token_count
     
 
+def _get_response_text(response: Any) -> str:
+    if hasattr(response, "content"):
+        response_text = response.content
+
+        # Handle Databricks gpt-oss type of responses (having list of dicts with type + summary for reasoning or type + text for result)
+        if isinstance(response_text, list):
+            response_text = next(filter(lambda x: x.get('type') == 'text', response.content), None)
+        if isinstance(response_text, dict):
+            response_text = response_text.get('text', '')
+    elif isinstance(response, str):
+        response_text = response
+    else:
+        raise ValueError("Unexpected response format from LLM.")
+
+    return response_text
+
+
 def determine_concept(
     question: str,
     llm: LLM,
@@ -259,14 +276,7 @@ def determine_concept(
             if debug:
                 usage_metadata['determine_concept']["p_hash"] = encrypt_prompt(prompt)
 
-            if hasattr(response, "content"):
-                response_text = response.content
-            elif isinstance(response, str):
-                response_text = response
-            else:
-                raise ValueError("Unexpected response format from LLM.")
-
-
+            response_text = _get_response_text(response)
             candidate = response_text.strip()
             if should_validate and candidate not in concepts.keys():
                 error = f"Concept '{determined_concept_name}' not found in the list of concepts."
@@ -351,13 +361,7 @@ def _build_rel_columns_str(relationships: list[dict], columns_tags: Optional[dic
 
 
 def _parse_sql_from_llm_response(response: Any) -> str:
-    if hasattr(response, "content"):
-        response_text = response.content
-    elif isinstance(response, str):
-        response_text = response
-    else:
-        raise ValueError("Unexpected response format from LLM.")
-    
+    response_text = _get_response_text(response)
     return (response_text
             .replace("```sql", "")
             .replace("```", "")
