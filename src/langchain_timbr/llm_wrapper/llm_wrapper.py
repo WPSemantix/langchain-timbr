@@ -12,13 +12,14 @@ class LlmTypes(Enum):
   Google = 'chat-google-generative-ai'
   AzureOpenAI = 'azure-openai-chat'
   Snowflake = 'snowflake-cortex'
+  Databricks = 'chat-databricks'
   Timbr = 'timbr'
 
 
 class LlmWrapper(LLM):
   """
   LlmWrapper is a unified interface for connecting to various Large Language Model (LLM) providers
-  (OpenAI, Anthropic, Google, Azure OpenAI, Snowflake Cortex, etc.) using LangChain. It abstracts
+  (OpenAI, Anthropic, Google, Azure OpenAI, Snowflake Cortex, Databricks, etc.) using LangChain. It abstracts
   the initialization and connection logic for each provider, allowing you to switch between them
   with a consistent API.
   """
@@ -95,12 +96,14 @@ class LlmWrapper(LLM):
         **params,
       )
     elif is_llm_type(llm_type, LlmTypes.Snowflake):
-      from langchain_community.chat_models import ChatSnowflakeCortex      
+      from langchain_community.chat_models import ChatSnowflakeCortex
       llm_model = model or "openai-gpt-4.1"
       params = self._add_temperature(LlmTypes.Snowflake.name, llm_model, **llm_params)
+      snowflake_password = params.pop('snowflake_api_key', params.pop('snowflake_password', None))
       
       return ChatSnowflakeCortex(
         model=llm_model,
+        snowflake_password=snowflake_password,
         **params,
       )
     elif is_llm_type(llm_type, LlmTypes.AzureOpenAI):
@@ -114,6 +117,19 @@ class LlmWrapper(LLM):
         azure_deployment=llm_model,
         azure_endpoint=azure_endpoint,
         openai_api_version=azure_api_version,
+        **params,
+      )
+    elif is_llm_type(llm_type, LlmTypes.Databricks):
+      from databricks.sdk import WorkspaceClient
+      from databricks_langchain import ChatDatabricks
+      llm_model = model or "databricks-claude-sonnet-4"
+      params = self._add_temperature(LlmTypes.Databricks.name, llm_model, **llm_params)
+
+      host = params.pop('databricks_host', None)
+      w = WorkspaceClient(host=host, token=api_key)
+      return ChatDatabricks(
+        endpoint=llm_model,
+        workspace_client=w,  # Using authenticated client
         **params,
       )
     else:
@@ -163,12 +179,16 @@ class LlmWrapper(LLM):
           "llama3.1-70b",
           "llama3.1-405b"
         ]
+      elif is_llm_type(self._llm_type, LlmTypes.Databricks):
+        w = self.client.workspace_client
+        models = [ep.name for ep in w.serving_endpoints.list()]
+        
       # elif self._is_llm_type(self._llm_type, LlmTypes.Timbr):
         
     except Exception as e:
       models = []
     
-    return models
+    return sorted(models)
 
 
   def _call(self, prompt, **kwargs):

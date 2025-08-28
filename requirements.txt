@@ -1,5 +1,8 @@
 anthropic==0.42.0
 cryptography>=44.0.3
+databricks-langchain==0.3.0; python_version < '3.10'
+databricks-langchain==0.7.1; python_version >= '3.10'
+databricks-sdk==0.64.0
 google-generativeai==0.8.4
 langchain>=0.3.25
 langchain-anthropic>=0.3.1
@@ -9,7 +12,7 @@ langchain-google-genai>=2.0.9
 langchain-openai>=0.3.16
 langchain-tests>=0.3.20
 langgraph>=0.3.20
-openai==1.77.0
+openai>=1.77.0
 pyarrow<19.0.0
 pydantic==2.10.4
 pytest==8.3.4

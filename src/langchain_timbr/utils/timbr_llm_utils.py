@@ -165,6 +165,29 @@ def _calculate_token_count(llm: LLM, prompt: str) -> int:
     return token_count
     
 
+def _get_response_text(response: Any) -> str:
+    if hasattr(response, "content"):
+        response_text = response.content
+
+        # Handle Databricks gpt-oss type of responses (having list of dicts with type + summary for reasoning or type + text for result)
+        if isinstance(response_text, list):
+            response_text = next(filter(lambda x: x.get('type') == 'text', response.content), None)
+        if isinstance(response_text, dict):
+            response_text = response_text.get('text', '')
+    elif isinstance(response, str):
+        response_text = response
+    else:
+        raise ValueError("Unexpected response format from LLM.")
+
+    return response_text
+
+def _extract_usage_metadata(response: Any) -> dict:
+    usage_metadata = response.response_metadata.get('usage') if response.response_metadata else response.response_metadata
+    if not usage_metadata:
+        usage_metadata = response.usage_metadata or response.usage or {}
+
+    return usage_metadata
+
 def determine_concept(
     question: str,
     llm: LLM,
@@ -253,20 +276,12 @@ def determine_concept(
                 continue
             usage_metadata['determine_concept'] = {
                 "approximate": apx_token_count,
-                # **(response.usage_metadata or response.usage or {}),
-                **(response.usage_metadata or {}),
+                **_extract_usage_metadata(response),
             }
             if debug:
                 usage_metadata['determine_concept']["p_hash"] = encrypt_prompt(prompt)
 
-            if hasattr(response, "content"):
-                response_text = response.content
-            elif isinstance(response, str):
-                response_text = response
-            else:
-                raise ValueError("Unexpected response format from LLM.")
-
-
+            response_text = _get_response_text(response)
             candidate = response_text.strip()
             if should_validate and candidate not in concepts.keys():
                 error = f"Concept '{determined_concept_name}' not found in the list of concepts."
@@ -351,13 +366,7 @@ def _build_rel_columns_str(relationships: list[dict], columns_tags: Optional[dic
 
 
 def _parse_sql_from_llm_response(response: Any) -> str:
-    if hasattr(response, "content"):
-        response_text = response.content
-    elif isinstance(response, str):
-        response_text = response
-    else:
-        raise ValueError("Unexpected response format from LLM.")
-    
+    response_text = _get_response_text(response)
     return (response_text
             .replace("```sql", "")
             .replace("```", "")
@@ -497,8 +506,7 @@ def generate_sql(
 
         usage_metadata['generate_sql'] = {
             "approximate": apx_token_count,
-            # **(response.usage_metadata or response.usage or {}),
-            **(response.usage_metadata or {}),
+            **_extract_usage_metadata(response),
         }
         if debug:
             usage_metadata['generate_sql']["p_hash"] = encrypt_prompt(prompt)
@@ -561,8 +569,7 @@ def answer_question(
     usage_metadata = {
         "answer_question": {
             "approximate": apx_token_count,
-            # **(response.usage_metadata or response.usage or {}),
-            **(response.usage_metadata or {}),
+            **_extract_usage_metadata(response),
         },
     }
     if debug:
