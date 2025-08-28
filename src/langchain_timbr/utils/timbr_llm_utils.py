@@ -181,6 +181,12 @@ def _get_response_text(response: Any) -> str:
 
     return response_text
 
+def _extract_usage_metadata(response: Any) -> dict:
+    usage_metadata = response.response_metadata.get('usage') if response.response_metadata else response.response_metadata
+    if not usage_metadata:
+        usage_metadata = response.usage_metadata or response.usage or {}
+
+    return usage_metadata
 
 def determine_concept(
     question: str,
@@ -270,8 +276,7 @@ def determine_concept(
                 continue
             usage_metadata['determine_concept'] = {
                 "approximate": apx_token_count,
-                # **(response.usage_metadata or response.usage or {}),
-                **(response.usage_metadata or {}),
+                **_extract_usage_metadata(response),
             }
             if debug:
                 usage_metadata['determine_concept']["p_hash"] = encrypt_prompt(prompt)
@@ -501,8 +506,7 @@ def generate_sql(
 
         usage_metadata['generate_sql'] = {
             "approximate": apx_token_count,
-            # **(response.usage_metadata or response.usage or {}),
-            **(response.usage_metadata or {}),
+            **_extract_usage_metadata(response),
         }
         if debug:
             usage_metadata['generate_sql']["p_hash"] = encrypt_prompt(prompt)
@@ -565,8 +569,7 @@ def answer_question(
     usage_metadata = {
         "answer_question": {
             "approximate": apx_token_count,
-            # **(response.usage_metadata or response.usage or {}),
-            **(response.usage_metadata or {}),
+            **_extract_usage_metadata(response),
         },
     }
     if debug:
