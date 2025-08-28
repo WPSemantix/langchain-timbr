@@ -26,6 +26,11 @@ Timbr LangChain LLM SDK is a Python SDK that extends LangChain and LangGraph wit
 python -m pip install langchain-timbr
 ```
 
+## Install with selected LLM providers (One of: openai, anthropic, google, snowflake, databricks)
+```bash
+python -m pip install 'langchain-timbr[<your selected providers, separated by comma w/o space]'
+```
+
 ### Using pip from github
 ```bash
 pip install git+https://github.com/WPSemantix/langchain-timbr
