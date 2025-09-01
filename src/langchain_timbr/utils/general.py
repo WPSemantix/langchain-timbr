@@ -44,7 +44,8 @@ def is_llm_type(llm_type, enum_value):
             llm_type_lower == enum_name_lower or
             llm_type_lower == enum_value_lower or
             llm_type_lower.startswith(enum_name_lower) or # Usecase for snowflake which its type is the provider name + the model name
-            llm_type_lower.startswith(enum_value_lower)
+            llm_type_lower.startswith(enum_value_lower) or
+            llm_type_lower in enum_value_lower # Check if the enum value includes the llm type - when providing partial name
         )
 
     return False

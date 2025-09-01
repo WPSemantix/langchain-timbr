@@ -22,7 +22,7 @@ class PromptService:
         jwt_tenant_id: Optional[str] = default_jwt_tenant_id,
         timeout: Optional[int] = llm_timeout,
     ):
-        self.base_url = base_url.rstrip('/')
+        self.base_url = base_url.rstrip('/') if base_url else ''
         self.token = token
         self.is_jwt = is_jwt
         self.jwt_tenant_id = jwt_tenant_id
