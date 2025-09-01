@@ -20,5 +20,5 @@ pytimbr-api>=2.0.0
 snowflake>=0.8.0
 snowflake-snowpark-python>=1.6.0
 tiktoken==0.8.0
-transformers>=4.51.3
+transformers>=4.53
 uvicorn==0.34.0

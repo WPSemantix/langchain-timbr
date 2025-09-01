@@ -32,7 +32,7 @@ dependencies = [
   "pydantic==2.10.4",
   "pytimbr-api>=2.0.0",
   "tiktoken==0.8.0",
-  "transformers>=4.51.3"
+  "transformers>=4.53"
 ]
 
 [project.optional-dependencies]
