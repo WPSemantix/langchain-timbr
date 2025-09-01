@@ -32,12 +32,13 @@ dependencies = [
   "pydantic==2.10.4",
   "pytimbr-api>=2.0.0",
   "tiktoken==0.8.0",
-  "transformers>=4.51.3"
+  "transformers>=4.53"
 ]
 
 [project.optional-dependencies]
 # LLM providers
 openai = ["openai>=1.77.0", "langchain-openai>=0.3.16"]
+azure_openai = ["openai>=1.77.0", "langchain-openai>=0.3.16"]
 anthropic = ["anthropic==0.42.0", "langchain-anthropic>=0.3.1"]
 google = ["langchain-google-genai>=2.0.9", "google-generativeai==0.8.4"]
 snowflake = ["snowflake>=0.8.0", "snowflake-snowpark-python>=1.6.0"]

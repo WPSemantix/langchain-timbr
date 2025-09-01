@@ -99,7 +99,7 @@ class LlmWrapper(LLM):
       from langchain_community.chat_models import ChatSnowflakeCortex
       llm_model = model or "openai-gpt-4.1"
       params = self._add_temperature(LlmTypes.Snowflake.name, llm_model, **llm_params)
-      snowflake_password = params.pop('snowflake_api_key', params.pop('snowflake_password', None))
+      snowflake_password = params.pop('snowflake_api_key', params.pop('snowflake_password', api_key))
       
       return ChatSnowflakeCortex(
         model=llm_model,
@@ -125,7 +125,7 @@ class LlmWrapper(LLM):
       llm_model = model or "databricks-claude-sonnet-4"
       params = self._add_temperature(LlmTypes.Databricks.name, llm_model, **llm_params)
 
-      host = params.pop('databricks_host', None)
+      host = params.pop('databricks_host', params.pop('host', None))
       w = WorkspaceClient(host=host, token=api_key)
       return ChatDatabricks(
         endpoint=llm_model,
