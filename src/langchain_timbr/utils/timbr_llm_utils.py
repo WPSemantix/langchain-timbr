@@ -182,9 +182,20 @@ def _get_response_text(response: Any) -> str:
     return response_text
 
 def _extract_usage_metadata(response: Any) -> dict:
-    usage_metadata = response.response_metadata.get('usage') if response.response_metadata else response.response_metadata
-    if not usage_metadata:
-        usage_metadata = response.usage_metadata or response.usage or {}
+    usage_metadata = response.response_metadata
+
+    if usage_metadata and 'usage' in usage_metadata:
+        usage_metadata = usage_metadata['usage']
+
+    if not usage_metadata and 'usage_metadata' in response:
+        usage_metadata = response.usage_metadata
+        if usage_metadata and 'usage' in usage_metadata:
+            usage_metadata = usage_metadata['usage']
+
+    if not usage_metadata and 'usage' in response:
+        usage_metadata = response.usage
+        if usage_metadata and 'usage' in usage_metadata:
+            usage_metadata = usage_metadata['usage']
 
     return usage_metadata
 
