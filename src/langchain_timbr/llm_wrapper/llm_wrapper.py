@@ -3,7 +3,7 @@ from langchain.llms.base import LLM
 from pydantic import Field
 
 from .timbr_llm_wrapper import TimbrLlmWrapper
-from ..utils.general import is_llm_type, is_support_temperature
+from ..utils.general import is_llm_type, is_support_temperature, get_supported_models
 from ..config import llm_temperature
 
 class LlmTypes(Enum):
@@ -186,7 +186,19 @@ class LlmWrapper(LLM):
       # elif self._is_llm_type(self._llm_type, LlmTypes.Timbr):
         
     except Exception as e:
-      models = []
+      # If model list fetching throws an exception, return default value using get_supported_models
+      llm_type_name = None
+      if hasattr(self, '_llm_type'):
+        # Try to extract the LLM type name from the _llm_type
+        for llm_enum in LlmTypes:
+          if is_llm_type(self._llm_type, llm_enum):
+            llm_type_name = llm_enum.name
+            break
+      
+      if llm_type_name:
+        models = get_supported_models(llm_type_name)
+      else:
+        models = []
     
     return sorted(models)
 
