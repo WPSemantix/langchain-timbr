@@ -14,9 +14,9 @@ class ValidateSemanticSqlNode:
     def __init__(
         self,
         llm: LLM,
-        url: str,
-        token: str,
-        ontology: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
+        ontology: Optional[str] = None,
         schema: Optional[str] = None,
         concept: Optional[str] = None,
         retries: Optional[int] = 3,

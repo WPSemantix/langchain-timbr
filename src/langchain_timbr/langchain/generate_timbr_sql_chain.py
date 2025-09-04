@@ -2,8 +2,9 @@ from typing import Optional, Union, Dict, Any
 from langchain.chains.base import Chain
 from langchain.llms.base import LLM
 
-from ..utils.general import parse_list, to_boolean, to_integer
+from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import generate_sql
+from .. import config
 
 class GenerateTimbrSqlChain(Chain):
     """
@@ -17,9 +18,9 @@ class GenerateTimbrSqlChain(Chain):
     def __init__(
         self,
         llm: LLM,
-        url: str,
-        token: str,
-        ontology: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
+        ontology: Optional[str] = None,
         schema: Optional[str] = 'dtimbr',
         concept: Optional[str] = None,
         concepts_list: Optional[Union[list[str], str]] = None,
@@ -42,9 +43,9 @@ class GenerateTimbrSqlChain(Chain):
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
-        :param ontology: The name of the ontology/knowledge graph
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
         :param schema: The name of the schema to query
         :param concept: The name of the concept to query
         :param concepts_list: Optional specific concept options to query
@@ -66,6 +67,12 @@ class GenerateTimbrSqlChain(Chain):
         
         ## Example
         ```
+        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        generate_timbr_sql_chain = GenerateTimbrSqlChain(
+            llm=<llm or timbr_llm_wrapper instance>,
+        )
+        
+        # Or with explicit parameters
         generate_timbr_sql_chain = GenerateTimbrSqlChain(
             url=<url>,
             token=<token>,
@@ -84,9 +91,13 @@ class GenerateTimbrSqlChain(Chain):
         """
         super().__init__(**kwargs)
         self._llm = llm
-        self._url = url
-        self._token = token
-        self._ontology = ontology
+        self._url = url if url is not None else config.url
+        self._token = token if token is not None else config.token
+        self._ontology = ontology if ontology is not None else config.ontology
+        
+        # Validate required parameters
+        validate_timbr_connection_params(self._url, self._token)
+        
         self._schema = schema
         self._concept = concept
         self._concepts_list = parse_list(concepts_list)

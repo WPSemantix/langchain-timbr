@@ -15,8 +15,8 @@ class GenerateResponseNode:
     def __init__(
         self,
         llm: LLM,
-        url: str,
-        token: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,

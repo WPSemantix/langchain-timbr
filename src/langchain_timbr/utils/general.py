@@ -51,6 +51,23 @@ def is_llm_type(llm_type, enum_value):
     return False
   
 
+def validate_timbr_connection_params(url: str = None, token: str = None) -> None:
+    """
+    Validate that required Timbr connection parameters are provided.
+    
+    Args:
+        url: Timbr server URL
+        token: Timbr authentication token
+        
+    Raises:
+        ValueError: If URL or token are not provided with clear instructions
+    """
+    if not url:
+        raise ValueError("URL must be provided either through the 'url' parameter or by setting the 'TIMBR_URL' environment variable")
+    if not token:
+        raise ValueError("Token must be provided either through the 'token' parameter or by setting the 'TIMBR_TOKEN' environment variable")
+
+
 def is_support_temperature(llm_type: str, llm_model: str) -> bool:
     """
     Check if the LLM model supports temperature setting.
