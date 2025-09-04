@@ -72,6 +72,21 @@ def is_support_temperature(llm_type: str, llm_model: str) -> bool:
     """
     Check if the LLM model supports temperature setting.
     """
+    supported_models = get_supported_models(llm_type)
+    return llm_model in supported_models
+
+
+def get_supported_models(llm_type: str) -> list[str]:
+    """
+    Get the list of supported models for a given LLM type.
+    
+    Args:
+        llm_type (str): The LLM type to get supported models for
+        
+    Returns:
+        list[str]: List of supported model names for the given LLM type.
+                   Returns empty list if llm_type is not found in the JSON file.
+    """
     current_dir = os.path.dirname(os.path.abspath(__file__))
     json_file_path = os.path.join(current_dir, 'temperature_supported_models.json')
 
@@ -79,10 +94,9 @@ def is_support_temperature(llm_type: str, llm_model: str) -> bool:
         with open(json_file_path, 'r') as f:
             temperature_supported_models = json.load(f)
         
-        # Check if llm_type exists and llm_model is in its list
-        if llm_type in temperature_supported_models:
-            return llm_model in temperature_supported_models[llm_type]
+        # Return the list of models for the given llm_type, or empty list if not found
+        return temperature_supported_models.get(llm_type, [])
         
-        return False
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return False
+    except (FileNotFoundError, json.JSONDecodeError):
+        return []
+

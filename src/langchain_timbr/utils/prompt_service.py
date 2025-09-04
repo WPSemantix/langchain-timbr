@@ -1,32 +1,45 @@
 import requests
 from typing import Dict, Any, Optional, List, Union
-from langchain.schema import SystemMessage, HumanMessage
 from langchain.prompts.chat import ChatPromptTemplate
 from langchain.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import json
 import logging
-
-from ..config import url, token as default_token, is_jwt, jwt_tenant_id as default_jwt_tenant_id, llm_timeout
+from ..config import url as default_url, token as default_token, is_jwt, jwt_tenant_id as default_jwt_tenant_id, llm_timeout
 
 logger = logging.getLogger(__name__)
 
 # Global template cache shared across all PromptService instances
-_global_template_cache = {}
+_global_template_cache: dict[Any, Any] = {}
 
 class PromptService:
     def __init__(
         self, 
-        base_url: Optional[str] = url, 
-        token: Optional[str] = default_token,
-        is_jwt: Optional[bool] = is_jwt,
-        jwt_tenant_id: Optional[str] = default_jwt_tenant_id,
-        timeout: Optional[int] = llm_timeout,
+        conn_params: Optional[Dict[str, Any]] = None,
+        **kwargs
     ):
-        self.base_url = base_url.rstrip('/') if base_url else ''
-        self.token = token
-        self.is_jwt = is_jwt
-        self.jwt_tenant_id = jwt_tenant_id
-        self.timeout = timeout
+        """
+        Initialize PromptService with connection parameters.
+        
+        Args:
+            conn_params: Dictionary containing connection parameters
+            **kwargs: Additional parameters for backward compatibility
+        """
+        # Extract relevant parameters from conn_params or use defaults
+        if conn_params:
+            url_value = conn_params.get('url') or default_url
+            self.base_url = url_value.rstrip('/') if url_value else ''
+            self.token = conn_params.get('token') or default_token
+            self.is_jwt = conn_params.get('is_jwt', is_jwt)
+            self.jwt_tenant_id = conn_params.get('jwt_tenant_id') or default_jwt_tenant_id
+            self.timeout = conn_params.get('timeout') or llm_timeout
+        else:
+            # Fallback to kwargs for backward compatibility
+            url_value = kwargs.get('url') or default_url
+            self.base_url = url_value.rstrip('/') if url_value else ''
+            self.token = str(kwargs.get('token') or default_token)
+            self.is_jwt = kwargs.get('is_jwt', is_jwt)
+            self.jwt_tenant_id = kwargs.get('jwt_tenant_id') or default_jwt_tenant_id
+            self.timeout = kwargs.get('timeout') or llm_timeout
 
     
     def _get_headers(self) -> Dict[str, str]:
@@ -220,99 +233,67 @@ class PromptTemplateWrapper:
 
 # Individual prompt template getter functions
 def get_determine_concept_prompt_template(
-    token: Optional[str] = None,
-    is_jwt: Optional[bool] = None,
-    jwt_tenant_id: Optional[str] = None
+    conn_params: Optional[dict] = None
 ) -> PromptTemplateWrapper:
     """
     Get determine concept prompt template wrapper
     
     Args:
-        token: Authentication token
-        is_jwt: Whether the token is a JWT
-        jwt_tenant_id: JWT tenant ID
-        
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
     Returns:
         PromptTemplateWrapper for determine concept
     """
-    prompt_service = PromptService(
-        token=token,
-        is_jwt=is_jwt,
-        jwt_tenant_id=jwt_tenant_id
-    )
+    prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_identify_concept_template")
 
 
 def get_generate_sql_prompt_template(
-    token: Optional[str] = None,
-    is_jwt: Optional[bool] = None,
-    jwt_tenant_id: Optional[str] = None
+    conn_params: Optional[dict] = None
 ) -> PromptTemplateWrapper:
     """
     Get generate SQL prompt template wrapper
     
     Args:
-        token: Authentication token
-        is_jwt: Whether the token is a JWT
-        jwt_tenant_id: JWT tenant ID
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
         
     Returns:
         PromptTemplateWrapper for generate SQL
     """
-    prompt_service = PromptService(
-        token=token,
-        is_jwt=is_jwt,
-        jwt_tenant_id=jwt_tenant_id
-    )
+    prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_generate_sql_template")
 
 
 def get_qa_prompt_template(
-    token: Optional[str] = None,
-    is_jwt: Optional[bool] = None,
-    jwt_tenant_id: Optional[str] = None
+    conn_params: Optional[dict] = None
 ) -> PromptTemplateWrapper:
     """
     Get QA prompt template wrapper
     
     Args:
-        token: Authentication token
-        is_jwt: Whether the token is a JWT
-        jwt_tenant_id: JWT tenant ID
-        
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
     Returns:
         PromptTemplateWrapper for QA
     """
-    prompt_service = PromptService(
-        token=token,
-        is_jwt=is_jwt,
-        jwt_tenant_id=jwt_tenant_id
-    )
+    prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_generate_answer_template")
 
 
 # Global prompt service instance (updated signature)
 def get_prompt_service(
-    token: str = None,
-    is_jwt: bool = None, 
-    jwt_tenant_id: str = None
+    conn_params: Optional[dict] = None
 ) -> PromptService:
     """
     Get or create a prompt service instance
     
     Args:
-        token: Authentication token (API key or JWT token)
-        is_jwt: Whether the token is a JWT
-        jwt_tenant_id: JWT tenant ID
-        
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
     Returns:
         PromptService instance
     """
-    return PromptService(
-        token=token,
-        is_jwt=is_jwt,
-        jwt_tenant_id=jwt_tenant_id
-    )
+    return PromptService(conn_params=conn_params)
 
 
 # Global cache management functions
