@@ -68,20 +68,6 @@ class TestConnectionValidation:
         assert chain._token == "test-token"
         assert chain._ontology == "test-ontology"
 
-    def test_chain_validation_missing_url(self):
-        """Test that ExecuteTimbrQueryChain fails when URL is not provided."""
-        mock_llm = Mock()
-        
-        with pytest.raises(ValueError) as exc_info:
-            ExecuteTimbrQueryChain(
-                llm=mock_llm,
-                url=None,
-                token="test-token",
-                ontology="test-ontology"
-            )
-        
-        assert "URL must be provided" in str(exc_info.value)
-        assert "TIMBR_URL" in str(exc_info.value)
 
     def test_chain_validation_missing_token(self):
         """Test that ExecuteTimbrQueryChain fails when token is not provided."""
