@@ -69,9 +69,31 @@ class TestConnectionValidation:
         assert chain._ontology == "test-ontology"
 
 
-    def test_chain_validation_missing_token(self):
+    def test_chain_validation_missing_url(self, monkeypatch):
+        """Test that ExecuteTimbrQueryChain fails when URL is not provided."""
+        mock_llm = Mock()
+
+        # Mock the config module to ensure URL is None
+        monkeypatch.setattr('langchain_timbr.langchain.execute_timbr_query_chain.config.url', None)
+        
+        with pytest.raises(ValueError) as exc_info:
+            ExecuteTimbrQueryChain(
+                llm=mock_llm,
+                url=None,
+                token="test-token",
+                ontology="test-ontology"
+            )
+
+        assert "URL must be provided" in str(exc_info.value)
+        assert "TIMBR_URL" in str(exc_info.value)
+
+
+    def test_chain_validation_missing_token(self, monkeypatch):
         """Test that ExecuteTimbrQueryChain fails when token is not provided."""
         mock_llm = Mock()
+        
+        # Mock the config module to ensure token is None
+        monkeypatch.setattr('langchain_timbr.langchain.execute_timbr_query_chain.config.token', None)
         
         with pytest.raises(ValueError) as exc_info:
             ExecuteTimbrQueryChain(
