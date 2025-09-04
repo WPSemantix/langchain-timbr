@@ -2,8 +2,9 @@ from typing import Optional, Dict, Any
 from langchain.chains.base import Chain
 from langchain.llms.base import LLM
 
-from ..utils.general import to_boolean
+from ..utils.general import to_boolean, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import answer_question
+from .. import config
 
 class GenerateAnswerChain(Chain):
     """
@@ -15,8 +16,8 @@ class GenerateAnswerChain(Chain):
     def __init__(
         self,
         llm: LLM,
-        url: str,
-        token: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
@@ -26,8 +27,8 @@ class GenerateAnswerChain(Chain):
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
@@ -35,8 +36,16 @@ class GenerateAnswerChain(Chain):
         
         ## Example
         ```
+        # Using environment variables (TIMBR_URL, TIMBR_TOKEN)
         generate_answer_chain = GenerateAnswerChain(
             llm=<llm or timbr_llm_wrapper instance>
+        )
+        
+        # Or with explicit parameters
+        generate_answer_chain = GenerateAnswerChain(
+            llm=<llm or timbr_llm_wrapper instance>,
+            url=<url>,
+            token=<token>
         )
 
         return generate_answer_chain.invoke({ "prompt": prompt, "rows": rows }).get("answer", [])
@@ -44,8 +53,12 @@ class GenerateAnswerChain(Chain):
         """
         super().__init__(**kwargs)
         self._llm = llm
-        self._url = url
-        self._token = token
+        self._url = url if url is not None else config.url
+        self._token = token if token is not None else config.token
+        
+        # Validate required parameters
+        validate_timbr_connection_params(self._url, self._token)
+        
         self._verify_ssl = to_boolean(verify_ssl)
         self._is_jwt = to_boolean(is_jwt)
         self._jwt_tenant_id = jwt_tenant_id

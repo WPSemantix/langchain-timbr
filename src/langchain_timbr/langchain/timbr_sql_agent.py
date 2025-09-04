@@ -3,17 +3,18 @@ from langchain.agents import AgentExecutor, BaseSingleActionAgent
 from langchain.llms.base import LLM
 from langchain.schema import AgentAction, AgentFinish
 
-from ..utils.general import parse_list, to_boolean, to_integer
+from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
 from .execute_timbr_query_chain import ExecuteTimbrQueryChain
 from .generate_answer_chain import GenerateAnswerChain
+from .. import config
 
 class TimbrSqlAgent(BaseSingleActionAgent):
     def __init__(
         self,
         llm: LLM,
-        url: str,
-        token: str,
-        ontology: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
+        ontology: Optional[str] = None,
         schema: Optional[str] = 'dtimbr',
         concept: Optional[str] = None,
         concepts_list: Optional[Union[list[str], str]] = None,
@@ -38,9 +39,9 @@ class TimbrSqlAgent(BaseSingleActionAgent):
     ):
         """
         :param llm: Language model to use
-        :param url: Timbr server URL
-        :param token: Timbr authentication token
-        :param ontology: Name of the ontology/knowledge graph
+        :param url: Timbr server URL (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr authentication token (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: Name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
         :param schema: Optional specific schema name to query
         :param concept: Optional specific concept name to query
         :param concepts_list: Optional specific concept options to query
@@ -64,6 +65,12 @@ class TimbrSqlAgent(BaseSingleActionAgent):
 
         ## Example
         ```
+        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        agent = TimbrSqlAgent(
+            llm=<llm>,
+        )
+        
+        # Or with explicit parameters
         agent = TimbrSqlAgent(
             llm=<llm>,
             url=<url>,
@@ -80,11 +87,19 @@ class TimbrSqlAgent(BaseSingleActionAgent):
         ```
         """
         super().__init__()
+        # Use config defaults if parameters are None
+        _url = url if url is not None else config.url
+        _token = token if token is not None else config.token
+        _ontology = ontology if ontology is not None else config.ontology
+        
+        # Validate required parameters
+        validate_timbr_connection_params(_url, _token)
+        
         self._chain = ExecuteTimbrQueryChain(
             llm=llm,
-            url=url,
-            token=token,
-            ontology=ontology,
+            url=_url,
+            token=_token,
+            ontology=_ontology,
             schema=schema,
             concept=concept,
             concepts_list=parse_list(concepts_list),
@@ -111,8 +126,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
         # Pre-initialize the answer chain to avoid creating it on every request
         self._answer_chain = GenerateAnswerChain(
             llm=llm,
-            url=url,
-            token=token,
+            url=_url,
+            token=_token,
             verify_ssl=to_boolean(verify_ssl),
             is_jwt=to_boolean(is_jwt),
             jwt_tenant_id=jwt_tenant_id,
@@ -299,9 +314,9 @@ class TimbrSqlAgent(BaseSingleActionAgent):
 
 def create_timbr_sql_agent(
     llm: LLM,
-    url: str,
-    token: str,
-    ontology: str,
+    url: Optional[str] = None,
+    token: Optional[str] = None,
+    ontology: Optional[str] = None,
     schema: Optional[str] = 'dtimbr',
     concept: Optional[str] = None,
     concepts_list: Optional[Union[list[str], str]] = None,
@@ -328,9 +343,9 @@ def create_timbr_sql_agent(
     Create and configure a Timbr agent with its executor.
     
     :param llm: Language model to use
-    :param url: Timbr server URL
-    :param token: Timbr authentication token
-    :param ontology: Name of the ontology/knowledge graph
+    :param url: Timbr server URL (optional, defaults to TIMBR_URL environment variable)
+    :param token: Timbr authentication token (optional, defaults to TIMBR_TOKEN environment variable)
+    :param ontology: Name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
     :param schema: Optional specific schema name to query
     :param concept: Optional specific concept name to query
     :param concepts_list: Optional specific concept options to query
@@ -357,6 +372,12 @@ def create_timbr_sql_agent(
     
     ## Example
         ```
+        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        agent = create_timbr_sql_agent(
+            llm=<llm>,
+        )
+        
+        # Or with explicit parameters
         agent = create_timbr_sql_agent(
             llm=<llm>,
             url=<url>,

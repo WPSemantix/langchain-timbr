@@ -2,9 +2,10 @@ from typing import Optional, Union, Dict, Any
 from langchain.chains.base import Chain
 from langchain.llms.base import LLM
 
-from ..utils.general import parse_list, to_integer, to_boolean
+from ..utils.general import parse_list, to_integer, to_boolean, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import generate_sql
 from ..utils.timbr_utils import validate_sql
+from .. import config
 
 
 class ValidateTimbrSqlChain(Chain):
@@ -19,9 +20,9 @@ class ValidateTimbrSqlChain(Chain):
     def __init__(
         self,
         llm: LLM,
-        url: str,
-        token: str,
-        ontology: str,
+        url: Optional[str] = None,
+        token: Optional[str] = None,
+        ontology: Optional[str] = None,
         schema: Optional[str] = 'dtimbr',
         concept: Optional[str] = None,
         retries: Optional[int] = 3,
@@ -43,9 +44,9 @@ class ValidateTimbrSqlChain(Chain):
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
-        :param ontology: The name of the ontology/knowledge graph
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
         :param schema: The name of the schema to query
         :param concept: The name of the concept to query
         :param retries: The maximum number of retries to attempt
@@ -66,6 +67,12 @@ class ValidateTimbrSqlChain(Chain):
         
         ## Example
         ```
+        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        validate_timbr_sql_chain = ValidateTimbrSqlChain(
+            llm=<llm or timbr_llm_wrapper instance>,
+        )
+        
+        # Or with explicit parameters
         validate_timbr_sql_chain = ValidateTimbrSqlChain(
             url=<url>,
             token=<token>,
@@ -85,9 +92,13 @@ class ValidateTimbrSqlChain(Chain):
         """
         super().__init__(**kwargs)
         self._llm = llm
-        self._url = url
-        self._token = token
-        self._ontology = ontology
+        self._url = url if url is not None else config.url
+        self._token = token if token is not None else config.token
+        self._ontology = ontology if ontology is not None else config.ontology
+        
+        # Validate required parameters
+        validate_timbr_connection_params(self._url, self._token)
+        
         self._schema = schema
         self._concept = concept
         self._retries = retries
