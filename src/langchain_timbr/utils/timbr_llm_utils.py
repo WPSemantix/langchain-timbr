@@ -212,7 +212,7 @@ def determine_concept(
     note: Optional[str] = '',
     debug: Optional[bool] = False,
     timeout: Optional[int] = None,
-) -> dict[str, any]:
+) -> dict[str, Any]:
     usage_metadata = {}
     determined_concept_name = None
     schema = 'dtimbr'
@@ -221,7 +221,7 @@ def determine_concept(
     if timeout is None:
         timeout = llm_timeout
     
-    determine_concept_prompt = get_determine_concept_prompt_template(conn_params["token"], conn_params["is_jwt"], conn_params["jwt_tenant_id"])
+    determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
     tags = get_tags(conn_params=conn_params, include_tags=include_tags)
     concepts = get_concepts(
         conn_params=conn_params,
@@ -418,7 +418,7 @@ def generate_sql(
     if timeout is None:
         timeout = llm_timeout
     
-    generate_sql_prompt = get_generate_sql_prompt_template(conn_params["token"], conn_params["is_jwt"], conn_params["jwt_tenant_id"])
+    generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
    
     if concept and concept != "" and (schema is None or schema != "vtimbr"):
         concepts_list = [concept]
@@ -550,7 +550,7 @@ def answer_question(
     if timeout is None:
         timeout = llm_timeout
 
-    qa_prompt = get_qa_prompt_template(conn_params["token"], conn_params["is_jwt"], conn_params["jwt_tenant_id"])
+    qa_prompt = get_qa_prompt_template(conn_params)
 
     prompt = qa_prompt.format_messages(
         question=question,
