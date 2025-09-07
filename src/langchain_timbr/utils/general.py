@@ -36,7 +36,7 @@ def parse_additional_params(value) -> dict:
     Parse additional parameters from string format 'a=1,b=2' or return dict as-is.
     
     Args:
-        value: String in format 'key=value,key2=value2' or dict
+        value: String in format 'key=value,key2=value2', JSON string, or dict
         
     Returns:
         Dictionary of parsed parameters
@@ -45,6 +45,15 @@ def parse_additional_params(value) -> dict:
         if isinstance(value, dict):
             return value
         elif isinstance(value, str) and value.strip():
+            # Try to parse as JSON first
+            stripped_value = value.strip()
+            if stripped_value.startswith('{') and stripped_value.endswith('}'):
+                try:
+                    return json.loads(stripped_value)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Fall back to key=value parsing
             params = {}
             for pair in (value.split('&') if '&' in value else value.split(',')):
                 if '=' in pair:
