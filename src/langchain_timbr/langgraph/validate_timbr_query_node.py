@@ -13,7 +13,7 @@ class ValidateSemanticSqlNode:
     """
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         ontology: Optional[str] = None,
@@ -37,10 +37,10 @@ class ValidateSemanticSqlNode:
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
-        :param ontology: The name of the ontology/knowledge graph
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
         :param schema: The name of the schema to query
         :param concept: The name of the concept to query
         :param retries: The maximum number of retries to attempt
@@ -88,7 +88,7 @@ class ValidateSemanticSqlNode:
         try:
             sql = state.sql
             prompt = state.prompt
-        except:
+        except Exception:
             sql = state.get('sql', None)
             prompt = state.get('prompt', None)
 

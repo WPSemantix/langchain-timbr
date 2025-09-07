@@ -8,7 +8,7 @@ from ..langchain.identify_concept_chain import IdentifyTimbrConceptChain
 class IdentifyConceptNode:
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         ontology: Optional[str] = None,
@@ -27,10 +27,10 @@ class IdentifyConceptNode:
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
-        :param ontology: The name of the ontology/knowledge graph
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
         :param concepts_list: Optional specific concept options to query
         :param views_list: Optional specific view options to query
         :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query.
@@ -67,7 +67,7 @@ class IdentifyConceptNode:
     def run(self, state: StateGraph) -> dict:
         try:
           prompt = state.messages[-1].content if state.messages[-1] else None
-        except:
+        except Exception:
           prompt = state.get('prompt', None)
 
         return self.chain.invoke({ "prompt": prompt })

@@ -1,6 +1,5 @@
-from typing import Optional, Union
+from typing import Optional
 from langchain.llms.base import LLM
-from langgraph.graph import StateGraph
 
 from ..langchain import GenerateAnswerChain
 
@@ -14,7 +13,7 @@ class GenerateResponseNode:
     """
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
@@ -25,9 +24,9 @@ class GenerateResponseNode:
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).

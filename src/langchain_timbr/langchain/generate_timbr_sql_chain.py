@@ -4,6 +4,7 @@ from langchain.llms.base import LLM
 
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import generate_sql
+from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
 
 class GenerateTimbrSqlChain(Chain):
@@ -17,7 +18,7 @@ class GenerateTimbrSqlChain(Chain):
     
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         ontology: Optional[str] = None,
@@ -42,7 +43,7 @@ class GenerateTimbrSqlChain(Chain):
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
         :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
         :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
         :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
@@ -67,12 +68,7 @@ class GenerateTimbrSqlChain(Chain):
         
         ## Example
         ```
-        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
-        generate_timbr_sql_chain = GenerateTimbrSqlChain(
-            llm=<llm or timbr_llm_wrapper instance>,
-        )
-        
-        # Or with explicit parameters
+        # Using explicit parameters
         generate_timbr_sql_chain = GenerateTimbrSqlChain(
             url=<url>,
             token=<token>,
@@ -86,11 +82,28 @@ class GenerateTimbrSqlChain(Chain):
             note=<note>,
         )
 
+        # Using environment variables for timbr environment (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        generate_timbr_sql_chain = GenerateTimbrSqlChain(
+            llm=<llm or timbr_llm_wrapper instance>,
+        )
+
+        # Using environment variables for both timbr environment & llm (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY, LLM_TYPE, LLM_API_KEY, etc.)
+        generate_timbr_sql_chain = GenerateTimbrSqlChain()
+
         return generate_timbr_sql_chain.invoke({ "prompt": question }).get("sql", [])
         ```
         """
         super().__init__(**kwargs)
-        self._llm = llm
+        
+        # Initialize LLM - use provided one or create with LlmWrapper from env variables
+        if llm is not None:
+            self._llm = llm
+        else:
+            try:
+                self._llm = LlmWrapper()
+            except Exception as e:
+                raise ValueError(f"Failed to initialize LLM from environment variables. Either provide an llm parameter or ensure LLM_TYPE and LLM_API_KEY environment variables are set. Error: {e}")
+        
         self._url = url if url is not None else config.url
         self._token = token if token is not None else config.token
         self._ontology = ontology if ontology is not None else config.ontology

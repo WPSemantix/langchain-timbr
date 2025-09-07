@@ -5,6 +5,7 @@ from langchain.llms.base import LLM
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
 from ..utils.timbr_utils import run_query, validate_sql
 from ..utils.timbr_llm_utils import generate_sql
+from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
 
 class ExecuteTimbrQueryChain(Chain):
@@ -18,7 +19,7 @@ class ExecuteTimbrQueryChain(Chain):
     
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         ontology: Optional[str] = None,
@@ -45,7 +46,7 @@ class ExecuteTimbrQueryChain(Chain):
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
         :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
         :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
         :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
@@ -73,12 +74,7 @@ class ExecuteTimbrQueryChain(Chain):
 
         ## Example
         ```
-        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
-        execute_timbr_query_chain = ExecuteTimbrQueryChain(
-            llm=<llm or timbr_llm_wrapper instance>,
-        )
-        
-        # Or with explicit parameters
+        # Using explicit parameters
         execute_timbr_query_chain = ExecuteTimbrQueryChain(
             url=<url>,
             token=<token>,
@@ -92,11 +88,28 @@ class ExecuteTimbrQueryChain(Chain):
             note=<note>,
         )
 
+        # Using environment variables for timbr environment (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        execute_timbr_query_chain = ExecuteTimbrQueryChain(
+            llm=<llm or timbr_llm_wrapper instance>,
+        )
+
+        # Using environment variables for both timbr environment & llm (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY, LLM_TYPE, LLM_API_KEY, etc.)
+        execute_timbr_query_chain = ExecuteTimbrQueryChain()
+
         return execute_timbr_query_chain.invoke({ "prompt": question }).get("rows", [])
         ```
         """
         super().__init__(**kwargs)
-        self._llm = llm
+        
+        # Initialize LLM - use provided one or create with LlmWrapper from env variables
+        if llm is not None:
+            self._llm = llm
+        else:
+            try:
+                self._llm = LlmWrapper()
+            except Exception as e:
+                raise ValueError(f"Failed to initialize LLM from environment variables. Either provide an llm parameter or ensure LLM_TYPE and LLM_API_KEY environment variables are set. Error: {e}")
+        
         self._url = url if url is not None else config.url
         self._token = token if token is not None else config.token
         self._ontology = ontology if ontology is not None else config.ontology
@@ -192,7 +205,7 @@ class ExecuteTimbrQueryChain(Chain):
             should_validate_sql=self._should_validate_sql,
             retries=self._retries,
             max_limit=self._max_limit,
-            note=self._note + err_txt,
+            note=(self._note or '') + err_txt,
             db_is_case_sensitive=self._db_is_case_sensitive,
             graph_depth=self._graph_depth,
             debug=self._debug,
@@ -262,7 +275,7 @@ class ExecuteTimbrQueryChain(Chain):
                             generated.append(sql)
                             # If the SQL is valid but no rows are returned, create an error message to be sent to the LLM
                             if is_sql_valid:
-                                error = f"No rows returned. Please revise the SQL considering if the question was ambiguous (e.g., which ID or name to use), try use alternative columns in the WHERE clause part in a way that could match the user's intent, without adding new columns with new filters."
+                                error = "No rows returned. Please revise the SQL considering if the question was ambiguous (e.g., which ID or name to use), try use alternative columns in the WHERE clause part in a way that could match the user's intent, without adding new columns with new filters."
                                 error += "\nConsider that this queries already generated and returned 0 rows:\n" + "\n".join(generated)
                                 is_sql_valid = False
                         else:

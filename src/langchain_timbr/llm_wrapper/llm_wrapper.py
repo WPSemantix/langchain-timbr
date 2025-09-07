@@ -187,7 +187,7 @@ class LlmWrapper(LLM):
           # For Azure, get the deployments instead of models
           try:
             models = [model.id for model in client.models.list()]
-          except:
+          except Exception:
             # If listing models fails, provide some common deployment names
             models = ["gpt-4o", "Other (Custom)"]
       elif is_llm_type(self._llm_type, LlmTypes.Snowflake):
@@ -204,7 +204,7 @@ class LlmWrapper(LLM):
         
       # elif self._is_llm_type(self._llm_type, LlmTypes.Timbr):
         
-    except Exception as e:
+    except Exception:
       # If model list fetching throws an exception, return default value using get_supported_models
       llm_type_name = None
       if hasattr(self, '_llm_type'):

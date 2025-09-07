@@ -4,6 +4,7 @@ from langchain.llms.base import LLM
 
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import determine_concept
+from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
 
 
@@ -18,7 +19,7 @@ class IdentifyTimbrConceptChain(Chain):
     
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         ontology: Optional[str] = None,
@@ -37,7 +38,7 @@ class IdentifyTimbrConceptChain(Chain):
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
         :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
         :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
         :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
@@ -56,28 +57,40 @@ class IdentifyTimbrConceptChain(Chain):
         
         ## Example
         ```
-        # Using environment variables (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        # Using explicit parameters
         identify_timbr_concept_chain = IdentifyTimbrConceptChain(
             llm=<llm or timbr_llm_wrapper instance>,
-        )
-        
-        # Or with explicit parameters
-        identify_timbr_concept_chain = IdentifyTimbrConceptChain(
             url=<url>,
             token=<token>,
             ontology=<ontology_name>,
-            llm=<llm or timbr_llm_wrapper instance>,
             concepts_list=<concepts>,
             views_list=<views>,
             include_tags=<tags>,
             note=<note>,
         )
 
+        # Using environment variables for timbr environment (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY)
+        identify_timbr_concept_chain = IdentifyTimbrConceptChain(
+            llm=<llm or timbr_llm_wrapper instance>,
+        )
+
+        # Using environment variables for both timbr environment & llm (TIMBR_URL, TIMBR_TOKEN, TIMBR_ONTOLOGY, LLM_TYPE, LLM_API_KEY, etc.)
+        identify_timbr_concept_chain = IdentifyTimbrConceptChain()
+
         return identify_timbr_concept_chain.invoke({ "prompt": question }).get("concept", None)
         ```
         """
         super().__init__(**kwargs)
-        self._llm = llm
+        
+        # Initialize LLM - use provided one or create with LlmWrapper from env variables
+        if llm is not None:
+            self._llm = llm
+        else:
+            try:
+                self._llm = LlmWrapper()
+            except Exception as e:
+                raise ValueError(f"Failed to initialize LLM from environment variables. Either provide an llm parameter or ensure LLM_TYPE and LLM_API_KEY environment variables are set. Error: {e}")
+        
         self._url = url if url is not None else config.url
         self._token = token if token is not None else config.token
         self._ontology = ontology if ontology is not None else config.ontology
