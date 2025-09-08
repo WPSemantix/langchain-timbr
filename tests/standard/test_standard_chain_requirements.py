@@ -324,7 +324,7 @@ class TestChainIntegration:
         for i in range(5):
             try:
                 chain.invoke({"prompt": f"test query {i}"})
-            except:
+            except Exception:
                 pass  # Ignore connection errors
         
         # Force garbage collection

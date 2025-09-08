@@ -1,10 +1,11 @@
 from enum import Enum
+from typing import Optional
 from langchain.llms.base import LLM
 from pydantic import Field
 
 from .timbr_llm_wrapper import TimbrLlmWrapper
-from ..utils.general import is_llm_type, is_support_temperature, get_supported_models
-from ..config import llm_temperature
+from ..utils.general import is_llm_type, is_support_temperature, get_supported_models, parse_additional_params
+from ..config import llm_temperature, llm_type as default_llm_type, llm_model as default_llm_model, llm_api_key as default_llm_api_key, llm_additional_params as default_llm_additional_params
 
 class LlmTypes(Enum):
   OpenAI = 'openai-chat'
@@ -21,29 +22,47 @@ class LlmWrapper(LLM):
   LlmWrapper is a unified interface for connecting to various Large Language Model (LLM) providers
   (OpenAI, Anthropic, Google, Azure OpenAI, Snowflake Cortex, Databricks, etc.) using LangChain. It abstracts
   the initialization and connection logic for each provider, allowing you to switch between them
-  with a consistent API.
   """
-  client: LLM = Field(default=None, exclude=True)
+  client: Optional[LLM] = Field(default=None, exclude=True)
 
   def __init__(
       self,
-      llm_type: str,
-      api_key: str,
-      model: str = None,
+      llm_type: Optional[str] = None,
+      api_key: Optional[str] = None,
+      model: Optional[str] = None,
       **llm_params,
   ):
       """
-      :param llm_type (str): The type of LLM provider (e.g., 'openai-chat', 'anthropic-chat').
-      :param api_key (str): The API key for authenticating with the LLM provider.
-      :param model (str): The model name or deployment to use. Defaults to provider-specific values (Optional).
+      :param llm_type (str, optional): The type of LLM provider (e.g., 'openai-chat', 'anthropic-chat').
+                                       If not provided, will try to get from LLM_TYPE environment variable.
+      :param api_key (str, optional): The API key for authenticating with the LLM provider. 
+                                     If not provided, will try to get from LLM_API_KEY environment variable.
+      :param model (str, optional): The model name or deployment to use. If not provided, will try to get from LLM_MODEL environment variable.
       :param **llm_params: Additional parameters for the LLM (e.g., temperature, endpoint, etc.).
       """
       super().__init__()
+      
+      selected_llm_type = llm_type or default_llm_type
+      selected_api_key = api_key or default_llm_api_key
+      selected_model = model or default_llm_model
+      selected_additional_params = llm_params.pop('additional_params', None)
+
+      # Parse additional parameters from init params or config and merge with provided params
+      default_additional_params = parse_additional_params(selected_additional_params or default_llm_additional_params or {})
+      additional_llm_params = {**default_additional_params, **llm_params}
+      
+      # Validation: Ensure we have the required parameters
+      if not selected_llm_type:
+          raise ValueError("llm_type must be provided either as parameter or in config (LLM_TYPE environment variable)")
+      
+      if not selected_api_key:
+          raise ValueError("api_key must be provided either as parameter or in config (LLM_API_KEY environment variable)")
+      
       self.client = self._connect_to_llm(
-        llm_type,
-        api_key,
-        model,
-        **llm_params,
+        selected_llm_type,
+        selected_api_key,
+        selected_model,
+        **additional_llm_params,
       )
 
 
@@ -168,7 +187,7 @@ class LlmWrapper(LLM):
           # For Azure, get the deployments instead of models
           try:
             models = [model.id for model in client.models.list()]
-          except:
+          except Exception:
             # If listing models fails, provide some common deployment names
             models = ["gpt-4o", "Other (Custom)"]
       elif is_llm_type(self._llm_type, LlmTypes.Snowflake):
@@ -185,7 +204,7 @@ class LlmWrapper(LLM):
         
       # elif self._is_llm_type(self._llm_type, LlmTypes.Timbr):
         
-    except Exception as e:
+    except Exception:
       # If model list fetching throws an exception, return default value using get_supported_models
       llm_type_name = None
       if hasattr(self, '_llm_type'):

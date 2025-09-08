@@ -1,4 +1,5 @@
 import os
+from typing import Optional
 import json
 
 ### A global helper functions to use across the project
@@ -30,6 +31,43 @@ def to_integer(value) -> int:
         raise ValueError(f"Failed to parse integer value: {e}")
 
 
+def parse_additional_params(value) -> dict:
+    """
+    Parse additional parameters from string format 'a=1,b=2' or return dict as-is.
+    
+    Args:
+        value: String in format 'key=value,key2=value2', JSON string, or dict
+        
+    Returns:
+        Dictionary of parsed parameters
+    """
+    try:
+        if isinstance(value, dict):
+            return value
+        elif isinstance(value, str) and value.strip():
+            # Try to parse as JSON first
+            stripped_value = value.strip()
+            if stripped_value.startswith('{') and stripped_value.endswith('}'):
+                try:
+                    return json.loads(stripped_value)
+                except json.JSONDecodeError:
+                    pass
+            
+            # Fall back to key=value parsing
+            params = {}
+            for pair in (value.split('&') if '&' in value else value.split(',')):
+                if '=' in pair:
+                    key, val = pair.split('=', 1)
+                    params[key.strip()] = val.strip()
+                elif ':' in pair:
+                    key, val = pair.split(':', 1)
+                    params[key.strip()] = val.strip()
+            return params
+        return {}
+    except Exception as e:
+        raise ValueError(f"Failed to parse additional parameters: {e}")
+
+
 def is_llm_type(llm_type, enum_value):
     """Check if llm_type equals the enum value or its name, case-insensitive."""
     if llm_type == enum_value:
@@ -51,7 +89,7 @@ def is_llm_type(llm_type, enum_value):
     return False
   
 
-def validate_timbr_connection_params(url: str = None, token: str = None) -> None:
+def validate_timbr_connection_params(url: Optional[str] = None, token: Optional[str] = None) -> None:
     """
     Validate that required Timbr connection parameters are provided.
     

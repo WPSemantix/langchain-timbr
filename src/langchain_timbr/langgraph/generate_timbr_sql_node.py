@@ -11,7 +11,7 @@ class GenerateTimbrSqlNode:
     """
     def __init__(
         self,
-        llm: LLM,
+        llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
         ontology: Optional[str] = None,
@@ -36,10 +36,10 @@ class GenerateTimbrSqlNode:
         **kwargs,
     ):
         """
-        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response
-        :param url: Timbr server url
-        :param token: Timbr password or token value
-        :param ontology: The name of the ontology/knowledge graph
+        :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
+        :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
+        :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: The name of the ontology/knowledge graph (optional, defaults to ONTOLOGY/TIMBR_ONTOLOGY environment variable)
         :param schema: The name of the schema to query
         :param concept: The name of the concept to query
         :param concepts_list: Optional specific concept options to query
@@ -88,7 +88,7 @@ class GenerateTimbrSqlNode:
     def run(self, state: StateGraph) -> dict:
         try:
             prompt = state.messages[-1].content if (state.messages and state.messages[-1]) else None
-        except:
+        except Exception:
             prompt = state.get('prompt', None)
 
         return self.chain.invoke({ "prompt": prompt })
