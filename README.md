@@ -48,4 +48,29 @@ For comprehensive documentation and usage examples, please visit:
 
 ## Configuration
 
-The SDK requires several environment variables to be configured. See [`langchain_timbr/config.py`](https://github.com/WPSemantix/langchain-timbr/blob/main/src/langchain_timbr/config.py) for all available configuration options.
+The SDK uses environment variables for configuration. All configurations are optional - when set, they serve as default values for `langchain-timbr` provided tools. Below are all available configuration options:
+
+### Configuration Options
+
+#### Timbr Connection Settings
+
+- **`TIMBR_URL`** - The URL of your Timbr server
+- **`TIMBR_TOKEN`** - Authentication token for accessing the Timbr server
+- **`TIMBR_ONTOLOGY`** - The ontology to use (also accepts `ONTOLOGY` as an alias)
+- **`IS_JWT`** - Whether the token is a JWT token (true/false)
+- **`JWT_TENANT_ID`** - Tenant ID for JWT authentication
+
+#### Cache and Data Processing
+
+- **`CACHE_TIMEOUT`** - Timeout for caching operations in seconds
+- **`IGNORE_TAGS`** - Comma-separated list of tags to ignore during processing
+- **`IGNORE_TAGS_PREFIX`** - Comma-separated list of tag prefixes to ignore during processing
+
+#### LLM Configuration
+
+- **`LLM_TYPE`** - The type of LLM provider to use
+- **`LLM_MODEL`** - The specific model to use with the LLM provider
+- **`LLM_API_KEY`** - API key for the LLM provider
+- **`LLM_TEMPERATURE`** - Temperature setting for LLM responses (controls randomness)
+- **`LLM_ADDITIONAL_PARAMS`** - Additional parameters to pass to the LLM
+- **`LLM_TIMEOUT`** - Timeout for LLM requests in seconds
