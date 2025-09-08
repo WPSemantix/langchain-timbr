@@ -68,7 +68,7 @@ class ValidateTimbrSqlChain(Chain):
         
         ## Example
         ```
-        # Usingexplicit parameters
+        # Using explicit parameters
         validate_timbr_sql_chain = ValidateTimbrSqlChain(
             url=<url>,
             token=<token>,

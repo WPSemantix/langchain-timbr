@@ -33,7 +33,7 @@ class LlmWrapper(LLM):
       **llm_params,
   ):
       """
-      :param llm_type (str, optional): The type of LLM provider (e.g., 'openai-chat', 'anthropic-chat'). 
+      :param llm_type (str, optional): The type of LLM provider (e.g., 'openai-chat', 'anthropic-chat').
                                        If not provided, will try to get from LLM_TYPE environment variable.
       :param api_key (str, optional): The API key for authenticating with the LLM provider. 
                                      If not provided, will try to get from LLM_API_KEY environment variable.
