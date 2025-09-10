@@ -43,7 +43,7 @@ def parse_additional_params(value) -> dict:
     """
     try:
         if isinstance(value, dict):
-            return value
+            return {k.lower(): v for k, v in value.items()}
         elif isinstance(value, str) and value.strip():
             # Try to parse as JSON first
             stripped_value = value.strip()
