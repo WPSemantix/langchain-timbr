@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from typing import Any, Optional, Union
 import json
 
 ### A global helper functions to use across the project
@@ -58,10 +58,10 @@ def parse_additional_params(value) -> dict:
             for pair in (value.split('&') if '&' in value else value.split(',')):
                 if '=' in pair:
                     key, val = pair.split('=', 1)
-                    params[key.strip()] = val.strip()
+                    params[key.strip().lower()] = val.strip()
                 elif ':' in pair:
                     key, val = pair.split(':', 1)
-                    params[key.strip()] = val.strip()
+                    params[key.strip().lower()] = val.strip()
             return params
         return {}
     except Exception as e:
@@ -138,3 +138,27 @@ def get_supported_models(llm_type: str) -> list[str]:
     except (FileNotFoundError, json.JSONDecodeError):
         return []
 
+
+def pop_param_value(
+    params_dict: dict,
+    opt_keys: Union[str, list[str]],
+    default: Any=None,
+):
+    """
+    Retrieve the value for the first matching key from params_dict.
+    
+    Args:
+        params_dict (dict): Dictionary to search for keys
+        opt_keys (str or list[str]): Key or list of keys to look for
+        default: Default value to return if no keys are found
+        
+    Returns:
+        The value corresponding to the first found key, or default if none found.
+    """
+    if isinstance(opt_keys, str):
+        opt_keys = [opt_keys]
+    
+    for key in opt_keys:
+        if key in params_dict:
+            return params_dict.pop(key)
+    return default
