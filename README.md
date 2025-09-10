@@ -31,7 +31,7 @@ python -m pip install langchain-timbr
 #### One of: openai, anthropic, google, azure_openai, snowflake, databricks (or 'all')
 
 ```bash
-python -m pip install 'langchain-timbr[<your selected providers, separated by comma w/o space]'
+python -m pip install 'langchain-timbr[<your selected providers, separated by comma w/o space>]'
 ```
 
 ### Using pip from github
@@ -70,7 +70,13 @@ The SDK uses environment variables for configuration. All configurations are opt
 
 - **`LLM_TYPE`** - The type of LLM provider to use
 - **`LLM_MODEL`** - The specific model to use with the LLM provider
-- **`LLM_API_KEY`** - API key for the LLM provider
+- **`LLM_API_KEY`** - API key or client secret for the LLM provider
 - **`LLM_TEMPERATURE`** - Temperature setting for LLM responses (controls randomness)
 - **`LLM_ADDITIONAL_PARAMS`** - Additional parameters to pass to the LLM
 - **`LLM_TIMEOUT`** - Timeout for LLM requests in seconds
+- **`LLM_TENANT_ID`** - LLM provider tenant/directory ID (Used for Service Principal authentication)
+- **`LLM_CLIENT_ID`** - LLM provider client ID (Used for Service Principal authentication)
+- **`LLM_CLIENT_SECRET`** - LLM provider client secret (Used for Service Principal authentication. Note: if `LLM_API_KEY` is provided, it will override this value)
+- **`LLM_ENDPOINT`** - LLM provider OpenAI endpoint URL
+- **`LLM_API_VERSION`** - LLM provider API version
+- **`LLM_SCOPE`** - LLM provider authentication scope
