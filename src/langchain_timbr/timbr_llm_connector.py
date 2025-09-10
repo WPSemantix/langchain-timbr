@@ -10,15 +10,7 @@ from .langchain import IdentifyTimbrConceptChain, GenerateTimbrSqlChain, Validat
 from .langgraph import GenerateTimbrSqlNode, ValidateSemanticSqlNode, ExecuteSemanticQueryNode, GenerateResponseNode
 
 
-from .config import (
-    url as default_url,
-    token as default_token,
-    ontology as default_ontology,
-    llm_type,
-    llm_model,
-    llm_api_key,
-    llm_temperature,
-)
+from . import config
 
 class TimbrLanggraphState(TypedDict):
     prompt: str
@@ -35,9 +27,9 @@ class TimbrLlmConnector:
     def __init__(
         self,
         llm: LLM,
-        url: Optional[str] = default_url,
-        token: Optional[str] = default_token,
-        ontology: Optional[str] = default_ontology,
+        url: Optional[str] = config.url,
+        token: Optional[str] = config.token,
+        ontology: Optional[str] = config.ontology,
         max_limit: Optional[int] = 500,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
@@ -97,15 +89,15 @@ class TimbrLlmConnector:
         
         if llm is not None:
             self._llm = llm
-        elif llm_type is not None and llm_api_key is not None:
+        elif config.llm_type is not None and config.llm_api_key is not None:
             llm_params = {}
-            if llm_temperature is not None:
-                llm_params["temperature"] = llm_temperature
+            if config.llm_temperature is not None:
+                llm_params["temperature"] = config.llm_temperature
 
             self._llm = LlmWrapper(
-                llm_type=llm_type,
-                api_key=llm_api_key,
-                model=llm_model,
+                llm_type=config.llm_type,
+                api_key=config.llm_api_key,
+                model=config.llm_model,
                 **llm_params,
             )
 

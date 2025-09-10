@@ -4,8 +4,8 @@ from langchain.llms.base import LLM
 from pydantic import Field
 
 from .timbr_llm_wrapper import TimbrLlmWrapper
-from ..utils.general import is_llm_type, is_support_temperature, get_supported_models, parse_additional_params
-from ..config import llm_temperature, llm_type as default_llm_type, llm_model as default_llm_model, llm_api_key as default_llm_api_key, llm_additional_params as default_llm_additional_params
+from ..utils.general import is_llm_type, is_support_temperature, get_supported_models, parse_additional_params, pop_param_value
+from .. import config
 
 class LlmTypes(Enum):
   OpenAI = 'openai-chat'
@@ -42,13 +42,13 @@ class LlmWrapper(LLM):
       """
       super().__init__()
       
-      selected_llm_type = llm_type or default_llm_type
-      selected_api_key = api_key or default_llm_api_key
-      selected_model = model or default_llm_model
+      selected_llm_type = llm_type or config.llm_type
+      selected_api_key = api_key or config.llm_api_key or config.llm_client_secret
+      selected_model = model or config.llm_model
       selected_additional_params = llm_params.pop('additional_params', None)
 
       # Parse additional parameters from init params or config and merge with provided params
-      default_additional_params = parse_additional_params(selected_additional_params or default_llm_additional_params or {})
+      default_additional_params = parse_additional_params(selected_additional_params or config.llm_additional_params or {})
       additional_llm_params = {**default_additional_params, **llm_params}
       
       # Validation: Ensure we have the required parameters
@@ -76,8 +76,8 @@ class LlmWrapper(LLM):
     Add temperature to the LLM parameters if the LLM model supports it.
     """
     if "temperature" not in llm_params:
-      if llm_temperature is not None and is_support_temperature(llm_type, llm_model):
-        llm_params["temperature"] = llm_temperature
+      if config.llm_temperature is not None and is_support_temperature(llm_type, llm_model):
+        llm_params["temperature"] = config.llm_temperature
     return llm_params
 
   
@@ -127,15 +127,36 @@ class LlmWrapper(LLM):
       )
     elif is_llm_type(llm_type, LlmTypes.AzureOpenAI):
       from langchain_openai import AzureChatOpenAI
-      azure_endpoint = params.pop('azure_endpoint', None)
-      azure_api_version = params.pop('azure_openai_api_version', None)
       llm_model = model or "gpt-4o-2024-11-20"
       params = self._add_temperature(LlmTypes.AzureOpenAI.name, llm_model, **llm_params)
+
+      azure_endpoint = pop_param_value(params, ['azure_endpoint', 'llm_endpoint'], default=config.llm_endpoint)
+      azure_api_version = pop_param_value(params, ['azure_api_version', 'llm_api_version'], default=config.llm_api_version)
+
+      azure_client_id = pop_param_value(params, ['azure_client_id', 'llm_client_id'], default=config.llm_client_id)
+      azure_tenant_id = pop_param_value(params, ['azure_tenant_id', 'llm_tenant_id'], default=config.llm_tenant_id)
+      if azure_tenant_id and azure_client_id:
+        from azure.identity import ClientSecretCredential, get_bearer_token_provider
+        azure_client_secret = pop_param_value(params, ['azure_client_secret', 'llm_client_secret'], default=api_key)
+        scope = pop_param_value(params, ['azure_scope', 'llm_scope'], default=config.llm_scope)
+        credential = ClientSecretCredential(
+          tenant_id=azure_tenant_id,
+          client_id=azure_client_id,
+          client_secret=azure_client_secret
+        )
+        token_provider = get_bearer_token_provider(credential, scope)
+        params['azure_ad_token_provider'] = token_provider
+      else:
+        params['open_api_key'] = api_key
+
+      if 'openai_api_version' not in params or not params['openai_api_version']:
+        params['openai_api_version'] = azure_api_version
+
+      if 'azure_endpoint' not in params or not params['azure_endpoint']:
+        params['azure_endpoint'] = azure_endpoint
+
       return AzureChatOpenAI(
-        openai_api_key=api_key,
         azure_deployment=llm_model,
-        azure_endpoint=azure_endpoint,
-        openai_api_version=azure_api_version,
         **params,
       )
     elif is_llm_type(llm_type, LlmTypes.Databricks):
@@ -174,16 +195,28 @@ class LlmWrapper(LLM):
       elif is_llm_type(self._llm_type, LlmTypes.AzureOpenAI):
         from openai import AzureOpenAI
         # Get Azure-specific attributes from the client
-        azure_endpoint = getattr(self.client, 'azure_endpoint', None)
-        api_version = getattr(self.client, 'openai_api_version', None)
-        api_key = self.client.openai_api_key._secret_value
-        
-        if azure_endpoint and api_version and api_key:
-          client = AzureOpenAI(
-            api_key=api_key,
-            azure_endpoint=azure_endpoint,
-            api_version=api_version
-          )
+        api_key = None
+        azure_ad_token_provider = None
+        azure_endpoint = getattr(self.client, 'azure_endpoint', config.llm_endpoint)
+        api_version = getattr(self.client, 'openai_api_version', config.llm_api_version)
+
+        params = {
+          "azure_endpoint": azure_endpoint,
+          "api_version": api_version,
+        }
+
+        api_key = getattr(self.client.openai_api_key, '_secret_value', None)
+        if api_key:
+          params['api_key'] = api_key
+        else:
+          azure_ad_token_provider = getattr(self.client, 'azure_ad_token_provider', None)
+          if azure_ad_token_provider:
+            params['azure_ad_token_provider'] = azure_ad_token_provider
+          else:
+            raise ValueError("Azure OpenAI requires either an API key or an Azure AD token provider for authentication.")
+
+        if azure_endpoint and api_version and (api_key or azure_ad_token_provider):
+          client = AzureOpenAI(**params)
           # For Azure, get the deployments instead of models
           try:
             models = [model.id for model in client.models.list()]
@@ -199,9 +232,10 @@ class LlmWrapper(LLM):
           "llama3.1-405b"
         ]
       elif is_llm_type(self._llm_type, LlmTypes.Databricks):
-        w = self.client.workspace_client
-        models = [ep.name for ep in w.serving_endpoints.list()]
-        
+        w = getattr(self.client, 'workspace_client', None)
+        if w:
+          models = [ep.name for ep in w.serving_endpoints.list()]
+
       # elif self._is_llm_type(self._llm_type, LlmTypes.Timbr):
         
     except Exception:
@@ -213,11 +247,9 @@ class LlmWrapper(LLM):
           if is_llm_type(self._llm_type, llm_enum):
             llm_type_name = llm_enum.name
             break
-      
-      if llm_type_name:
-        models = get_supported_models(llm_type_name)
-      else:
-        models = []
+
+    if len(models) == 0 and llm_type_name:
+      models = get_supported_models(llm_type_name)
     
     return sorted(models)
 

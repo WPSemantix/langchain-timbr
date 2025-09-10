@@ -27,9 +27,9 @@ class TestLlmWrapperOptionalParams:
     def test_with_config_fallback(self):
         """Test that config fallback works"""
         # Mock the config values directly
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key-from-config'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_model', 'gpt-4-from-config'):
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key-from-config'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_model', 'gpt-4-from-config'):
             try:
                 wrapper = LlmWrapper()  # No parameters provided
                 assert wrapper is not None
@@ -42,8 +42,8 @@ class TestLlmWrapperOptionalParams:
         """Test that missing llm_type raises appropriate error"""
         with patch.dict(os.environ, {}, clear=True):
             # Mock the config values to ensure they're None
-            with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', None), \
-                 patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key'):
+            with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', None), \
+                 patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key'):
                 with pytest.raises(ValueError, match="llm_type must be provided"):
                     LlmWrapper(api_key="test-key")
     
@@ -51,19 +51,19 @@ class TestLlmWrapperOptionalParams:
         """Test that missing api_key raises appropriate error"""
         with patch.dict(os.environ, {}, clear=True):
             # Mock the config values to ensure they're None
-            with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'), \
-                 patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', None):
+            with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'), \
+                 patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', None):
                 with pytest.raises(ValueError, match="api_key must be provided"):
                     LlmWrapper(llm_type="openai-chat")
     
     def test_additional_params_from_config(self):
         """Test that additional parameters can be loaded from config"""
         # Mock the config values directly
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_model', 'gpt-4'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.llm_temperature', 0.8),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_additional_params', '{"top_p": 0.9, "presence_penalty": 0.1}'):
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_model', 'gpt-4'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_temperature', 0.8),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_additional_params', '{"top_p": 0.9, "presence_penalty": 0.1}'):
             try:
                 wrapper = LlmWrapper()  # No parameters provided
                 assert wrapper is not None
@@ -99,7 +99,7 @@ class TestLlmWrapperOptionalParams:
         """Test that missing both llm_type and api_key raises appropriate error"""
         with patch.dict(os.environ, {}, clear=True):
             # Mock the config values to ensure they're None
-            with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', None), \
-                 patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', None):
+            with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', None), \
+                 patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', None):
                 with pytest.raises(ValueError, match="llm_type must be provided"):
                     LlmWrapper()

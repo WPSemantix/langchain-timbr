@@ -20,9 +20,9 @@ class TestOptionalLLMIntegration:
     def test_chains_with_env_variables(self):
         """Test that all chains can be initialized without LLM when config defaults are available"""
         # Mock the config values directly instead of environment variables
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_model', 'gpt-4'),\
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_model', 'gpt-4'),\
              patch.dict(os.environ, {
                 'TIMBR_URL': 'http://test-timbr.com',
                 'TIMBR_TOKEN': 'test-token',
@@ -52,9 +52,9 @@ class TestOptionalLLMIntegration:
     def test_agent_with_env_variables(self):
         """Test that TimbrSqlAgent can be initialized without LLM when config defaults are available"""
         # Mock the config values directly instead of environment variables
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_model', 'gpt-4'),\
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_model', 'gpt-4'),\
              patch.dict(os.environ, {
                 'TIMBR_URL': 'http://test-timbr.com',
                 'TIMBR_TOKEN': 'test-token',
@@ -74,9 +74,9 @@ class TestOptionalLLMIntegration:
     def test_create_agent_function_with_env_variables(self):
         """Test that create_timbr_sql_agent can be called without LLM when config defaults are available"""
         # Mock the config values directly instead of environment variables
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_model', 'gpt-4'),\
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_model', 'gpt-4'),\
              patch.dict(os.environ, {
                 'TIMBR_URL': 'http://test-timbr.com',
                 'TIMBR_TOKEN': 'test-token',
@@ -95,9 +95,9 @@ class TestOptionalLLMIntegration:
     def test_langgraph_nodes_with_env_variables(self):
         """Test that all langgraph nodes can be initialized without LLM when config defaults are available"""
         # Mock the config values directly instead of environment variables
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'test-key'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_model', 'gpt-4'),\
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'test-key'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_model', 'gpt-4'),\
              patch.dict(os.environ, {
                 'TIMBR_URL': 'http://test-timbr.com',
                 'TIMBR_TOKEN': 'test-token',
@@ -126,8 +126,8 @@ class TestOptionalLLMIntegration:
     
     def test_missing_llm_env_variables_raises_error(self):
         """Test that missing LLM env variables raise appropriate errors"""
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', None),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', None),\
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', None),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', None),\
              patch.dict(os.environ, {
                 'TIMBR_URL': 'http://test-timbr.com',
                 'TIMBR_TOKEN': 'test-token',
@@ -144,8 +144,8 @@ class TestOptionalLLMIntegration:
         from langchain_timbr.llm_wrapper.llm_wrapper import LlmWrapper
         
         # Mock the config values
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.default_llm_api_key', 'env-key'),\
+        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'env-key'),\
              patch.dict(os.environ, {
                 'TIMBR_URL': 'http://test-timbr.com',
                 'TIMBR_TOKEN': 'test-token',

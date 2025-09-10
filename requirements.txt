@@ -1,4 +1,5 @@
 anthropic==0.42.0
+azure-identity==1.16.1
 cryptography>=44.0.3
 databricks-langchain==0.3.0; python_version < '3.10'
 databricks-langchain==0.7.1; python_version >= '3.10'
