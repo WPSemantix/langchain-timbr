@@ -147,7 +147,7 @@ class LlmWrapper(LLM):
         token_provider = get_bearer_token_provider(credential, scope)
         params['azure_ad_token_provider'] = token_provider
       else:
-        params['open_api_key'] = api_key
+        params['api_key'] = api_key
 
       if 'openai_api_version' not in params or not params['openai_api_version']:
         params['openai_api_version'] = azure_api_version
