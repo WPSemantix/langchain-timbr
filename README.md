@@ -76,7 +76,7 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`LLM_TIMEOUT`** - Timeout for LLM requests in seconds
 - **`LLM_TENANT_ID`** - LLM provider tenant/directory ID (Used for Service Principal authentication)
 - **`LLM_CLIENT_ID`** - LLM provider client ID (Used for Service Principal authentication)
-- **`LLM_CLIENT_SECRET`** - LLM provider client secret (Used for Service Principal authentication. Note: if `LLM_API_KEY` is provided, it will override this value)
+- **`LLM_CLIENT_SECRET`** - LLM provider client secret (Used for Service Principal authentication)
 - **`LLM_ENDPOINT`** - LLM provider OpenAI endpoint URL
 - **`LLM_API_VERSION`** - LLM provider API version
 - **`LLM_SCOPE`** - LLM provider authentication scope
