@@ -242,6 +242,10 @@ class LlmWrapper(LLM):
       llm_model = model or "gemini-2.5-flash-lite"
       params = self._add_temperature(LlmTypes.VertexAI.name, llm_model, **llm_params)
 
+      project = pop_param_value(params, ['vertex_project', 'llm_project', 'project'])
+      if project:
+        params['project'] = project
+
       creds = self._try_build_vertexai_credentials(params, api_key)
       return ChatVertexAI(
         model_name=llm_model,
