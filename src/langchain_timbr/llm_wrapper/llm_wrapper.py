@@ -14,6 +14,7 @@ class LlmTypes(Enum):
   AzureOpenAI = 'azure-openai-chat'
   Snowflake = 'snowflake-cortex'
   Databricks = 'chat-databricks'
+  VertexAI = 'chat-vertexai'
   Timbr = 'timbr'
 
 
@@ -54,10 +55,7 @@ class LlmWrapper(LLM):
       # Validation: Ensure we have the required parameters
       if not selected_llm_type:
           raise ValueError("llm_type must be provided either as parameter or in config (LLM_TYPE environment variable)")
-      
-      if not selected_api_key:
-          raise ValueError("api_key must be provided either as parameter or in config (LLM_API_KEY environment variable)")
-      
+            
       self.client = self._connect_to_llm(
         selected_llm_type,
         selected_api_key,
@@ -80,8 +78,75 @@ class LlmWrapper(LLM):
         llm_params["temperature"] = config.llm_temperature
     return llm_params
 
-  
-  def _connect_to_llm(self, llm_type, api_key, model, **llm_params):
+  def _try_build_vertexai_credentials(self,params, api_key):
+    from google.oauth2 import service_account
+    from google.auth import default
+
+    # Try multiple authentication methods in order of preference
+    creds = None
+    scope = pop_param_value(params, ['vertex_scope', 'llm_scope', 'scope'], default=config.llm_scope)
+    scopes = [scope] if scope else ["https://www.googleapis.com/auth/cloud-platform"]
+    
+    # Method 1: Service Account File (json_path)
+    json_path = pop_param_value(params, ['azure_json_path', 'llm_json_path', 'json_path'])
+    if json_path:
+      try:
+        creds = service_account.Credentials.from_service_account_file(
+          json_path,
+          scopes=scopes,
+        )
+      except Exception as e:
+        raise ValueError(f"Failed to load service account from file '{json_path}': {e}")
+    
+    # Method 2: Service Account Info (as dictionary)
+    if not creds:
+      service_account_info = pop_param_value(params, ['service_account_info', 'vertex_service_account_info'])
+      if service_account_info:
+        try:
+          creds = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=scopes,
+          )
+        except Exception as e:
+          raise ValueError(f"Failed to load service account from info: {e}")
+    
+    # Method 3: Service Account Email + Private Key
+    if not creds:
+      service_account_email = pop_param_value(params, ['service_account_email', 'vertex_email', 'service_account'])
+      private_key = pop_param_value(params, ['private_key', 'vertex_private_key']) or api_key
+      
+      if service_account_email and private_key:
+        try:
+          service_account_info = {
+            "type": "service_account",
+            "client_email": service_account_email,
+            "private_key": private_key,
+            "token_uri": "https://oauth2.googleapis.com/token",
+          }
+          creds = service_account.Credentials.from_service_account_info(
+            service_account_info,
+            scopes=scopes,
+          )
+        except Exception as e:
+          raise ValueError(f"Failed to create service account from email and private key: {e}")
+    
+    # Method 4: Default Google Cloud Credentials (fallback)
+    if not creds:
+      try:
+        creds, _ = default(scopes=scopes)
+      except Exception as e:
+        raise ValueError(
+          "VertexAI authentication failed. Please provide one of:\n"
+          "1. 'json_path' - path to service account JSON file\n"
+          "2. 'service_account_info' - service account info as dictionary\n"
+          "3. 'service_account_email' + 'private_key' - service account credentials\n"
+          "4. Set up default Google Cloud credentials (gcloud auth application-default login)\n"
+          f"Error: {e}"
+        )
+
+    return creds  
+
+  def _connect_to_llm(self, llm_type, api_key = None, model = None, **llm_params):
     if is_llm_type(llm_type, LlmTypes.OpenAI):
       from langchain_openai import ChatOpenAI as OpenAI
       llm_model = model or "gpt-4o-2024-11-20"
@@ -171,6 +236,17 @@ class LlmWrapper(LLM):
         endpoint=llm_model,
         workspace_client=w,  # Using authenticated client
         **params,
+      )    
+    elif is_llm_type(llm_type, LlmTypes.VertexAI):
+      from langchain_google_vertexai import ChatVertexAI
+      llm_model = model or "gemini-2.5-flash-lite"
+      params = self._add_temperature(LlmTypes.VertexAI.name, llm_model, **llm_params)
+
+      creds = self._try_build_vertexai_credentials(params, api_key)
+      return ChatVertexAI(
+        model_name=llm_model,
+        credentials=creds,
+        **params,
       )
     else:
       raise ValueError(f"Unsupported LLM type: {llm_type}")
@@ -179,6 +255,8 @@ class LlmWrapper(LLM):
   def get_model_list(self) -> list[str]:
     """Return the list of available models for the LLM."""
     models = []
+    llm_type_name = None
+
     try:
       if is_llm_type(self._llm_type, LlmTypes.OpenAI):
         from openai import OpenAI
@@ -237,10 +315,14 @@ class LlmWrapper(LLM):
           models = [ep.name for ep in w.serving_endpoints.list()]
 
       # elif self._is_llm_type(self._llm_type, LlmTypes.Timbr):
-        
+      elif is_llm_type(self._llm_type, LlmTypes.VertexAI):
+        from google import genai
+        if self.client.credentials:
+          client = genai.Client(credentials=self.client.credentials, vertexai=True, project=self.client.project, location=self.client.location)
+          models = [m.name.split('/')[-1] for m in client.models.list()]
+
     except Exception:
       # If model list fetching throws an exception, return default value using get_supported_models
-      llm_type_name = None
       if hasattr(self, '_llm_type'):
         # Try to extract the LLM type name from the _llm_type
         for llm_enum in LlmTypes:

@@ -32,7 +32,7 @@ dependencies = [
   "pydantic==2.10.4",
   "pytimbr-api>=2.0.0",
   "tiktoken==0.8.0",
-  "transformers>=4.53"
+  "transformers>=4.53",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +41,7 @@ openai = ["openai>=1.77.0", "langchain-openai>=0.3.16"]
 azure_openai = ["azure-identity==1.16.1", "openai>=1.77.0", "langchain-openai>=0.3.16"]
 anthropic = ["anthropic==0.42.0", "langchain-anthropic>=0.3.1"]
 google = ["langchain-google-genai>=2.0.9", "google-generativeai==0.8.4"]
+google_vertexai = ["langchain-google-vertexai>=2.0.28", "google-generativeai==0.8.4"]
 snowflake = ["snowflake>=0.8.0", "snowflake-snowpark-python>=1.6.0"]
 databricks = [
   "databricks-langchain==0.3.0; python_version < '3.10'",
@@ -52,7 +53,9 @@ databricks = [
 dev = [
   "pytest==8.3.4",
   "langchain-tests>=0.3.20",
-  "pyarrow<19.0.0",
+  "numpy>=1.21.0,<2.0.0; python_version < '3.12'",
+  "numpy>=1.26.0,<3.0.0; python_version >= '3.12'",
+  "pyarrow>=19.0.1,<20.0.0",
   "uvicorn==0.34.0"
 ]
 
@@ -65,11 +68,14 @@ all = [
   "openai>=1.77.0",
   "langchain-openai>=0.3.16",
   "langchain-google-genai>=2.0.9",
+  "langchain-google-vertexai>=2.0.28",
   "snowflake>=0.8.0",
   "snowflake-snowpark-python>=1.6.0",
   "pytest==8.3.4",
   "langchain-tests>=0.3.20",
-  "pyarrow<19.0.0",
+  "numpy>=1.21.0,<2.0.0; python_version < '3.12'",
+  "numpy>=1.26.0,<3.0.0; python_version >= '3.12'",
+  "pyarrow>=19.0.1,<20.0.0",
   "uvicorn==0.34.0",
   "databricks-langchain==0.3.0; python_version < '3.10'",
   "databricks-langchain==0.7.1; python_version >= '3.10'",
