@@ -38,7 +38,7 @@ dependencies = [
 [project.optional-dependencies]
 # LLM providers
 openai = ["openai>=1.77.0", "langchain-openai>=0.3.16"]
-azure_openai = ["azure-identity==1.16.1", "openai>=1.77.0", "langchain-openai>=0.3.16"]
+azure_openai = ["azure-identity>=1.16.1", "openai>=1.77.0", "langchain-openai>=0.3.16"]
 anthropic = ["anthropic==0.42.0", "langchain-anthropic>=0.3.1"]
 google = ["langchain-google-genai>=2.0.9", "google-generativeai==0.8.4"]
 vertex_ai = ["langchain-google-vertexai>=2.0.28", "google-generativeai==0.8.4"]
@@ -60,7 +60,7 @@ dev = [
 # All optional dependencies
 all = [
   "anthropic==0.42.0",
-  "azure-identity==1.16.1",
+  "azure-identity>=1.16.1",
   "google-generativeai==0.8.4",
   "langchain-anthropic>=0.3.1",
   "openai>=1.77.0",
