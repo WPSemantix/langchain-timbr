@@ -53,8 +53,7 @@ databricks = [
 dev = [
   "pytest==8.3.4",
   "langchain-tests>=0.3.20",
-  "numpy>=1.21.0,<2.0.0; python_version < '3.12'",
-  "numpy>=1.26.0,<3.0.0; python_version >= '3.12'",
+  "numpy>=2.0.0",
   "pyarrow>=19.0.1,<20.0.0",
   "uvicorn==0.34.0"
 ]
@@ -73,8 +72,7 @@ all = [
   "snowflake-snowpark-python>=1.6.0",
   "pytest==8.3.4",
   "langchain-tests>=0.3.20",
-  "numpy>=1.21.0,<2.0.0; python_version < '3.12'",
-  "numpy>=1.26.0,<3.0.0; python_version >= '3.12'",
+  "numpy>=2.0.0",
   "pyarrow>=19.0.1,<20.0.0",
   "uvicorn==0.34.0",
   "databricks-langchain==0.3.0; python_version < '3.10'",
