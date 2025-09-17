@@ -458,8 +458,10 @@ def generate_sql(
     measures_str = _build_columns_str(measures, tags, exclude=exclude_properties)
     rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties)
 
+    measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
     if rel_prop_str:
-        measures_str += f"\n{rel_prop_str}"
+        measures_context = measures_context + "\n" if measures_context else ""
+        measures_context += rel_prop_str
 
     sql_query = None
     iteration = 0
@@ -471,7 +473,7 @@ def generate_sql(
 
         sensitivity_txt = "- Ensure value comparisons are case-insensitive, e.g., use LOWER(column) = 'value'.\n" if db_is_case_sensitive else ""
 
-        measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
+        # measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
         has_transitive_relationships = any(
             rel.get('is_transitive')
             for rel in relationships.values()
