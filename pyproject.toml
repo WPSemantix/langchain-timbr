@@ -7,7 +7,7 @@ name = "langchain-timbr"
 dynamic = ["version"]
 description = "LangChain & LangGraph extensions that parse LLM prompts into Timbr semantic SQL and execute them."
 readme = "README.md"
-requires-python = ">=3.9,<3.13"
+requires-python = ">=3.10,<3.13"
 license = {text = "MIT"}
 authors = [{ name = "Timbr.ai", email = "contact@timbr.ai" }]
 keywords = ["LLM", "LangChain", "LangGraph", "Timbr", "Semantic Layer", "Knowledge Graph", "SQL", "Agents"]
@@ -15,7 +15,6 @@ classifiers = [
   "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
-  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -44,8 +43,7 @@ google = ["langchain-google-genai>=2.0.9", "google-generativeai==0.8.4"]
 vertex_ai = ["langchain-google-vertexai>=2.0.28", "google-generativeai==0.8.4"]
 snowflake = ["snowflake>=0.8.0", "snowflake-snowpark-python>=1.6.0"]
 databricks = [
-  "databricks-langchain==0.3.0; python_version < '3.10'",
-  "databricks-langchain==0.7.1; python_version >= '3.10'",
+  "databricks-langchain==0.7.1",
   "databricks-sdk==0.64.0"
 ]
 
@@ -73,8 +71,7 @@ all = [
   "langchain-tests>=0.3.20",
   "pyarrow>=19.0.1,<20.0.0",
   "uvicorn==0.34.0",
-  "databricks-langchain==0.3.0; python_version < '3.10'",
-  "databricks-langchain==0.7.1; python_version >= '3.10'",
+  "databricks-langchain==0.7.1",
   "databricks-sdk==0.64.0"
 ]
 
