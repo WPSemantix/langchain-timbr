@@ -138,29 +138,30 @@ def _prompt_to_string(prompt: Any) -> str:
 def _calculate_token_count(llm: LLM, prompt: str) -> int:
     """
     Calculate the token count for a given prompt text using the specified LLM.
-    Falls back to tiktoken if the LLM doesn't support token counting.
+    Falls back to basic if the LLM doesn't support token counting.
     """
+    import tiktoken
     token_count = 0
+
+    encoding = None
     try:
-        if hasattr(llm, "get_num_tokens_from_messages"):
-            token_count = llm.get_num_tokens_from_messages(prompt)
+        if hasattr(llm, 'client') and hasattr(llm.client, 'model_name'):
+            encoding = tiktoken.encoding_for_model(llm.client.model_name)
     except Exception as e:
-        #print(f"Error with primary token counting: {e}")
+        print(f"Error with primary token counting: {e}")
         pass
 
-    # Use tiktoken as fallback if token_count is still 0
-    if token_count == 0:
-        try:
-            import tiktoken
+    try:
+        if encoding is None:
             encoding = tiktoken.get_encoding("cl100k_base")
-            if isinstance(prompt, str):
-                token_count = len(encoding.encode(prompt))
-            else:
-                prompt_text = _prompt_to_string(prompt)
-                token_count = len(encoding.encode(prompt_text))
-        except Exception as e2:
-            #print(f"Error calculating token count with fallback method: {e2}")
-            pass
+        if isinstance(prompt, str):
+            token_count = len(encoding.encode(prompt))
+        else:
+            prompt_text = _prompt_to_string(prompt)
+            token_count = len(encoding.encode(prompt_text))
+    except Exception as e2:
+        #print(f"Error calculating token count with fallback method: {e2}")
+        pass
 
     return token_count
     
