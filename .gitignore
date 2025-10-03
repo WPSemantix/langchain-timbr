@@ -19,3 +19,5 @@ __pycache__/
 env
 venv
 .DS_Store
+env310/
+env311/
