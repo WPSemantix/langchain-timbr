@@ -1,6 +1,6 @@
 """Unit tests for individual chain components."""
 import pytest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, patch, MagicMock
 import json
 
 from langchain_timbr import (
@@ -8,6 +8,7 @@ from langchain_timbr import (
     GenerateTimbrSqlChain,
     ExecuteTimbrQueryChain
 )
+from langchain_timbr.utils.timbr_llm_utils import _calculate_token_count
 
 
 class TestChainUnitTests:
@@ -174,3 +175,108 @@ class TestChainUnitTests:
         assert chain._url != chain2._url
         assert chain._token != chain2._token
         assert chain._ontology != chain2._ontology
+
+
+class TestTokenCountFunctionality:
+    """Test suite for token counting functionality with tiktoken."""
+    
+    def test_calculate_token_count_with_string_prompt(self):
+        """Test token counting with a simple string prompt."""
+        mock_llm = Mock()
+        mock_llm._llm_type = "openai"
+        mock_llm.client = Mock()
+        mock_llm.client.model_name = "gpt-4"
+        
+        prompt = "What are the top customers?"
+        token_count = _calculate_token_count(mock_llm, prompt)
+        
+        assert token_count > 0, "Token count should be greater than 0 for non-empty prompt"
+        assert isinstance(token_count, int), "Token count should be an integer"
+    
+    def test_calculate_token_count_with_list_prompt(self):
+        """Test token counting with a list-based prompt (ChatPrompt format)."""
+        mock_llm = Mock()
+        mock_llm._llm_type = "openai"
+        
+        # Mock message objects with type and content
+        system_msg = Mock()
+        system_msg.type = "system"
+        system_msg.content = "You are a helpful SQL assistant."
+        
+        user_msg = Mock()
+        user_msg.type = "user"
+        user_msg.content = "Generate SQL for top customers"
+        
+        prompt = [system_msg, user_msg]
+        token_count = _calculate_token_count(mock_llm, prompt)
+        
+        assert token_count > 0, "Token count should be greater than 0 for non-empty prompt"
+        assert isinstance(token_count, int), "Token count should be an integer"
+    
+    def test_calculate_token_count_without_model_name(self):
+        """Test token counting falls back when LLM doesn't have model_name attribute."""
+        mock_llm = Mock()
+        # LLM without client.model_name attribute
+        mock_llm.client = Mock(spec=[])
+        
+        prompt = "Test prompt without model name"
+        token_count = _calculate_token_count(mock_llm, prompt)
+        
+        # Should still return a count using fallback encoding
+        assert token_count >= 0, "Token count should not fail when model_name is missing"
+        assert isinstance(token_count, int), "Token count should be an integer"
+    
+    def test_calculate_token_count_without_client(self):
+        """Test token counting falls back when LLM doesn't have client attribute."""
+        mock_llm = Mock(spec=['_llm_type'])
+        mock_llm._llm_type = "custom"
+        # LLM without client attribute at all
+        if hasattr(mock_llm, 'client'):
+            delattr(mock_llm, 'client')
+        
+        prompt = "Test prompt without client"
+        token_count = _calculate_token_count(mock_llm, prompt)
+        
+        # Should still return a count using fallback encoding
+        assert token_count >= 0, "Token count should not fail when client is missing"
+        assert isinstance(token_count, int), "Token count should be an integer"
+    
+    def test_calculate_token_count_with_tiktoken_error(self):
+        """Test token counting handles tiktoken errors gracefully."""
+        mock_llm = Mock()
+        mock_llm._llm_type = "custom"
+        mock_llm.client = Mock()
+        mock_llm.client.model_name = "unknown-model-that-causes-error"
+        
+        # This should not raise an exception even if tiktoken fails
+        prompt = "Test prompt with potential tiktoken error"
+        token_count = _calculate_token_count(mock_llm, prompt)
+        
+        # Should return 0 or a valid count even on error
+        assert token_count >= 0, "Token count should return 0 or valid count on error"
+        assert isinstance(token_count, int), "Token count should be an integer"
+    
+    def test_calculate_token_count_empty_prompt(self):
+        """Test token counting with empty prompt."""
+        mock_llm = Mock()
+        mock_llm._llm_type = "openai"
+        
+        prompt = ""
+        token_count = _calculate_token_count(mock_llm, prompt)
+        
+        assert token_count == 0, "Token count should be 0 for empty prompt"
+        assert isinstance(token_count, int), "Token count should be an integer"
+    
+    def test_calculate_token_count_with_different_llm_types(self):
+        """Test token counting works with different LLM types."""
+        llm_types = ["openai", "anthropic", "azure", "custom", "databricks"]
+        
+        for llm_type in llm_types:
+            mock_llm = Mock()
+            mock_llm._llm_type = llm_type
+            
+            prompt = f"Test prompt for {llm_type}"
+            token_count = _calculate_token_count(mock_llm, prompt)
+            
+            assert token_count >= 0, f"Token count should work for {llm_type}"
+            assert isinstance(token_count, int), f"Token count should be integer for {llm_type}"
