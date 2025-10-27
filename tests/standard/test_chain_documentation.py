@@ -220,7 +220,7 @@ class TestChainExamples:
                 chain = ExecuteTimbrQueryChain(**config_dict)
                 
                 # Test basic functionality
-                result = chain.invoke({"prompt": f"test configuration {i}"})
+                result = chain.invoke({"prompt": "Count all orders"})
                 assert isinstance(result, dict)
                 
             except Exception as e:
