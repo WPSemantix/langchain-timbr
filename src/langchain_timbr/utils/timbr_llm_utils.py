@@ -180,6 +180,10 @@ def _get_response_text(response: Any) -> str:
     else:
         raise ValueError("Unexpected response format from LLM.")
 
+    if "QUESTION VALIDATION ERROR:" in response_text:
+        err = response_text.split("QUESTION VALIDATION ERROR:", 1)[1].strip()
+        raise ValueError(err)
+
     return response_text
 
 def _extract_usage_metadata(response: Any) -> dict:
