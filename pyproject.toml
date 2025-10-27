@@ -45,9 +45,9 @@ dependencies = [
   "langchain-openai==0.3.34; python_version>='3.11'",
   "langchain-tests==0.3.22; python_version>='3.11'",
   "langgraph==0.6.8; python_version>='3.11'",
-  "numpy==1.26.4; python_version>='3.11'",
   "openai==2.1.0; python_version>='3.11'",
-  "pyarrow==19.0.1; python_version>='3.11'",
+  "opentelemetry-api==1.38.0; python_version=='3.10'",
+  "opentelemetry-sdk==1.38.0; python_version=='3.10'",
   "pytimbr_api==2.0.0; python_version>='3.11'",
   "snowflake==1.8.0; python_version>='3.11'",
   "snowflake-snowpark-python==1.39.1; python_version>='3.11'",
@@ -65,9 +65,9 @@ dependencies = [
   "langchain-openai>=0.3.16; python_version=='3.10'",
   "langchain-tests>=0.3.20; python_version=='3.10'",
   "langgraph>=0.3.20; python_version=='3.10'",
-  "numpy~=1.26.2; python_version=='3.10'",
   "openai>=1.77.0; python_version=='3.10'",
-  "pyarrow>=19.0.1,<20.0.0; python_version=='3.10'",
+  "opentelemetry-api==1.38.0; python_version=='3.10'",
+  "opentelemetry-sdk==1.38.0; python_version=='3.10'",
   "pytimbr-api>=2.0.0; python_version=='3.10'",
   "snowflake>=1.8.0; python_version=='3.10'",
   "snowflake-snowpark-python>=1.39.1; python_version=='3.10'",
@@ -106,6 +106,8 @@ vertex_ai = [
   "langchain-google-vertexai>=2.0.28; python_version=='3.10'"
 ]
 snowflake = [
+  "opentelemetry-api==1.38.0; python_version<'3.12'",
+  "opentelemetry-sdk==1.38.0; python_version<'3.12'",
   "snowflake==1.8.0; python_version>='3.11'", 
   "snowflake-snowpark-python==1.39.1; python_version>='3.11'",
   "snowflake>=1.8.0; python_version=='3.10'", 
@@ -120,10 +122,8 @@ databricks = [
 dev = [
   "pytest==8.3.4",
   "langchain-tests==0.3.22; python_version>='3.11'",
-  "pyarrow==19.0.1; python_version>='3.11'",
   "uvicorn==0.34.0",
   "langchain-tests>=0.3.20; python_version=='3.10'",
-  "pyarrow>=19.0.1,<20.0.0; python_version=='3.10'"
 ]
 
 # All optional dependencies
@@ -144,7 +144,6 @@ all = [
   "snowflake==1.8.0; python_version>='3.11'",
   "snowflake-snowpark-python==1.39.1; python_version>='3.11'",
   "langchain-tests==0.3.22; python_version>='3.11'",
-  "pyarrow==19.0.1; python_version>='3.11'",
   # Python 3.10 versions
   "azure-identity>=1.16.1; python_version=='3.10'",
   "langchain-anthropic>=0.3.1; python_version=='3.10'",
@@ -155,7 +154,6 @@ all = [
   "snowflake>=1.8.0; python_version=='3.10'",
   "snowflake-snowpark-python>=1.39.1; python_version=='3.10'",
   "langchain-tests>=0.3.20; python_version=='3.10'",
-  "pyarrow>=19.0.1,<20.0.0; python_version=='3.10'"
 ]
 
 [project.urls]

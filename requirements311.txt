@@ -13,9 +13,9 @@ langchain-google-vertexai==2.1.2
 langchain-openai==0.3.34
 langchain-tests==0.3.22
 langgraph==0.6.8
-numpy==1.26.4
 openai==2.1.0
-pyarrow==19.0.1
+opentelemetry-api==1.38.0 # Required when using snowflake with Python under 3.12
+opentelemetry-sdk==1.38.0 # Required when using snowflake with Python under 3.12
 pydantic==2.10.4
 pytest==8.3.4
 pytimbr_api==2.0.0
