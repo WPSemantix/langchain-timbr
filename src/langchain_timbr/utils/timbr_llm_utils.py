@@ -286,7 +286,7 @@ def determine_concept(
                 response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
             except TimeoutError as e:
                 error = f"LLM call timed out: {str(e)}"
-                continue
+                raise Exception(error)
             except Exception as e:
                 error = f"LLM call failed: {str(e)}"
                 continue
@@ -509,10 +509,7 @@ def generate_sql(
             response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
         except TimeoutError as e:
             error = f"LLM call timed out: {str(e)}"
-            if should_validate_sql:
-                continue
-            else:
-                raise Exception(error)
+            raise Exception(error)
         except Exception as e:
             error = f"LLM call failed: {str(e)}"
             if should_validate_sql:
