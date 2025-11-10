@@ -5,7 +5,8 @@ from langchain_timbr import create_timbr_sql_agent
 class TestTimbrSqlAgentJWTAuthentication:
     """Test suite for Timbr SQL Agent JWT authentication functionality."""
     
-    def test_timbr_sql_agent_integration(self, llm, config):
+    # Due to policy changes and MFA requirements, this test is currently skipped (still running at timbr-chainlit repository).
+    def skip_test_timbr_sql_agent_integration(self, llm, config):
         """Test Timbr SQL Agent integration with JWT authentication."""
         # Azure AD token endpoint URL
         token_url = f'https://login.microsoftonline.com/{config["jwt_tenant_id"]}/oauth2/v2.0/token'
