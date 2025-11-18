@@ -203,7 +203,7 @@ class LlmWrapper(LLM):
       if azure_tenant_id and azure_client_id:
         from azure.identity import ClientSecretCredential, get_bearer_token_provider
         azure_client_secret = pop_param_value(params, ['azure_client_secret', 'llm_client_secret'], default=api_key)
-        scope = pop_param_value(params, ['azure_scope', 'llm_scope'], default=config.llm_scope)
+        scope = pop_param_value(params, ['azure_scope', 'llm_scope', 'scope'], default=config.llm_scope)
         credential = ClientSecretCredential(
           tenant_id=azure_tenant_id,
           client_id=azure_client_id,
