@@ -1,6 +1,7 @@
 import os
 from typing import Any, Optional, Union
 import json
+import re
 
 ### A global helper functions to use across the project
 
@@ -187,13 +188,14 @@ def _try_parse_json_value(val: str) -> Any:
                     return json.loads(normalized)
                 except json.JSONDecodeError:
                     pass
-    
-    # Try to parse as number
-    try:
-        if '.' in val:
-            return float(val)
-        return int(val)
-    except ValueError:
+    # Try to parse as number - validate format first
+    if re.match(r'^-?\d+(\.\d+)?$', val):
+        try:
+            if '.' in val:
+                return float(val)
+            return int(val)
+        except ValueError:
+            pass
         pass
     
     return val
