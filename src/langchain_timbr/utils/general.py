@@ -34,6 +34,7 @@ def to_integer(value) -> int:
 def parse_additional_params(value) -> dict:
     """
     Parse additional parameters from string format 'a=1,b=2' or return dict as-is.
+    Handles JSON values correctly, including nested structures with commas.
     
     Args:
         value: String in format 'key=value,key2=value2', JSON string, or dict
@@ -49,23 +50,153 @@ def parse_additional_params(value) -> dict:
             stripped_value = value.strip()
             if stripped_value.startswith('{') and stripped_value.endswith('}'):
                 try:
-                    return json.loads(stripped_value)
+                    return _try_parse_json_value(stripped_value)
                 except json.JSONDecodeError:
                     pass
             
-            # Fall back to key=value parsing
+            # Check if complex parsing is needed (presence of nested structures)
+            needs_complex_parsing = any(char in value for char in ['{', '}', '[', ']', '(', ')'])
+            
+            if not needs_complex_parsing:
+                # Fast path: simple key=value pairs
+                params = {}
+                for pair in value.split(','):
+                    if '=' in pair:
+                        key, val = pair.split('=', 1)
+                        params[key.strip().lower()] = _try_parse_json_value(val.strip())
+                return params
+            
+            # Complex parsing that handles JSON values with commas
             params = {}
-            for pair in (value.split('&') if '&' in value else value.split(',')):
-                if '=' in pair:
-                    key, val = pair.split('=', 1)
-                    params[key.strip().lower()] = val.strip()
-                elif ':' in pair:
-                    key, val = pair.split(':', 1)
-                    params[key.strip().lower()] = val.strip()
+            i = 0
+            while i < len(value):
+                # Find the next key=value pair
+                equals_pos = value.find('=', i)
+                if equals_pos == -1:
+                    break
+                
+                # Extract the key
+                key = value[i:equals_pos].strip()
+                
+                # Find where the value starts
+                value_start = equals_pos + 1
+                
+                # Determine where the value ends (considering nested structures)
+                value_end = _find_value_end(value, value_start)
+                
+                # Extract and parse the value
+                val = value[value_start:value_end].strip()
+                
+                # Try to parse the value as JSON if it looks like JSON
+                parsed_val = _try_parse_json_value(val)
+                
+                params[key.lower()] = parsed_val
+                
+                # Move to the next parameter (skip comma if present)
+                i = value_end
+                if i < len(value) and value[i] == ',':
+                    i += 1
+            
             return params
         return {}
     except Exception as e:
         raise ValueError(f"Failed to parse additional parameters: {e}")
+
+
+def _find_value_end(text: str, start: int) -> int:
+    """
+    Find the end position of a parameter value, considering nested structures.
+    
+    Args:
+        text: The full text being parsed
+        start: Starting position of the value
+        
+    Returns:
+        End position of the value
+    """
+    depth = {'brace': 0, 'bracket': 0, 'paren': 0}
+    in_quotes = False
+    quote_char = None
+    i = start
+    
+    while i < len(text):
+        char = text[i]
+        
+        # Handle quotes
+        if char in ('"', "'"):
+            if not in_quotes:
+                in_quotes = True
+                quote_char = char
+            elif char == quote_char:
+                # Check if it's escaped
+                if i > 0 and text[i-1] != '\\':
+                    in_quotes = False
+                    quote_char = None
+        
+        # Only process structural characters if not in quotes
+        elif not in_quotes:
+            if char == '{':
+                depth['brace'] += 1
+            elif char == '}':
+                depth['brace'] -= 1
+            elif char == '[':
+                depth['bracket'] += 1
+            elif char == ']':
+                depth['bracket'] -= 1
+            elif char == '(':
+                depth['paren'] += 1
+            elif char == ')':
+                depth['paren'] -= 1
+            elif char == ',' and all(d == 0 for d in depth.values()):
+                # Found a comma at the top level - this is the end of the value
+                return i
+        
+        i += 1
+    
+    return i
+
+
+def _try_parse_json_value(val: str) -> Any:
+    """
+    Try to parse a string value as JSON. If it fails, return the original string.
+    Supports both single and double quotes for JSON-like structures.
+    
+    Args:
+        val: String value to parse
+        
+    Returns:
+        Parsed JSON value or original string
+    """
+    val = val.strip()
+    
+    # Check if it looks like JSON
+    if (val.startswith('{') and val.endswith('}')) or \
+       (val.startswith('[') and val.endswith(']')) or \
+       val in ('true', 'false', 'null') or \
+       (val.startswith('"') and val.endswith('"')):
+        try:
+            return json.loads(val)
+        except json.JSONDecodeError:
+            # Try converting single quotes to double quotes for Python-style dicts
+            if val.startswith('{') or val.startswith('['):
+                try:
+                    # Replace single quotes with double quotes, handling escaped quotes
+                    normalized = val.replace("\\'", "<<<ESCAPED_SINGLE>>>")
+                    normalized = normalized.replace("'", '"')
+                    normalized = normalized.replace("<<<ESCAPED_SINGLE>>>", "'")
+                    return json.loads(normalized)
+                except json.JSONDecodeError:
+                    pass
+    
+    # Try to parse as number
+    try:
+        if '.' in val:
+            return float(val)
+        return int(val)
+    except ValueError:
+        pass
+    
+    return val
 
 
 def is_llm_type(llm_type, enum_value):
