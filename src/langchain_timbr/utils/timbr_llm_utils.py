@@ -545,8 +545,9 @@ def answer_question(
     conn_params: dict,
     results: str,
     sql: Optional[str] = None,
-    debug: Optional[bool] = False,
     timeout: Optional[int] = None,
+    note: Optional[str] = '',
+    debug: Optional[bool] = False,
 ) -> dict[str, Any]:
     # Use config default timeout if none provided
     if timeout is None:
@@ -558,6 +559,7 @@ def answer_question(
         question=question,
         formatted_rows=results,
         additional_context=f"SQL QUERY:\n{sql}\n\n" if sql else "",
+        note=note,
     )
     
     apx_token_count = _calculate_token_count(llm, prompt)

@@ -126,6 +126,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
             is_jwt=to_boolean(is_jwt),
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
+            note=note,
             debug=to_boolean(debug),
         ) if self._generate_answer else None
 
