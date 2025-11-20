@@ -23,6 +23,7 @@ class GenerateAnswerChain(Chain):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
+        note: Optional[str] = '',
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -33,6 +34,7 @@ class GenerateAnswerChain(Chain):
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
+        :param note: Optional additional note to extend our llm prompt
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         
         ## Example
@@ -77,6 +79,7 @@ class GenerateAnswerChain(Chain):
         self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
+        self._note = note
 
 
     @property
@@ -116,6 +119,7 @@ class GenerateAnswerChain(Chain):
             conn_params=self._get_conn_params(),
             results=rows,
             sql=sql,
+            note=self._note,
             debug=self._debug,
         )
 
