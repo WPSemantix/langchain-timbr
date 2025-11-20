@@ -266,7 +266,8 @@ class ExecuteTimbrQueryChain(Chain):
                 rows = run_query(
                     sql,
                     self._get_conn_params(),
-                    llm_prompt=prompt
+                    llm_prompt=prompt,
+                    use_query_limit=True,
                 ) if is_sql_valid and is_sql_not_tried else []
                 
                 if iteration < self._no_results_max_retries:

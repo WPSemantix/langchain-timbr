@@ -70,7 +70,7 @@ def cache_with_version_check(func):
     return wrapper
 
 
-def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None) -> list[list]:
+def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use_query_limit = False) -> list[list]:
     if not conn_params:
         raise("Please provide connection params.")
 
@@ -79,9 +79,22 @@ def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None) -> 
         clean_prompt = llm_prompt.replace('\r\n', ' ').replace('\n', ' ').replace('?', '')
         query = f"-- LLM: {clean_prompt}\n{sql}"
 
+    query_conn_params = conn_params
+    if not use_query_limit:
+        # Remove results-limit
+        if 'additional_headers' in conn_params and 'results-limit' in conn_params['additional_headers']:
+            query_upper = query.strip().upper()
+            if query_upper.startswith('SHOW') or query_upper.startswith('DESC'):
+                query_conn_params = conn_params.copy()
+                query_conn_params['additional_headers'] = conn_params['additional_headers'].copy()
+                del query_conn_params['additional_headers']['results-limit']
+                # If no other additional_headers remain, delete the key entirely
+                if not query_conn_params['additional_headers']:
+                    del query_conn_params['additional_headers']
+
     results = timbr_http_connector.run_query(
         query=query,
-        **conn_params,
+        **query_conn_params,
     )
 
     return results
