@@ -169,6 +169,7 @@ class ExecuteTimbrQueryChain(Chain):
             "verify_ssl": self._verify_ssl,
             "is_jwt": self._is_jwt,
             "jwt_tenant_id": self._jwt_tenant_id,
+            "additional_headers": {"results-limit": str(self._max_limit)},
             **self._conn_params,
         }
 
@@ -265,7 +266,8 @@ class ExecuteTimbrQueryChain(Chain):
                 rows = run_query(
                     sql,
                     self._get_conn_params(),
-                    llm_prompt=prompt
+                    llm_prompt=prompt,
+                    use_query_limit=True,
                 ) if is_sql_valid and is_sql_not_tried else []
                 
                 if iteration < self._no_results_max_retries:

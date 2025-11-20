@@ -115,6 +115,7 @@ class TimbrLlmConnector:
             "verify_ssl": self.verify_ssl,
             "is_jwt": self.is_jwt,
             "jwt_tenant_id": self.jwt_tenant_id,
+            "additional_headers": {"results-limit": str(self.max_limit)},
             **self.conn_params,
         }
 
