@@ -169,6 +169,7 @@ class ExecuteTimbrQueryChain(Chain):
             "verify_ssl": self._verify_ssl,
             "is_jwt": self._is_jwt,
             "jwt_tenant_id": self._jwt_tenant_id,
+            "additional_headers": {"results-limit": str(self._max_limit)},
             **self._conn_params,
         }
 
