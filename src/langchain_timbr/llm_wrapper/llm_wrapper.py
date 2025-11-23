@@ -264,7 +264,7 @@ class LlmWrapper(LLM):
       aws_access_key_id = pop_param_value(params, ['aws_access_key_id', 'llm_access_key_id', 'access_key_id'])
       if aws_access_key_id:
         params['aws_access_key_id'] = aws_access_key_id
-      aws_secret_access_key = pop_param_value(params, ['aws_secret_access_key', 'llm_secret_access_key', 'secret_access_key'])
+      aws_secret_access_key = pop_param_value(params, ['aws_secret_access_key', 'llm_secret_access_key', 'secret_access_key'], default=api_key)
       if aws_secret_access_key:
         params['aws_secret_access_key'] = aws_secret_access_key
       aws_session_token = pop_param_value(params, ['aws_session_token', 'llm_session_token', 'session_token'])
@@ -349,12 +349,26 @@ class LlmWrapper(LLM):
           models = [m.name.split('/')[-1] for m in client.models.list()]
       elif is_llm_type(self._llm_type, LlmTypes.Bedrock):
         import boto3
+        
+        # Extract SecretStr values properly
+        aws_access_key_id = getattr(self.client, 'aws_access_key_id', None)
+        if aws_access_key_id and hasattr(aws_access_key_id, '_secret_value'):
+          aws_access_key_id = aws_access_key_id._secret_value
+        
+        aws_secret_access_key = getattr(self.client, 'aws_secret_access_key', None)
+        if aws_secret_access_key and hasattr(aws_secret_access_key, '_secret_value'):
+          aws_secret_access_key = aws_secret_access_key._secret_value
+        
+        aws_session_token = getattr(self.client, 'aws_session_token', None)
+        if aws_session_token and hasattr(aws_session_token, '_secret_value'):
+          aws_session_token = aws_session_token._secret_value
+        
         bedrock_client = boto3.client(
           service_name='bedrock',
-          region_name=getattr(self.client, 'aws_region', None),
-          aws_access_key_id=getattr(self.client, 'aws_access_key_id', None),
-          aws_secret_access_key=getattr(self.client, 'aws_secret_access_key', None),
-          aws_session_token=getattr(self.client, 'aws_session_token', None),
+          region_name=getattr(self.client, 'region_name', None),
+          aws_access_key_id=aws_access_key_id,
+          aws_secret_access_key=aws_secret_access_key,
+          aws_session_token=aws_session_token,
         )
         response = bedrock_client.list_foundation_models()
         models = [model['modelId'] for model in response.get('modelSummaries', [])]
