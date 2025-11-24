@@ -34,8 +34,8 @@ class GenerateAnswerChain(Chain):
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
-        :param note: Optional additional note to extend our llm prompt
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param note: Optional additional note to extend our llm prompt
         
         ## Example
         ```

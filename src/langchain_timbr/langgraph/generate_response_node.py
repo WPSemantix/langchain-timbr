@@ -20,6 +20,7 @@ class GenerateResponseNode:
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
+        note: Optional[str] = '',
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -31,6 +32,7 @@ class GenerateResponseNode:
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param note: Optional additional note to extend our llm prompt
         """
         self.chain = GenerateAnswerChain(
             llm=llm,
@@ -40,6 +42,7 @@ class GenerateResponseNode:
             is_jwt=is_jwt,
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
+            note=note,
             debug=debug,
             **kwargs,
         )
