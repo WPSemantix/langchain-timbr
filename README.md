@@ -29,7 +29,7 @@ python -m pip install langchain-timbr
 
 ### Install with selected LLM providers
 
-#### One of: openai, anthropic, google, azure_openai, snowflake, databricks, vertex_ai (or 'all')
+#### One of: openai, anthropic, google, azure_openai, snowflake, databricks, vertex_ai, bedrock (or 'all')
 
 ```bash
 python -m pip install 'langchain-timbr[<your selected providers, separated by comma w/o space>]'

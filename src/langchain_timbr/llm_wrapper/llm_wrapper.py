@@ -15,6 +15,7 @@ class LlmTypes(Enum):
   Snowflake = 'snowflake-cortex'
   Databricks = 'chat-databricks'
   VertexAI = 'chat-vertexai'
+  Bedrock = 'amazon_bedrock_converse_chat'
   Timbr = 'timbr'
 
 
@@ -252,6 +253,28 @@ class LlmWrapper(LLM):
         credentials=creds,
         **params,
       )
+    elif is_llm_type(llm_type, LlmTypes.Bedrock):
+      from langchain_aws import ChatBedrockConverse
+      llm_model = model or "openai.gpt-oss-20b-1:0"
+      params = self._add_temperature(LlmTypes.Bedrock.name, llm_model, **llm_params)
+
+      aws_region = pop_param_value(params, ['aws_region', 'llm_region', 'region'])
+      if aws_region:
+        params['region_name'] = aws_region
+      aws_access_key_id = pop_param_value(params, ['aws_access_key_id', 'llm_access_key_id', 'access_key_id'])
+      if aws_access_key_id:
+        params['aws_access_key_id'] = aws_access_key_id
+      aws_secret_access_key = pop_param_value(params, ['aws_secret_access_key', 'llm_secret_access_key', 'secret_access_key'], default=api_key)
+      if aws_secret_access_key:
+        params['aws_secret_access_key'] = aws_secret_access_key
+      aws_session_token = pop_param_value(params, ['aws_session_token', 'llm_session_token', 'session_token'])
+      if aws_session_token:
+        params['aws_session_token'] = aws_session_token
+
+      return ChatBedrockConverse(
+        model=llm_model,
+        **params,
+      )
     else:
       raise ValueError(f"Unsupported LLM type: {llm_type}")
 
@@ -324,6 +347,31 @@ class LlmWrapper(LLM):
         if self.client.credentials:
           client = genai.Client(credentials=self.client.credentials, vertexai=True, project=self.client.project, location=self.client.location)
           models = [m.name.split('/')[-1] for m in client.models.list()]
+      elif is_llm_type(self._llm_type, LlmTypes.Bedrock):
+        import boto3
+        
+        # Extract SecretStr values properly
+        aws_access_key_id = getattr(self.client, 'aws_access_key_id', None)
+        if aws_access_key_id and hasattr(aws_access_key_id, '_secret_value'):
+          aws_access_key_id = aws_access_key_id._secret_value
+        
+        aws_secret_access_key = getattr(self.client, 'aws_secret_access_key', None)
+        if aws_secret_access_key and hasattr(aws_secret_access_key, '_secret_value'):
+          aws_secret_access_key = aws_secret_access_key._secret_value
+        
+        aws_session_token = getattr(self.client, 'aws_session_token', None)
+        if aws_session_token and hasattr(aws_session_token, '_secret_value'):
+          aws_session_token = aws_session_token._secret_value
+        
+        bedrock_client = boto3.client(
+          service_name='bedrock',
+          region_name=getattr(self.client, 'region_name', None),
+          aws_access_key_id=aws_access_key_id,
+          aws_secret_access_key=aws_secret_access_key,
+          aws_session_token=aws_session_token,
+        )
+        response = bedrock_client.list_foundation_models()
+        models = [model['modelId'] for model in response.get('modelSummaries', [])]
 
     except Exception:
       # If model list fetching throws an exception, return default value using get_supported_models
@@ -341,6 +389,9 @@ class LlmWrapper(LLM):
 
 
   def _call(self, prompt, **kwargs):
+    # TODO: Remove this condition on next langchain-timbr major release
+    if is_llm_type(self._llm_type, LlmTypes.Bedrock):
+      return self.client.invoke(prompt, **kwargs)
     return self.client(prompt, **kwargs)
 
 
