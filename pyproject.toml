@@ -33,7 +33,7 @@ dependencies = [
   "cryptography==45.0.7; python_version>='3.11'",
   "langchain==0.3.27; python_version>='3.11'",
   "langchain-community==0.3.30; python_version>='3.11'",
-  "langchain-core>=0.3.78; python_version>='3.11'",
+  "langchain-core>=0.3.80; python_version>='3.11'",
   "langgraph==0.6.8; python_version>='3.11'",
   "transformers==4.57.0; python_version>='3.11'",
 
