@@ -389,6 +389,9 @@ class LlmWrapper(LLM):
 
 
   def _call(self, prompt, **kwargs):
+    # TODO: Remove this condition on next langchain-timbr major release
+    if is_llm_type(self._llm_type, LlmTypes.Bedrock):
+      return self.client.invoke(prompt, **kwargs)
     return self.client(prompt, **kwargs)
 
 
