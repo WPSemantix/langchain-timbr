@@ -24,53 +24,25 @@ classifiers = [
 
 dependencies = [
   # Core dependencies that are the same across all Python versions
-  "anthropic==0.42.0",
-  "databricks-langchain==0.7.1",
-  "databricks-sdk==0.64.0",
-  "google-generativeai==0.8.4",
   "pydantic==2.10.4",
-  "pytest==8.3.4",
   "tiktoken==0.8.0",
   "uvicorn==0.34.0",
+  "pytimbr-api>=2.0.0; python_version>='3.11'",
 
   # Python 3.11+ versions (same for 3.11 and 3.12+)
-  "azure-identity==1.25.0; python_version>='3.11'",
   "cryptography==45.0.7; python_version>='3.11'",
   "langchain==0.3.27; python_version>='3.11'",
-  "langchain-anthropic==0.3.5; python_version>='3.11'",
   "langchain-community==0.3.30; python_version>='3.11'",
-  "langchain-core==0.3.78; python_version>='3.11'",
-  "langchain-google-genai==2.0.10; python_version>='3.11'",
-  "langchain-google-vertexai==2.1.2; python_version>='3.11'",
-  "langchain-openai==0.3.34; python_version>='3.11'",
-  "langchain-tests==0.3.22; python_version>='3.11'",
+  "langchain-core>=0.3.78; python_version>='3.11'",
   "langgraph==0.6.8; python_version>='3.11'",
-  "openai==2.1.0; python_version>='3.11'",
-  "opentelemetry-api==1.38.0; python_version=='3.10'",
-  "opentelemetry-sdk==1.38.0; python_version=='3.10'",
-  "pytimbr_api==2.0.0; python_version>='3.11'",
-  "snowflake==1.8.0; python_version>='3.11'",
-  "snowflake-snowpark-python==1.39.1; python_version>='3.11'",
   "transformers==4.57.0; python_version>='3.11'",
 
   # Python 3.10 specific versions
-  "azure-identity>=1.16.1; python_version=='3.10'",
   "cryptography>=44.0.3; python_version=='3.10'",
   "langchain>=0.3.25; python_version=='3.10'",
-  "langchain-anthropic>=0.3.1; python_version=='3.10'",
-  "langchain_community>=0.3.20; python_version=='3.10'",
+  "langchain-community>=0.3.20; python_version=='3.10'",
   "langchain-core>=0.3.58; python_version=='3.10'",
-  "langchain-google-genai>=2.0.9; python_version=='3.10'",
-  "langchain-google-vertexai>=2.0.28; python_version=='3.10'",
-  "langchain-openai>=0.3.16; python_version=='3.10'",
-  "langchain-tests>=0.3.20; python_version=='3.10'",
   "langgraph>=0.3.20; python_version=='3.10'",
-  "openai>=1.77.0; python_version=='3.10'",
-  "opentelemetry-api==1.38.0; python_version=='3.10'",
-  "opentelemetry-sdk==1.38.0; python_version=='3.10'",
-  "pytimbr-api>=2.0.0; python_version=='3.10'",
-  "snowflake>=1.8.0; python_version=='3.10'",
-  "snowflake-snowpark-python>=1.39.1; python_version=='3.10'",
   "transformers>=4.53; python_version=='3.10'",
 ]
 
@@ -117,6 +89,9 @@ databricks = [
   "databricks-langchain==0.7.1",
   "databricks-sdk==0.64.0"
 ]
+bedrock = [
+  "langchain-aws==0.2.35",
+]
 
 # Development and testing
 dev = [
@@ -128,12 +103,13 @@ dev = [
 
 # All optional dependencies
 all = [
-  "anthropic==0.42.0",
-  "google-generativeai==0.8.4",
   "pytest==8.3.4",
   "uvicorn==0.34.0",
+  "anthropic==0.42.0",
+  "google-generativeai==0.8.4",
   "databricks-langchain==0.7.1",
   "databricks-sdk==0.64.0",
+  "langchain-aws>=0.2.35,<1",
   # Python 3.11+ versions
   "azure-identity==1.25.0; python_version>='3.11'",
   "langchain-anthropic==0.3.5; python_version>='3.11'",

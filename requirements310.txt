@@ -6,7 +6,7 @@ databricks-sdk==0.64.0
 google-generativeai==0.8.4
 langchain>=0.3.25
 langchain-anthropic>=0.3.1
-langchain-aws==1.0.0
+langchain-aws==0.2.35
 langchain-community>=0.3.20
 langchain-core>=0.3.58
 langchain-google-genai>=2.0.9
