@@ -7,7 +7,7 @@ google-generativeai==0.8.4
 langchain>=0.3.25
 langchain-anthropic>=0.3.1
 langchain-aws==0.2.35
-langchain-community>=0.3.20
+langchain-community>=0.3.27
 langchain-core>=0.3.58
 langchain-google-genai>=2.0.9
 langchain-google-vertexai>=2.0.28
