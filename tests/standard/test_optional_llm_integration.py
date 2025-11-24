@@ -145,12 +145,7 @@ class TestOptionalLLMIntegration:
         
         # Mock the config values
         with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'env-key'),\
-             patch.dict(os.environ, {
-                'TIMBR_URL': 'http://test-timbr.com',
-                'TIMBR_TOKEN': 'test-token',
-                'TIMBR_ONTOLOGY': 'test-ontology'
-             }):
+             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'env-key'):
             # Create explicit LLM
             explicit_llm = LlmWrapper(
                 llm_type='openai-chat',
