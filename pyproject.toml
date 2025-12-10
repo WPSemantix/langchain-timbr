@@ -27,7 +27,7 @@ dependencies = [
   "pydantic==2.10.4",
   "tiktoken==0.8.0",
   "uvicorn==0.34.0",
-  "pytimbr-api>=2.0.0; python_version>='3.11'",
+  "pytimbr-api>=2.0.0",
 
   # Python 3.11+ versions (same for 3.11 and 3.12+)
   "cryptography==45.0.7; python_version>='3.11'",
