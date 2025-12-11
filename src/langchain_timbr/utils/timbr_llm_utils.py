@@ -4,6 +4,8 @@ import base64, hashlib
 from cryptography.fernet import Fernet
 from datetime import datetime
 import concurrent.futures
+import json
+from langchain_core.messages import HumanMessage, SystemMessage
 
 from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description
 from .prompt_service import (
@@ -134,7 +136,7 @@ def _prompt_to_string(prompt: Any) -> str:
     return prompt_text.strip()
 
 
-def _calculate_token_count(llm: LLM, prompt: str) -> int:
+def _calculate_token_count(llm: LLM, prompt: str | list[Any]) -> int:
     """
     Calculate the token count for a given prompt text using the specified LLM.
     Falls back to basic if the LLM doesn't support token counting.
@@ -477,6 +479,149 @@ def _get_active_datasource(conn_params: dict) -> dict:
     return datasources[0] if datasources else None
 
 
+def _evaluate_sql_with_reasoning(
+    question: str,
+    sql_query: str,
+    llm: LLM,
+    timeout: int,
+) -> dict:
+    """
+    Evaluate if the generated SQL correctly answers the business question.
+    
+    Returns:
+        dict with 'assessment' ('correct'|'partial'|'incorrect') and 'reasoning'
+    """
+    system_prompt = """You are an expert SQL and data analysis evaluator for Timbr.ai knowledge graph queries.
+
+**IMPORTANT CONTEXT:**
+- This system uses Timbr.ai, which extends SQL with semantic graph layer, including traversals, measures and more
+- Field names may use special Timbr syntax that is NOT standard SQL but is VALID in this system:
+  * `measure.<measure_name>` - References computed measures (e.g., measure.total_balance_amount)
+  * `<relationship>[target_table].<property>` - Graph traversal syntax (e.g., has_account[Account].account_name)
+  * These are translated by Timbr to standard SQL before execution
+- DO NOT mark queries as incorrect based on field name syntax - Timbr validates this before execution
+
+Evaluate whether the generated query correctly addresses the business question:
+- **correct**: The query fully and accurately answers the question
+- **partial**: The query is partially correct or incomplete
+- **incorrect**: The query does not address the question or is wrong
+
+Return your evaluation as a JSON object with this exact structure:
+{
+  "assessment": "<correct|partial|incorrect>",
+  "reasoning": "<short but precise sentence explaining your assessment>"
+}
+
+Be concise and objective."""
+
+    user_prompt = f"""**Business Question:**
+{question}
+
+**Generated SQL Query:**
+```sql
+{sql_query}
+```
+
+Please evaluate this result."""
+    
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_prompt)
+    ]
+
+    apx_token_count = _calculate_token_count(llm, messages)
+    if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
+        _clean_snowflake_prompt(messages)
+    
+    response = _call_llm_with_timeout(llm, messages, timeout=timeout)
+    
+    # Extract JSON from response content (handle markdown code blocks)
+    content = response.content.strip()
+    
+    # Remove markdown code block markers if present
+    if content.startswith("```json"):
+        content = content[7:]  # Remove ```json
+    elif content.startswith("```"):
+        content = content[3:]  # Remove ```
+    
+    if content.endswith("```"):
+        content = content[:-3]  # Remove closing ```
+    
+    content = content.strip()
+    
+    # Parse JSON response
+    evaluation = json.loads(content)
+    
+    return {
+        "evaluation": evaluation,
+        "apx_token_count": apx_token_count,
+        "usage_metadata": _extract_usage_metadata(response),
+    }
+
+
+def _generate_sql_with_llm(
+    question: str,
+    llm: LLM,
+    conn_params: dict,
+    generate_sql_prompt: Any,
+    current_context: dict,
+    note: str,
+    should_validate_sql: bool,
+    timeout: int,
+    debug: bool = False,
+) -> dict:
+    """
+    Generate SQL using LLM based on the provided context and note.
+    This function is used for both initial SQL generation and regeneration with feedback.
+    
+    Args:
+        current_context: dict containing datasource_type, schema, concept, concept_description,
+                        concept_tags, columns_str, measures_context, transitive_context,
+                        sensitivity_txt, max_limit, cur_date
+        note: Additional instructions/feedback to include in the prompt
+    
+    Returns:
+        dict with 'sql', 'is_valid', 'error', 'apx_token_count', 'usage_metadata', 'p_hash' (if debug)
+    """
+    prompt = generate_sql_prompt.format_messages(
+        current_date=current_context['cur_date'],
+        datasource_type=current_context['datasource_type'],
+        schema=current_context['schema'],
+        concept=f"`{current_context['concept']}`",
+        description=current_context['concept_description'],
+        tags=current_context['concept_tags'],
+        question=question,
+        columns=current_context['columns_str'],
+        measures_context=current_context['measures_context'],
+        transitive_context=current_context['transitive_context'],
+        sensitivity_context=current_context['sensitivity_txt'],
+        max_limit=current_context['max_limit'],
+        note=note,
+    )
+
+    apx_token_count = _calculate_token_count(llm, prompt)
+    if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
+        _clean_snowflake_prompt(prompt)
+    
+    response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
+    
+    result = {
+        "sql": _parse_sql_from_llm_response(response),
+        "apx_token_count": apx_token_count,
+        "usage_metadata": _extract_usage_metadata(response),
+        "is_valid": True,
+        "error": None,
+    }
+    
+    if debug:
+        result["p_hash"] = encrypt_prompt(prompt)
+    
+    if should_validate_sql:
+        result["is_valid"], result["error"] = validate_sql(result["sql"], conn_params)
+    
+    return result
+
+
 def generate_sql(
         question: str,
         llm: LLM,
@@ -494,11 +639,14 @@ def generate_sql(
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        with_reasoning: Optional[bool] = False,
+        reasoning_steps: Optional[int] = 2,
         debug: Optional[bool] = False,
         timeout: Optional[int] = None,
     ) -> dict[str, str]:
     usage_metadata = {}
     concept_metadata = None
+    reasoning_status = 'correct'
     
     # Use config default timeout if none provided
     if timeout is None:
@@ -547,6 +695,34 @@ def generate_sql(
     if rel_prop_str:
         measures_str += f"\n{rel_prop_str}"
 
+
+    # Build context descriptions
+    sensitivity_txt = "- Ensure value comparisons are case-insensitive, e.g., use LOWER(column) = 'value'.\n" if db_is_case_sensitive else ""
+    measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
+    has_transitive_relationships = any(
+        rel.get('is_transitive')
+        for rel in relationships.values()
+    ) if relationships else False
+    transitive_context = f"- {TRANSITIVE_RELATIONSHIP_DESCRIPTION}\n" if has_transitive_relationships else ""
+    concept_description = f"- Description: {concept_metadata.get('description')}\n" if concept_metadata and concept_metadata.get('description') else ""
+    concept_tags = concept_metadata.get('tags') if concept_metadata and concept_metadata.get('tags') else ""
+    cur_date = datetime.now().strftime("%Y-%m-%d")
+
+    # Build context dict for SQL generation
+    current_context = {
+        'cur_date': cur_date,
+        'datasource_type': datasource_type or 'standard sql',
+        'schema': schema,
+        'concept': concept,
+        'concept_description': concept_description or "",
+        'concept_tags': concept_tags or "",
+        'columns_str': columns_str,
+        'measures_context': measures_context,
+        'transitive_context': transitive_context,
+        'sensitivity_txt': sensitivity_txt,
+        'max_limit': max_limit,
+    }
+
     sql_query = None
     iteration = 0
     is_sql_valid = True
@@ -555,39 +731,30 @@ def generate_sql(
         iteration += 1
         err_txt = f"\nThe original SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query." if error and "snowflake" not in llm._llm_type else ""
 
-        sensitivity_txt = "- Ensure value comparisons are case-insensitive, e.g., use LOWER(column) = 'value'.\n" if db_is_case_sensitive else ""
-
-        measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
-        has_transitive_relationships = any(
-            rel.get('is_transitive')
-            for rel in relationships.values()
-        ) if relationships else False
-        transitive_context = f"- {TRANSITIVE_RELATIONSHIP_DESCRIPTION}\n" if has_transitive_relationships else ""
-        concept_description = f"- Description: {concept_metadata.get('description')}\n" if concept_metadata and concept_metadata.get('description') else ""
-        concept_tags = concept_metadata.get('tags') if concept_metadata and concept_metadata.get('tags') else ""
-        cur_date = datetime.now().strftime("%Y-%m-%d")
-        prompt = generate_sql_prompt.format_messages(
-            current_date=cur_date,
-            datasource_type=datasource_type or 'standard sql',
-            schema=schema,
-            concept=f"`{concept}`",
-            description=concept_description or "",
-            tags=concept_tags or "",
-            question=question,
-            columns=columns_str,
-            measures_context=measures_context,
-            transitive_context=transitive_context,
-            sensitivity_context=sensitivity_txt,
-            max_limit=max_limit,
-            note=note + err_txt,
-        )
-
-        apx_token_count = _calculate_token_count(llm, prompt)
-        if "snowflake" in llm._llm_type:
-            _clean_snowflake_prompt(prompt)
-        
         try:
-            response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
+            result = _generate_sql_with_llm(
+                question=question,
+                llm=llm,
+                conn_params=conn_params,
+                generate_sql_prompt=generate_sql_prompt,
+                current_context=current_context,
+                note=note + err_txt,
+                should_validate_sql=should_validate_sql,
+                timeout=timeout,
+                debug=debug,
+            )
+            
+            usage_metadata['generate_sql'] = {
+                "approximate": result['apx_token_count'],
+                **result['usage_metadata'],
+            }
+            if debug and 'p_hash' in result:
+                usage_metadata['generate_sql']["p_hash"] = result['p_hash']
+            
+            sql_query = result['sql']
+            is_sql_valid = result['is_valid']
+            error = result['error']
+            
         except TimeoutError as e:
             error = f"LLM call timed out: {str(e)}"
             raise Exception(error)
@@ -597,18 +764,61 @@ def generate_sql(
                 continue
             else:
                 raise Exception(error)
-
-        usage_metadata['generate_sql'] = {
-            "approximate": apx_token_count,
-            **_extract_usage_metadata(response),
-        }
-        if debug:
-            usage_metadata['generate_sql']["p_hash"] = encrypt_prompt(prompt)
-
-        sql_query = _parse_sql_from_llm_response(response)
-
-        if should_validate_sql:
-            is_sql_valid, error = validate_sql(sql_query, conn_params)
+    
+    
+    if with_reasoning and sql_query is not None:
+        for step in range(reasoning_steps):
+            try:
+                # Step 1: Evaluate the current SQL
+                eval_result = _evaluate_sql_with_reasoning(
+                    question=question,
+                    sql_query=sql_query,
+                    llm=llm,
+                    timeout=timeout,
+                )
+                
+                usage_metadata[f'sql_reasoning_step_{step}'] = {
+                    "approximate": eval_result['apx_token_count'],
+                    **eval_result['usage_metadata'],
+                }
+                
+                evaluation = eval_result['evaluation']
+                reasoning_status = evaluation.get("assessment", "partial").lower()
+                
+                if reasoning_status == "correct":
+                    break
+                
+                # Step 2: Regenerate SQL with feedback
+                evaluation_note = note + f"\n\nThe previously generated SQL: `{sql_query}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'."
+                
+                regen_result = _generate_sql_with_llm(
+                    question=question,
+                    llm=llm,
+                    conn_params=conn_params,
+                    generate_sql_prompt=generate_sql_prompt,
+                    current_context=current_context,
+                    note=evaluation_note,
+                    should_validate_sql=should_validate_sql,
+                    timeout=timeout,
+                    debug=debug,
+                )
+                
+                usage_metadata[f'generate_sql_reasoning_step_{step}'] = {
+                    "approximate": regen_result['apx_token_count'],
+                    **regen_result['usage_metadata'],
+                }
+                if debug and 'p_hash' in regen_result:
+                    usage_metadata[f'generate_sql_reasoning_step_{step}']['p_hash'] = regen_result['p_hash']
+                
+                sql_query = regen_result['sql']
+                is_sql_valid = regen_result['is_valid']
+                error = regen_result['error']
+                
+            except TimeoutError as e:
+                raise Exception(f"LLM call timed out: {str(e)}")
+            except Exception as e:
+                print(f"Warning: LLM reasoning failed: {e}")
+                break
     
     return {
         "sql": sql_query,
@@ -616,6 +826,7 @@ def generate_sql(
         "schema": schema,
         "error": error if not is_sql_valid else None,
         "is_sql_valid": is_sql_valid if should_validate_sql else None,
+        "reasoning_status": reasoning_status,
         "usage_metadata": usage_metadata,
     }
 

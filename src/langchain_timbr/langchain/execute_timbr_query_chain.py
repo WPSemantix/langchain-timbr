@@ -42,6 +42,8 @@ class ExecuteTimbrQueryChain(Chain):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
+        with_reasoning: Optional[bool] = config.with_reasoning,
+        reasoning_steps: Optional[int] = config.reasoning_steps,
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -69,6 +71,8 @@ class ExecuteTimbrQueryChain(Chain):
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param with_reasoning: Whether to enable reasoning during SQL generation (default is False).
+        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         :param kwargs: Additional arguments to pass to the base
         :return: A list of rows from the Timbr query
 
@@ -137,6 +141,8 @@ class ExecuteTimbrQueryChain(Chain):
         self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
+        self._with_reasoning = to_boolean(with_reasoning)
+        self._reasoning_steps = to_integer(reasoning_steps)
 
 
     @property
@@ -209,6 +215,8 @@ class ExecuteTimbrQueryChain(Chain):
             note=(self._note or '') + err_txt,
             db_is_case_sensitive=self._db_is_case_sensitive,
             graph_depth=self._graph_depth,
+            with_reasoning=self._with_reasoning,
+            reasoning_steps=self._reasoning_steps,
             debug=self._debug,
         )
 
@@ -239,6 +247,7 @@ class ExecuteTimbrQueryChain(Chain):
             concept_name = inputs.get("concept", self._concept)
             is_sql_valid = True
             error = None
+            reasoning_status = None
             usage_metadata = {}
 
             if sql and self._should_validate_sql:
@@ -255,6 +264,7 @@ class ExecuteTimbrQueryChain(Chain):
                     schema_name = generate_res.get("schema", schema_name)
                     concept_name = generate_res.get("concept", concept_name)
                     is_sql_valid = generate_res.get("is_sql_valid")
+                    reasoning_status = generate_res.get("reasoning_status")
                     if not is_sql_valid and not self._should_validate_sql:
                         is_sql_valid = True
 
@@ -293,6 +303,7 @@ class ExecuteTimbrQueryChain(Chain):
                 "schema": schema_name,
                 "concept": concept_name,
                 "error": error if not is_sql_valid else None,
+                "reasoning_status": reasoning_status,
                 self.usage_metadata_key: usage_metadata,
             }
 
