@@ -4,7 +4,6 @@ import base64, hashlib
 from cryptography.fernet import Fernet
 from datetime import datetime
 import concurrent.futures
-import time
 
 from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description
 from .prompt_service import (
@@ -187,21 +186,103 @@ def _get_response_text(response: Any) -> str:
     return response_text
 
 def _extract_usage_metadata(response: Any) -> dict:
-    usage_metadata = response.response_metadata
-
-    if usage_metadata and 'usage' in usage_metadata:
-        usage_metadata = usage_metadata['usage']
-
-    if not usage_metadata and 'usage_metadata' in response:
-        usage_metadata = response.usage_metadata
-        if usage_metadata and 'usage' in usage_metadata:
-            usage_metadata = usage_metadata['usage']
-
-    if not usage_metadata and 'usage' in response:
-        usage_metadata = response.usage
-        if usage_metadata and 'usage' in usage_metadata:
-            usage_metadata = usage_metadata['usage']
-
+    """
+    Extract usage metadata from LLM response across different providers.
+    
+    Different providers return usage data in different formats:
+    - OpenAI/AzureOpenAI: response.response_metadata['token_usage'] or response.usage_metadata
+    - Anthropic: response.response_metadata['usage'] or response.usage_metadata
+    - Google/VertexAI: response.usage_metadata
+    - Bedrock: response.response_metadata['usage'] or response.response_metadata (direct ResponseMetadata)
+    - Snowflake: response.response_metadata['usage']
+    - Databricks: response.usage_metadata or response.response_metadata
+    """
+    usage_metadata = {}
+    
+    # Try to get response_metadata first (most common)
+    if hasattr(response, 'response_metadata') and response.response_metadata:
+        resp_meta = response.response_metadata
+        
+        # Check for 'usage' key (Anthropic, Bedrock, Snowflake)
+        if 'usage' in resp_meta:
+            usage_metadata = resp_meta['usage']
+        # Check for 'token_usage' key (OpenAI/AzureOpenAI)
+        elif 'token_usage' in resp_meta:
+            usage_metadata = resp_meta['token_usage']
+        # Check for direct token fields in response_metadata (some Bedrock responses)
+        elif any(key in resp_meta for key in ['input_tokens', 'output_tokens', 'total_tokens', 
+                                                'prompt_tokens', 'completion_tokens']):
+            usage_metadata = {
+                k: v for k, v in resp_meta.items() 
+                if k in ['input_tokens', 'output_tokens', 'total_tokens', 
+                        'prompt_tokens', 'completion_tokens']
+            }
+    
+    # Try usage_metadata attribute (Google, VertexAI, some others)
+    if not usage_metadata and hasattr(response, 'usage_metadata') and response.usage_metadata:
+        usage_meta = response.usage_metadata
+        if isinstance(usage_meta, dict):
+            # If it has a nested 'usage' key
+            if 'usage' in usage_meta:
+                usage_metadata = usage_meta['usage']
+            else:
+                usage_metadata = usage_meta
+        else:
+            # Handle case where usage_metadata is an object with attributes
+            usage_metadata = {
+                k: getattr(usage_meta, k) 
+                for k in dir(usage_meta) 
+                if not k.startswith('_') and not callable(getattr(usage_meta, k))
+            }
+    
+    # Try direct usage attribute (fallback)
+    if not usage_metadata and hasattr(response, 'usage') and response.usage:
+        usage = response.usage
+        if isinstance(usage, dict):
+            if 'usage' in usage:
+                usage_metadata = usage['usage']
+            else:
+                usage_metadata = usage
+        else:
+            # Handle case where usage is an object with attributes
+            usage_metadata = {
+                k: getattr(usage, k) 
+                for k in dir(usage) 
+                if not k.startswith('_') and not callable(getattr(usage, k))
+            }
+    
+    # Normalize token field names to standard format
+    # Different providers use different names: input_tokens vs prompt_tokens, etc.
+    if usage_metadata:
+        normalized = {}
+        
+        # Map various input token field names
+        if 'input_tokens' in usage_metadata:
+            normalized['input_tokens'] = usage_metadata['input_tokens']
+        elif 'prompt_tokens' in usage_metadata:
+            normalized['input_tokens'] = usage_metadata['prompt_tokens']
+        
+        # Map various output token field names
+        if 'output_tokens' in usage_metadata:
+            normalized['output_tokens'] = usage_metadata['output_tokens']
+        elif 'completion_tokens' in usage_metadata:
+            normalized['output_tokens'] = usage_metadata['completion_tokens']
+        
+        # Map total tokens
+        if 'total_tokens' in usage_metadata:
+            normalized['total_tokens'] = usage_metadata['total_tokens']
+        elif 'input_tokens' in normalized and 'output_tokens' in normalized:
+            # Calculate total if not provided
+            normalized['total_tokens'] = normalized['input_tokens'] + normalized['output_tokens']
+        
+        # Keep any other metadata fields that don't conflict
+        for key, value in usage_metadata.items():
+            if key not in ['input_tokens', 'prompt_tokens', 'output_tokens', 
+                          'completion_tokens', 'total_tokens']:
+                normalized[key] = value
+        
+        return normalized if normalized else usage_metadata
+    
     return usage_metadata
 
 def determine_concept(

@@ -27,13 +27,13 @@ dependencies = [
   "pydantic==2.10.4",
   "tiktoken==0.8.0",
   "uvicorn==0.34.0",
-  "pytimbr-api>=2.0.0; python_version>='3.11'",
+  "pytimbr-api>=2.0.0",
+  "langchain-core>=0.3.80",
 
   # Python 3.11+ versions (same for 3.11 and 3.12+)
   "cryptography==45.0.7; python_version>='3.11'",
   "langchain==0.3.27; python_version>='3.11'",
   "langchain-community==0.3.30; python_version>='3.11'",
-  "langchain-core>=0.3.80; python_version>='3.11'",
   "langgraph==0.6.8; python_version>='3.11'",
   "transformers==4.57.0; python_version>='3.11'",
 
@@ -41,7 +41,6 @@ dependencies = [
   "cryptography>=44.0.3; python_version=='3.10'",
   "langchain>=0.3.25; python_version=='3.10'",
   "langchain-community>=0.3.27; python_version=='3.10'",
-  "langchain-core>=0.3.58; python_version=='3.10'",
   "langgraph>=0.3.20; python_version=='3.10'",
   "transformers>=4.53; python_version=='3.10'",
 ]
