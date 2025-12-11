@@ -530,7 +530,7 @@ Please evaluate this result."""
     ]
 
     apx_token_count = _calculate_token_count(llm, messages)
-    if "snowflake" in llm._llm_type:
+    if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
         _clean_snowflake_prompt(messages)
     
     response = _call_llm_with_timeout(llm, messages, timeout=timeout)
@@ -600,7 +600,7 @@ def _generate_sql_with_llm(
     )
 
     apx_token_count = _calculate_token_count(llm, prompt)
-    if "snowflake" in llm._llm_type:
+    if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
         _clean_snowflake_prompt(prompt)
     
     response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
