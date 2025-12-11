@@ -61,7 +61,7 @@ class GenerateTimbrSqlNode:
         :param jwt_tenant_id: Tenant ID for JWT authentication when using multi-tenant setup
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param with_reasoning: Whether to enable reasoning during SQL generation (default is False).
-        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is
+        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         """
         self.chain = GenerateTimbrSqlChain(
             llm=llm,
