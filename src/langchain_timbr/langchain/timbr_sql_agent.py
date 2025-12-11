@@ -6,6 +6,7 @@ from langchain.schema import AgentAction, AgentFinish
 from ..utils.general import parse_list, to_boolean, to_integer
 from .execute_timbr_query_chain import ExecuteTimbrQueryChain
 from .generate_answer_chain import GenerateAnswerChain
+from .. import config
 
 class TimbrSqlAgent(BaseSingleActionAgent):
     def __init__(
@@ -34,6 +35,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
+        with_reasoning: Optional[bool] = config.with_reasoning,
+        reasoning_steps: Optional[int] = config.reasoning_steps,
         debug: Optional[bool] = False
     ):
         """
@@ -61,6 +64,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param with_reasoning: Whether to enable reasoning during SQL generation (default is False).
+        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
 
         ## Example
         ```
@@ -113,6 +118,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
             is_jwt=to_boolean(is_jwt),
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
+            with_reasoning=to_boolean(with_reasoning),
+            reasoning_steps=to_integer(reasoning_steps),
             debug=to_boolean(debug),
         )
         self._generate_answer = to_boolean(generate_answer)
@@ -173,6 +180,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "sql": None,
                     "schema": None,
                     "concept": None,
+                    "reasoning_status": None,
                     "usage_metadata": {},
                 },
                 log="Empty input received"
@@ -200,6 +208,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "schema": result.get("schema", ""),
                     "concept": result.get("concept", ""),
                     "error": result.get("error", None),
+                    "reasoning_status": result.get("reasoning_status", None),
                     "usage_metadata": usage_metadata,
                 },
                 log=f"Successfully executed query on concept: {result.get('concept', '')}"
@@ -214,6 +223,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "sql": None,
                     "schema": None,
                     "concept": None,
+                    "reasoning_status": None,
                     "usage_metadata": {},
                 },
                 log=error_context
@@ -234,6 +244,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "sql": None,
                     "schema": None,
                     "concept": None,
+                    "reasoning_status": None,
                     "usage_metadata": {},
                 },
                 log="Empty or whitespace-only input received"
@@ -274,6 +285,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "schema": result.get("schema", ""),
                     "concept": result.get("concept", ""),
                     "error": result.get("error", None),
+                    "reasoning_status": result.get("reasoning_status", None),
                     "usage_metadata": usage_metadata,
                 },
                 log=f"Successfully executed query on concept: {result.get('concept', '')}"
@@ -288,6 +300,7 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "sql": None,
                     "schema": None,
                     "concept": None,
+                    "reasoning_status": None,
                     "usage_metadata": {},
                 },
                 log=error_context
@@ -332,6 +345,8 @@ def create_timbr_sql_agent(
     is_jwt: Optional[bool] = False,
     jwt_tenant_id: Optional[str] = None,
     conn_params: Optional[dict] = None,
+    with_reasoning: Optional[bool] = config.with_reasoning,
+    reasoning_steps: Optional[int] = config.reasoning_steps,
     debug: Optional[bool] = False
 ) -> AgentExecutor:
     """
@@ -361,6 +376,8 @@ def create_timbr_sql_agent(
     :param is_jwt: Whether to use JWT authentication (default is False).
     :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
     :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+    :param with_reasoning: Whether to enable reasoning during SQL generation (default is False).
+    :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
 
     Returns:
         AgentExecutor: Configured agent executor ready to use
@@ -427,6 +444,8 @@ def create_timbr_sql_agent(
         is_jwt=is_jwt,
         jwt_tenant_id=jwt_tenant_id,
         conn_params=conn_params,
+        with_reasoning=with_reasoning,
+        reasoning_steps=reasoning_steps,
         debug=debug,
     )
     
