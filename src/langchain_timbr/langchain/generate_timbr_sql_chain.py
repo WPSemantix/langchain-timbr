@@ -31,7 +31,7 @@ class GenerateTimbrSqlChain(Chain):
         exclude_properties: Optional[Union[list[str], str]] = ['entity_id', 'entity_type', 'entity_label'],
         should_validate_sql: Optional[bool] = False,
         retries: Optional[int] = 3,
-        max_limit: Optional[int] = 500,
+        max_limit: Optional[int] = config.llm_default_limit,
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,

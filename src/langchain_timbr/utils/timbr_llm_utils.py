@@ -11,7 +11,7 @@ from .prompt_service import (
     get_generate_sql_reasoning_prompt_template,
     get_qa_prompt_template
 )
-from ..config import llm_timeout
+from ..config import llm_timeout, llm_default_limit
 
 def _clean_snowflake_prompt(prompt: Any) -> None:
     import re
@@ -650,7 +650,7 @@ def generate_sql(
         exclude_properties: Optional[list] = None,
         should_validate_sql: Optional[bool] = False,
         retries: Optional[int] = 3,
-        max_limit: Optional[int] = 500,
+        max_limit: Optional[int] = llm_default_limit,
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,

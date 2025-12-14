@@ -32,7 +32,7 @@ class ExecuteTimbrQueryChain(Chain):
         exclude_properties: Optional[Union[list[str], str]] = ['entity_id', 'entity_type', 'entity_label'],
         should_validate_sql: Optional[bool] = False,
         retries: Optional[int] = 3,
-        max_limit: Optional[int] = 500,
+        max_limit: Optional[int] = config.llm_default_limit,
         retry_if_no_results: Optional[bool] = False,
         no_results_max_retries: Optional[int] = 2,
         note: Optional[str] = '',

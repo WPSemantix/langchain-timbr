@@ -30,7 +30,7 @@ class TimbrLlmConnector:
         url: Optional[str] = config.url,
         token: Optional[str] = config.token,
         ontology: Optional[str] = config.ontology,
-        max_limit: Optional[int] = 500,
+        max_limit: Optional[int] = config.llm_default_limit,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
