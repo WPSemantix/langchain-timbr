@@ -32,3 +32,7 @@ llm_scope = os.environ.get('LLM_SCOPE', "https://cognitiveservices.azure.com/.de
 # Whether to enable reasoning during SQL generation
 enable_reasoning = to_boolean(os.environ.get('ENABLE_REASONING', 'false'))
 reasoning_steps = to_integer(os.environ.get('REASONING_STEPS', 2))
+
+should_validate_sql = to_boolean(os.environ.get('SHOULD_VALIDATE_SQL', os.environ.get('LLM_SHOULD_VALIDATE_SQL', 'true')))
+retry_if_no_results = to_boolean(os.environ.get('RETRY_IF_NO_RESULTS', os.environ.get('LLM_RETRY_IF_NO_RESULTS', 'true')))
+llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', 500))  # Default max tokens limit for LLM responses

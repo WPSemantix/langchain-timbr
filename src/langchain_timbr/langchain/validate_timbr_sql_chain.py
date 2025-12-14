@@ -32,7 +32,7 @@ class ValidateTimbrSqlChain(Chain):
         include_logic_concepts: Optional[bool] = False,
         include_tags: Optional[Union[list[str], str]] = None,
         exclude_properties: Optional[Union[list[str], str]] = ['entity_id', 'entity_type', 'entity_label'],
-        max_limit: Optional[int] = 500,
+        max_limit: Optional[int] = config.llm_default_limit,
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
