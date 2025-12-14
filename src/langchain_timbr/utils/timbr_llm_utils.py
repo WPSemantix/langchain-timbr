@@ -1,20 +1,17 @@
 from typing import Any, Optional
 from langchain.llms.base import LLM
-import base64, hashlib
-from cryptography.fernet import Fernet
 from datetime import datetime
 import concurrent.futures
 import json
-from langchain_core.messages import HumanMessage, SystemMessage
 
-from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description
+from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt
 from .prompt_service import (
     get_determine_concept_prompt_template,
     get_generate_sql_prompt_template,
+    get_generate_sql_reasoning_prompt_template,
     get_qa_prompt_template
 )
 from ..config import llm_timeout
-
 
 def _clean_snowflake_prompt(prompt: Any) -> None:
     import re
@@ -55,14 +52,6 @@ def _clean_snowflake_prompt(prompt: Any) -> None:
     prompt[1].content = clean_func(prompt[1].content)  # User message
 
 
-def generate_key() -> bytes:
-    """Generate a new Fernet secret key."""
-    passcode = b"lucylit2025"
-    hlib = hashlib.md5()
-    hlib.update(passcode)
-    return base64.urlsafe_b64encode(hlib.hexdigest().encode('utf-8'))
-
-
 def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 60) -> Any:
     """
     Call LLM with timeout to prevent hanging.
@@ -91,34 +80,8 @@ def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 60) -> Any:
         except Exception as e:
             raise e
 
-ENCRYPT_KEY = generate_key()
 MEASURES_DESCRIPTION = "The following columns are calculated measures and can only be aggregated with an aggregate function: COUNT/SUM/AVG/MIN/MAX (count distinct is not allowed)"
 TRANSITIVE_RELATIONSHIP_DESCRIPTION = "Transitive relationship columns allow you to access data through multiple relationship hops. These columns follow the pattern `<relationship_name>[<table_name>*<number>].<column_name>` where the number after the asterisk (*) indicates how many relationship levels to traverse. For example, `acquired_by[company*4].company_name` means 'go through up to 4 levels of the acquired_by relationship to get the company name', while columns ending with '_transitivity_level' indicate the actual relationship depth (Cannot be null or 0 - level 1 represents direct relationships, while levels 2, 3, 4, etc. represent indirect relationships through multiple hops. To filter by relationship type, use `_transitivity_level = 1` for direct relationships only, `_transitivity_level > 1` for indirect relationships only."
-
-def encrypt_prompt(prompt: Any, key: Optional[bytes] = ENCRYPT_KEY) -> bytes:
-    """Serialize & encrypt the prompt; returns a URL-safe token."""
-    # build prompt_text as before…
-    if isinstance(prompt, str):
-        text = prompt
-    elif isinstance(prompt, list):
-        parts = []
-        for message in prompt:
-            if hasattr(message, "content"):
-                parts.append(f"{message.type}: {message.content}")
-            else:
-                parts.append(str(message))
-        text = "\n".join(parts)
-    else:
-        text = str(prompt)
-
-    f = Fernet(key)
-    return f.encrypt(text.encode()).decode('utf-8')
-
-
-def decrypt_prompt(token: bytes, key: bytes) -> str:
-    """Decrypt the token and return the original prompt string."""
-    f = Fernet(key)
-    return f.decrypt(token).decode()
 
 
 def _prompt_to_string(prompt: Any) -> str:
@@ -186,6 +149,7 @@ def _get_response_text(response: Any) -> str:
         raise ValueError(err)
 
     return response_text
+
 
 def _extract_usage_metadata(response: Any) -> dict:
     """
@@ -286,6 +250,7 @@ def _extract_usage_metadata(response: Any) -> dict:
         return normalized if normalized else usage_metadata
     
     return usage_metadata
+
 
 def determine_concept(
     question: str,
@@ -479,10 +444,11 @@ def _get_active_datasource(conn_params: dict) -> dict:
     return datasources[0] if datasources else None
 
 
-def _evaluate_sql_with_reasoning(
+def _evaluate_sql_enable_reasoning(
     question: str,
     sql_query: str,
     llm: LLM,
+    conn_params: dict,
     timeout: int,
 ) -> dict:
     """
@@ -491,49 +457,17 @@ def _evaluate_sql_with_reasoning(
     Returns:
         dict with 'assessment' ('correct'|'partial'|'incorrect') and 'reasoning'
     """
-    system_prompt = """You are an expert SQL and data analysis evaluator for Timbr.ai knowledge graph queries.
+    generate_sql_reasoning_template = get_generate_sql_reasoning_prompt_template(conn_params)
+    prompt = generate_sql_reasoning_template.format_messages(
+        question=question.strip(),
+        sql_query=sql_query.strip(),
+    )
 
-**IMPORTANT CONTEXT:**
-- This system uses Timbr.ai, which extends SQL with semantic graph layer, including traversals, measures and more
-- Field names may use special Timbr syntax that is NOT standard SQL but is VALID in this system:
-  * `measure.<measure_name>` - References computed measures (e.g., measure.total_balance_amount)
-  * `<relationship>[target_table].<property>` - Graph traversal syntax (e.g., has_account[Account].account_name)
-  * These are translated by Timbr to standard SQL before execution
-- DO NOT mark queries as incorrect based on field name syntax - Timbr validates this before execution
-
-Evaluate whether the generated query correctly addresses the business question:
-- **correct**: The query fully and accurately answers the question
-- **partial**: The query is partially correct or incomplete
-- **incorrect**: The query does not address the question or is wrong
-
-Return your evaluation as a JSON object with this exact structure:
-{
-  "assessment": "<correct|partial|incorrect>",
-  "reasoning": "<short but precise sentence explaining your assessment>"
-}
-
-Be concise and objective."""
-
-    user_prompt = f"""**Business Question:**
-{question}
-
-**Generated SQL Query:**
-```sql
-{sql_query}
-```
-
-Please evaluate this result."""
-    
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
-    ]
-
-    apx_token_count = _calculate_token_count(llm, messages)
+    apx_token_count = _calculate_token_count(llm, prompt)
     if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
-        _clean_snowflake_prompt(messages)
+        _clean_snowflake_prompt(prompt)
     
-    response = _call_llm_with_timeout(llm, messages, timeout=timeout)
+    response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
     
     # Extract JSON from response content (handle markdown code blocks)
     content = response.content.strip()
@@ -556,6 +490,87 @@ Please evaluate this result."""
         "evaluation": evaluation,
         "apx_token_count": apx_token_count,
         "usage_metadata": _extract_usage_metadata(response),
+    }
+
+
+@cache_with_version_check
+def _build_sql_generation_context(
+    conn_params: dict,
+    schema: str,
+    concept: str,
+    concept_metadata: dict,
+    graph_depth: int,
+    include_tags: Optional[str],
+    exclude_properties: Optional[list],
+    db_is_case_sensitive: bool,
+    max_limit: int,
+) -> dict:
+    """
+    Prepare the complete SQL generation context by gathering all necessary metadata.
+    
+    This includes:
+    - Datasource information
+    - Concept properties (columns, measures, relationships)
+    - Property tags
+    - Building column/measure/relationship descriptions
+    - Assembling the final context dictionary
+    
+    Returns:
+        dict containing all context needed for SQL generation prompts
+    """
+    datasource_type = _get_active_datasource(conn_params).get('target_type')
+
+    properties_desc = get_properties_description(conn_params=conn_params)
+    relationships_desc = get_relationships_description(conn_params=conn_params)
+  
+    concept_properties_metadata = get_concept_properties(
+        schema=schema,
+        concept_name=concept,
+        conn_params=conn_params,
+        properties_desc=properties_desc,
+        relationships_desc=relationships_desc,
+        graph_depth=graph_depth
+    )
+    columns = concept_properties_metadata.get('columns', [])
+    measures = concept_properties_metadata.get('measures', [])
+    relationships = concept_properties_metadata.get('relationships', {})
+    tags = get_tags(conn_params=conn_params, include_tags=include_tags).get('property_tags')
+
+    columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties)
+    measures_str = _build_columns_str(measures, tags, exclude=exclude_properties)
+    rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties)
+
+    if rel_prop_str:
+        measures_str += f"\n{rel_prop_str}"
+
+    # Determine if relationships have transitive properties
+    has_transitive_relationships = any(
+        rel.get('is_transitive')
+        for rel in relationships.values()
+    ) if relationships else False
+    
+    concept_description = f"- Description: {concept_metadata.get('description')}\n" if concept_metadata and concept_metadata.get('description') else ""
+    concept_tags = concept_metadata.get('tags') if concept_metadata and concept_metadata.get('tags') else ""
+    
+    cur_date = datetime.now().strftime("%Y-%m-%d")
+    
+    # Build context descriptions
+    sensitivity_txt = "- Ensure value comparisons are case-insensitive, e.g., use LOWER(column) = 'value'.\n" if db_is_case_sensitive else ""
+    measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
+    transitive_context = f"- {TRANSITIVE_RELATIONSHIP_DESCRIPTION}\n" if has_transitive_relationships else ""
+    
+    return {
+        'cur_date': cur_date,
+        'datasource_type': datasource_type or 'standard sql',
+        'schema': schema,
+        'concept': concept,
+        'concept_description': concept_description or "",
+        'concept_tags': concept_tags or "",
+        'columns_str': columns_str,
+        'measures_context': measures_context,
+        'transitive_context': transitive_context,
+        'sensitivity_txt': sensitivity_txt,
+        'max_limit': max_limit,
     }
 
 
@@ -639,7 +654,7 @@ def generate_sql(
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
-        with_reasoning: Optional[bool] = False,
+        enable_reasoning: Optional[bool] = False,
         reasoning_steps: Optional[int] = 2,
         debug: Optional[bool] = False,
         timeout: Optional[int] = None,
@@ -679,50 +694,6 @@ def generate_sql(
     if not concept:
         raise Exception("No relevant concept found for the query.")
 
-    datasource_type = _get_active_datasource(conn_params).get('target_type')
-
-    properties_desc = get_properties_description(conn_params=conn_params)
-    relationships_desc = get_relationships_description(conn_params=conn_params)
-  
-    concept_properties_metadata = get_concept_properties(schema=schema, concept_name=concept, conn_params=conn_params, properties_desc=properties_desc, relationships_desc=relationships_desc, graph_depth=graph_depth)
-    columns, measures, relationships = concept_properties_metadata.get('columns', []), concept_properties_metadata.get('measures', []), concept_properties_metadata.get('relationships', {})
-    tags = get_tags(conn_params=conn_params, include_tags=include_tags).get('property_tags')
-
-    columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties)
-    measures_str = _build_columns_str(measures, tags, exclude=exclude_properties)
-    rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties)
-
-    if rel_prop_str:
-        measures_str += f"\n{rel_prop_str}"
-
-
-    # Build context descriptions
-    sensitivity_txt = "- Ensure value comparisons are case-insensitive, e.g., use LOWER(column) = 'value'.\n" if db_is_case_sensitive else ""
-    measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
-    has_transitive_relationships = any(
-        rel.get('is_transitive')
-        for rel in relationships.values()
-    ) if relationships else False
-    transitive_context = f"- {TRANSITIVE_RELATIONSHIP_DESCRIPTION}\n" if has_transitive_relationships else ""
-    concept_description = f"- Description: {concept_metadata.get('description')}\n" if concept_metadata and concept_metadata.get('description') else ""
-    concept_tags = concept_metadata.get('tags') if concept_metadata and concept_metadata.get('tags') else ""
-    cur_date = datetime.now().strftime("%Y-%m-%d")
-
-    # Build context dict for SQL generation
-    current_context = {
-        'cur_date': cur_date,
-        'datasource_type': datasource_type or 'standard sql',
-        'schema': schema,
-        'concept': concept,
-        'concept_description': concept_description or "",
-        'concept_tags': concept_tags or "",
-        'columns_str': columns_str,
-        'measures_context': measures_context,
-        'transitive_context': transitive_context,
-        'sensitivity_txt': sensitivity_txt,
-        'max_limit': max_limit,
-    }
-
     sql_query = None
     iteration = 0
     is_sql_valid = True
@@ -737,7 +708,16 @@ def generate_sql(
                 llm=llm,
                 conn_params=conn_params,
                 generate_sql_prompt=generate_sql_prompt,
-                current_context=current_context,
+                current_context=_build_sql_generation_context(
+                    conn_params=conn_params,
+                    schema=schema,
+                    concept=concept,
+                    concept_metadata=concept_metadata,
+                    graph_depth=graph_depth,
+                    include_tags=include_tags,
+                    exclude_properties=exclude_properties,
+                    db_is_case_sensitive=db_is_case_sensitive,
+                    max_limit=max_limit),
                 note=note + err_txt,
                 should_validate_sql=should_validate_sql,
                 timeout=timeout,
@@ -766,18 +746,19 @@ def generate_sql(
                 raise Exception(error)
     
     
-    if with_reasoning and sql_query is not None:
+    if enable_reasoning and sql_query is not None:
         for step in range(reasoning_steps):
             try:
                 # Step 1: Evaluate the current SQL
-                eval_result = _evaluate_sql_with_reasoning(
+                eval_result = _evaluate_sql_enable_reasoning(
                     question=question,
                     sql_query=sql_query,
                     llm=llm,
+                    conn_params=conn_params,
                     timeout=timeout,
                 )
                 
-                usage_metadata[f'sql_reasoning_step_{step}'] = {
+                usage_metadata[f'sql_reasoning_step_{step + 1}'] = {
                     "approximate": eval_result['apx_token_count'],
                     **eval_result['usage_metadata'],
                 }
@@ -791,24 +772,35 @@ def generate_sql(
                 # Step 2: Regenerate SQL with feedback
                 evaluation_note = note + f"\n\nThe previously generated SQL: `{sql_query}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'."
                 
+                # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
+                context_graph_depth = min(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
                 regen_result = _generate_sql_with_llm(
                     question=question,
                     llm=llm,
                     conn_params=conn_params,
                     generate_sql_prompt=generate_sql_prompt,
-                    current_context=current_context,
+                    current_context=_build_sql_generation_context(
+                        conn_params=conn_params,
+                        schema=schema,
+                        concept=concept,
+                        concept_metadata=concept_metadata,
+                        graph_depth=context_graph_depth,
+                        include_tags=include_tags,
+                        exclude_properties=exclude_properties,
+                        db_is_case_sensitive=db_is_case_sensitive,
+                        max_limit=max_limit),
                     note=evaluation_note,
                     should_validate_sql=should_validate_sql,
                     timeout=timeout,
                     debug=debug,
                 )
                 
-                usage_metadata[f'generate_sql_reasoning_step_{step}'] = {
+                usage_metadata[f'generate_sql_reasoning_step_{step + 1}'] = {
                     "approximate": regen_result['apx_token_count'],
                     **regen_result['usage_metadata'],
                 }
                 if debug and 'p_hash' in regen_result:
-                    usage_metadata[f'generate_sql_reasoning_step_{step}']['p_hash'] = regen_result['p_hash']
+                    usage_metadata[f'generate_sql_reasoning_step_{step + 1}']['p_hash'] = regen_result['p_hash']
                 
                 sql_query = regen_result['sql']
                 is_sql_valid = regen_result['is_valid']

@@ -1,7 +1,10 @@
 from typing import Optional, Any
 import time
+import base64
+import hashlib
 from pytimbr_api import timbr_http_connector
 from functools import wraps
+from cryptography.fernet import Fernet
 
 from ..config import cache_timeout, ignore_tags, ignore_tags_prefix
 from .general import to_boolean
@@ -38,6 +41,42 @@ def _serialize_cache_key(*args, **kwargs):
         raise TypeError(f"Unsupported type for caching: {type(obj)}")
 
     return (tuple(serialize(arg) for arg in args), tuple((k, serialize(v)) for k, v in kwargs.items()))
+
+
+def generate_key() -> bytes:
+    """Generate a new Fernet secret key."""
+    passcode = b"lucylit2025"
+    hlib = hashlib.md5()
+    hlib.update(passcode)
+    return base64.urlsafe_b64encode(hlib.hexdigest().encode('utf-8'))
+
+
+ENCRYPT_KEY = generate_key()
+
+
+def encrypt_prompt(prompt: Any, key: Optional[bytes] = ENCRYPT_KEY) -> bytes:
+    """Serialize & encrypt the prompt; returns a URL-safe token."""
+    if isinstance(prompt, str):
+        text = prompt
+    elif isinstance(prompt, list):
+        parts = []
+        for message in prompt:
+            if hasattr(message, "content"):
+                parts.append(f"{message.type}: {message.content}")
+            else:
+                parts.append(str(message))
+        text = "\n".join(parts)
+    else:
+        text = str(prompt)
+
+    f = Fernet(key)
+    return f.encrypt(text.encode()).decode('utf-8')
+
+
+def decrypt_prompt(token: bytes, key: bytes) -> str:
+    """Decrypt the token and return the original prompt string."""
+    f = Fernet(key)
+    return f.decrypt(token).decode()
 
 
 def cache_with_version_check(func):

@@ -33,6 +33,8 @@ class ValidateSemanticSqlNode:
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
+        enable_reasoning: Optional[bool] = False,
+        reasoning_steps: Optional[int] = 2,
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -57,6 +59,8 @@ class ValidateSemanticSqlNode:
         :param is_jwt: Whether to use JWT authentication (default: False)
         :param jwt_tenant_id: Tenant ID for JWT authentication when using multi-tenant setup
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
+        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         """
         self.chain = ValidateTimbrSqlChain(
             llm=llm,
@@ -79,6 +83,8 @@ class ValidateSemanticSqlNode:
             is_jwt=is_jwt,
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
+            enable_reasoning=enable_reasoning,
+            reasoning_steps=reasoning_steps,
             debug=debug,
             **kwargs,
         )

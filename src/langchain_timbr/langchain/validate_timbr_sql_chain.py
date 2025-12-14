@@ -40,6 +40,8 @@ class ValidateTimbrSqlChain(Chain):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
+        enable_reasoning: Optional[bool] = config.enable_reasoning,
+        reasoning_steps: Optional[int] = config.reasoning_steps,
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -64,6 +66,8 @@ class ValidateTimbrSqlChain(Chain):
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
+        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         :param kwargs: Additional arguments to pass to the base
         
         ## Example
@@ -127,8 +131,10 @@ class ValidateTimbrSqlChain(Chain):
         self._verify_ssl = to_boolean(verify_ssl)
         self._is_jwt = to_boolean(is_jwt)
         self._jwt_tenant_id = jwt_tenant_id
-        self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
+        self._enable_reasoning = to_boolean(enable_reasoning)
+        self._reasoning_steps = to_integer(reasoning_steps)
+        self._debug = to_boolean(debug)
 
 
     @property
@@ -193,6 +199,8 @@ class ValidateTimbrSqlChain(Chain):
                 note=f"{prompt_extension}The original SQL query (`{sql}`) was invalid with this error from query {error}. Please take this in consideration while generating the query.",
                 db_is_case_sensitive=self._db_is_case_sensitive,
                 graph_depth=self._graph_depth,
+                enable_reasoning=self._enable_reasoning,
+                reasoning_steps=self._reasoning_steps,
                 debug=self._debug,
             )
             sql = generate_res.get("sql", "")
@@ -200,6 +208,7 @@ class ValidateTimbrSqlChain(Chain):
             concept = generate_res.get("concept", self._concept)
             usage_metadata.update(generate_res.get("usage_metadata", {}))
             is_sql_valid = generate_res.get("is_sql_valid")
+            reasoning_status = generate_res.get("reasoning_status")
             error = generate_res.get("error")
 
         return {
@@ -208,5 +217,6 @@ class ValidateTimbrSqlChain(Chain):
             "concept": concept,
             "is_sql_valid": is_sql_valid,
             "error": error,
+            "reasoning_status": reasoning_status,
             self.usage_metadata_key: usage_metadata,
         }
