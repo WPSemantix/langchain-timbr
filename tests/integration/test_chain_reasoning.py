@@ -23,7 +23,7 @@ class TestLangchainChainsReasoningIntegration:
 
     # SKIP THIS TESTS UNTIL API WILL BE UPDATED
 
-    def skip_test_generate_timbr_sql_chain(self, llm, config):
+    def test_generate_timbr_sql_chain(self, llm, config):
         chain = GenerateTimbrSqlChain(
             llm=llm,
             url=config["timbr_url"],
@@ -36,7 +36,7 @@ class TestLangchainChainsReasoningIntegration:
         print("GenerateTimbrSqlChain result:", result)
         self._assert_reasoning(chain, result)
 
-    def skip_test_validate_timbr_sql_chain(self, llm, config):
+    def test_validate_timbr_sql_chain(self, llm, config):
         chain = ValidateTimbrSqlChain(
             llm=llm,
             url=config["timbr_url"],
@@ -54,7 +54,7 @@ class TestLangchainChainsReasoningIntegration:
         print("ValidateTimbrSqlChain result:", result)
         self._assert_reasoning(chain, result)
 
-    def skip_test_execute_timbr_query_chain(self, llm, config):
+    def test_execute_timbr_query_chain(self, llm, config):
         chain = ExecuteTimbrQueryChain(
             llm=llm,
             url=config["timbr_url"],
@@ -70,7 +70,7 @@ class TestLangchainChainsReasoningIntegration:
         print("ExecuteTimbrQueryChain result:", result)
         self._assert_reasoning(chain, result)
 
-    def skip_test_create_timbr_sql_agent(self, llm, config):
+    def test_create_timbr_sql_agent(self, llm, config):
         agent = create_timbr_sql_agent(
             llm=llm,
             url=config["timbr_url"],
