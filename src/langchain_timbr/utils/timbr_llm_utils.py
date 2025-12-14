@@ -4,12 +4,12 @@ from langchain.llms.base import LLM
 from datetime import datetime
 import concurrent.futures
 import json
-from langchain_core.messages import HumanMessage, SystemMessage
 
 from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt
 from .prompt_service import (
     get_determine_concept_prompt_template,
     get_generate_sql_prompt_template,
+    get_generate_sql_reasoning_prompt_template,
     get_qa_prompt_template
 )
 from ..config import llm_timeout
@@ -449,6 +449,7 @@ def _evaluate_sql_enable_reasoning(
     question: str,
     sql_query: str,
     llm: LLM,
+    conn_params: dict,
     timeout: int,
 ) -> dict:
     """
@@ -457,49 +458,17 @@ def _evaluate_sql_enable_reasoning(
     Returns:
         dict with 'assessment' ('correct'|'partial'|'incorrect') and 'reasoning'
     """
-    system_prompt = """You are an expert SQL and data analysis evaluator for Timbr.ai knowledge graph queries.
+    generate_sql_reasoning_template = get_generate_sql_reasoning_prompt_template(conn_params)
+    prompt = generate_sql_reasoning_template.format_messages(
+        question=question.strip(),
+        sql_query=sql_query.strip(),
+    )
 
-**IMPORTANT CONTEXT:**
-- This system uses Timbr.ai, which extends SQL with semantic graph layer, including traversals, measures and more
-- Field names may use special Timbr syntax that is NOT standard SQL but is VALID in this system:
-  * `measure.<measure_name>` - References computed measures (e.g., measure.total_balance_amount)
-  * `<relationship>[target_table].<property>` - Graph traversal syntax (e.g., has_account[Account].account_name)
-  * These are translated by Timbr to standard SQL before execution
-- DO NOT mark queries as incorrect based on field name syntax - Timbr validates this before execution
-
-Evaluate whether the generated query correctly addresses the business question:
-- **correct**: The query fully and accurately answers the question
-- **partial**: The query is partially correct or incomplete
-- **incorrect**: The query does not address the question or is wrong
-
-Return your evaluation as a JSON object with this exact structure:
-{
-  "assessment": "<correct|partial|incorrect>",
-  "reasoning": "<short but precise sentence explaining your assessment>"
-}
-
-Be concise and objective."""
-
-    user_prompt = f"""**Business Question:**
-{question}
-
-**Generated SQL Query:**
-```sql
-{sql_query}
-```
-
-Please evaluate this result."""
-    
-    messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=user_prompt)
-    ]
-
-    apx_token_count = _calculate_token_count(llm, messages)
+    apx_token_count = _calculate_token_count(llm, prompt)
     if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
-        _clean_snowflake_prompt(messages)
+        _clean_snowflake_prompt(prompt)
     
-    response = _call_llm_with_timeout(llm, messages, timeout=timeout)
+    response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
     
     # Extract JSON from response content (handle markdown code blocks)
     content = response.content.strip()
@@ -786,6 +755,7 @@ def generate_sql(
                     question=question,
                     sql_query=sql_query,
                     llm=llm,
+                    conn_params=conn_params,
                     timeout=timeout,
                 )
                 
@@ -826,12 +796,12 @@ def generate_sql(
                     debug=debug,
                 )
                 
-                usage_metadata[f'generate_sql_reasoning_step_{step}'] = {
+                usage_metadata[f'generate_sql_reasoning_step_{step + 1}'] = {
                     "approximate": regen_result['apx_token_count'],
                     **regen_result['usage_metadata'],
                 }
                 if debug and 'p_hash' in regen_result:
-                    usage_metadata[f'generate_sql_reasoning_step_{step}']['p_hash'] = regen_result['p_hash']
+                    usage_metadata[f'generate_sql_reasoning_step_{step + 1}']['p_hash'] = regen_result['p_hash']
                 
                 sql_query = regen_result['sql']
                 is_sql_valid = regen_result['is_valid']

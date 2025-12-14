@@ -184,6 +184,16 @@ class PromptService:
         return self._fetch_template("llm_prompts/generate_sql")
     
     
+    def get_generate_sql_reasoning_template(self) -> ChatPromptTemplate:
+        """
+        Get generate SQL reasoning template from API service (cached)
+        
+        Returns:
+            ChatPromptTemplate object
+        """
+        return self._fetch_template("llm_prompts/generate_sql_reasoning")
+
+    
     def get_generate_answer_template(self) -> ChatPromptTemplate:
         """
         Get generate answer template from API service (cached)
@@ -262,6 +272,22 @@ def get_generate_sql_prompt_template(
     """
     prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_generate_sql_template")
+
+
+def get_generate_sql_reasoning_prompt_template(
+    conn_params: Optional[dict] = None
+) -> PromptTemplateWrapper:
+    """
+    Get generate SQL reasoning prompt template wrapper
+    
+    Args:
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
+    Returns:
+        PromptTemplateWrapper for generate SQL reasoning
+    """
+    prompt_service = PromptService(conn_params=conn_params)
+    return PromptTemplateWrapper(prompt_service, "get_generate_sql_reasoning_template")
 
 
 def get_qa_prompt_template(
