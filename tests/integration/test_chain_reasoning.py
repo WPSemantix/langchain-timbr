@@ -17,7 +17,7 @@ class TestLangchainChainsReasoningIntegration:
         if 'sql_reasoning_step_2' in usage_metadata:
           assert 'generate_sql_reasoning_step_1' in usage_metadata
 
-        # if the final result was incorrect - there must have two re-genrteration steps
+        # if the final result was incorrect - there must have two re-generation steps
         if result['reasoning_status'] == 'incorrect':
             assert 'generate_sql_reasoning_step_2' in usage_metadata
 
