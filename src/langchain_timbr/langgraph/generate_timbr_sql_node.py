@@ -23,7 +23,7 @@ class GenerateTimbrSqlNode:
         include_logic_concepts: Optional[bool] = False,
         include_tags: Optional[Union[list[str], str]] = None,
         exclude_properties: Optional[Union[list[str], str]] = ['entity_id', 'entity_type', 'entity_label'],
-        should_validate_sql: Optional[bool] = False,
+        should_validate_sql: Optional[bool] = config.should_validate_sql,
         retries: Optional[int] = 3,
         max_limit: Optional[int] = config.llm_default_limit,
         note: Optional[str] = '',

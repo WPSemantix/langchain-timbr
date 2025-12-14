@@ -11,7 +11,7 @@ from .prompt_service import (
     get_generate_sql_reasoning_prompt_template,
     get_qa_prompt_template
 )
-from ..config import llm_timeout, llm_default_limit
+from .. import config
 
 def _clean_snowflake_prompt(prompt: Any) -> None:
     import re
@@ -272,7 +272,7 @@ def determine_concept(
     
     # Use config default timeout if none provided
     if timeout is None:
-        timeout = llm_timeout
+        timeout = config.llm_timeout
     
     determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
     tags = get_tags(conn_params=conn_params, include_tags=include_tags)
@@ -648,9 +648,9 @@ def generate_sql(
         include_logic_concepts: Optional[bool] = False,
         include_tags: Optional[str] = None,
         exclude_properties: Optional[list] = None,
-        should_validate_sql: Optional[bool] = False,
+        should_validate_sql: Optional[bool] = config.should_validate_sql,
         retries: Optional[int] = 3,
-        max_limit: Optional[int] = llm_default_limit,
+        max_limit: Optional[int] = config.llm_default_limit,
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
@@ -665,7 +665,7 @@ def generate_sql(
     
     # Use config default timeout if none provided
     if timeout is None:
-        timeout = llm_timeout
+        timeout = config.llm_timeout
     
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
    
@@ -835,7 +835,7 @@ def answer_question(
 ) -> dict[str, Any]:
     # Use config default timeout if none provided
     if timeout is None:
-        timeout = llm_timeout
+        timeout = config.llm_timeout
 
     qa_prompt = get_qa_prompt_template(conn_params)
 
