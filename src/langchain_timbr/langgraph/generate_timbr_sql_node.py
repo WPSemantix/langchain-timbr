@@ -33,7 +33,7 @@ class GenerateTimbrSqlNode:
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        with_reasoning: Optional[bool] = config.with_reasoning,
+        enable_reasoning: Optional[bool] = config.enable_reasoning,
         reasoning_steps: Optional[int] = config.reasoning_steps,
         debug: Optional[bool] = False,
         **kwargs,
@@ -60,7 +60,7 @@ class GenerateTimbrSqlNode:
         :param is_jwt: Whether to use JWT authentication (default: False)
         :param jwt_tenant_id: Tenant ID for JWT authentication when using multi-tenant setup
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
-        :param with_reasoning: Whether to enable reasoning during SQL generation (default is False).
+        :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         """
         self.chain = GenerateTimbrSqlChain(
@@ -85,7 +85,7 @@ class GenerateTimbrSqlNode:
             is_jwt=is_jwt,
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
-            with_reasoning=with_reasoning,
+            enable_reasoning=enable_reasoning,
             reasoning_steps=reasoning_steps,
             debug=debug,
             **kwargs,

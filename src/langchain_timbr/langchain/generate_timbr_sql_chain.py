@@ -39,7 +39,7 @@ class GenerateTimbrSqlChain(Chain):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        with_reasoning: Optional[bool] = config.with_reasoning,
+        enable_reasoning: Optional[bool] = config.enable_reasoning,
         reasoning_steps: Optional[int] = config.reasoning_steps,
         debug: Optional[bool] = False,
         **kwargs,
@@ -66,7 +66,7 @@ class GenerateTimbrSqlChain(Chain):
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
-        :param with_reasoning: Whether to enable reasoning during SQL generation (default is False).
+        :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         :param debug: Whether to enable debug mode for detailed logging
         :param kwargs: Additional arguments to pass to the base
@@ -134,7 +134,7 @@ class GenerateTimbrSqlChain(Chain):
         self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
-        self._with_reasoning = to_boolean(with_reasoning)
+        self._enable_reasoning = to_boolean(enable_reasoning)
         self._reasoning_steps = to_integer(reasoning_steps)
 
 
@@ -191,7 +191,7 @@ class GenerateTimbrSqlChain(Chain):
             note=self._note,
             db_is_case_sensitive=self._db_is_case_sensitive,
             graph_depth=self._graph_depth,
-            with_reasoning=self._with_reasoning,
+            enable_reasoning=self._enable_reasoning,
             reasoning_steps=self._reasoning_steps,
             debug=self._debug,
         )

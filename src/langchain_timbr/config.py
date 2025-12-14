@@ -30,5 +30,5 @@ llm_api_version = os.environ.get('LLM_API_VERSION', None)
 llm_scope = os.environ.get('LLM_SCOPE', "https://cognitiveservices.azure.com/.default")  # e.g. "api://<your-client-id>/.default"
 
 # Whether to enable reasoning during SQL generation
-with_reasoning = to_boolean(os.environ.get('WITH_REASONING', 'false'))
+enable_reasoning = to_boolean(os.environ.get('ENABLE_REASONING', 'false'))
 reasoning_steps = to_integer(os.environ.get('REASONING_STEPS', 2))

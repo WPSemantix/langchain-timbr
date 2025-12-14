@@ -479,7 +479,7 @@ def _get_active_datasource(conn_params: dict) -> dict:
     return datasources[0] if datasources else None
 
 
-def _evaluate_sql_with_reasoning(
+def _evaluate_sql_enable_reasoning(
     question: str,
     sql_query: str,
     llm: LLM,
@@ -639,7 +639,7 @@ def generate_sql(
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
-        with_reasoning: Optional[bool] = False,
+        enable_reasoning: Optional[bool] = False,
         reasoning_steps: Optional[int] = 2,
         debug: Optional[bool] = False,
         timeout: Optional[int] = None,
@@ -766,11 +766,11 @@ def generate_sql(
                 raise Exception(error)
     
     
-    if with_reasoning and sql_query is not None:
+    if enable_reasoning and sql_query is not None:
         for step in range(reasoning_steps):
             try:
                 # Step 1: Evaluate the current SQL
-                eval_result = _evaluate_sql_with_reasoning(
+                eval_result = _evaluate_sql_enable_reasoning(
                     question=question,
                     sql_query=sql_query,
                     llm=llm,
