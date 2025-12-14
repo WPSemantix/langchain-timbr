@@ -1,4 +1,3 @@
-import math
 from typing import Any, Optional
 from langchain.llms.base import LLM
 from datetime import datetime
@@ -774,7 +773,7 @@ def generate_sql(
                 evaluation_note = note + f"\n\nThe previously generated SQL: `{sql_query}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'."
                 
                 # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
-                context_graph_depth = math.max(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
+                context_graph_depth = max(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
                 regen_result = _generate_sql_with_llm(
                     question=question,
                     llm=llm,
