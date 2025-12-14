@@ -12,7 +12,7 @@
 from .timbr_llm_connector import TimbrLlmConnector
 from .llm_wrapper.llm_wrapper import LlmWrapper, LlmTypes
 
-from .utils.timbr_llm_utils import (
+from .utils.timbr_utils import (
     generate_key,
     encrypt_prompt,
     decrypt_prompt,

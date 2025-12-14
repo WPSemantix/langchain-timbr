@@ -5,9 +5,10 @@ from langchain_timbr import (
     GenerateTimbrSqlChain,
     ValidateTimbrSqlChain,
     ExecuteTimbrQueryChain,
-    GenerateAnswerChain
+    GenerateAnswerChain,
+    generate_key,
+    decrypt_prompt,
 )
-from langchain_timbr.utils import timbr_llm_utils
 
 
 class TestIdentifyTimbrConceptChain:
@@ -147,7 +148,7 @@ class TestGenerateTimbrSqlChain:
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "customer", "Concept customer should be returned"
-        prompt = timbr_llm_utils.decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], timbr_llm_utils.generate_key())
+        prompt = decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], generate_key())
         assert "customer related info" in prompt, "Customer description should be in prompt"
         assert "concat of first and last name" in prompt, "Customer name description should be in prompt"
         assert "continent name" in prompt, "Order market description should be in prompt"
@@ -170,7 +171,7 @@ class TestGenerateTimbrSqlChain:
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "customer", "Concept customer should be returned"
-        prompt = timbr_llm_utils.decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], timbr_llm_utils.generate_key())
+        prompt = decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], generate_key())
         assert "customer related info" in prompt, "Customer description should be in prompt"
         assert "concat of first and last name" in prompt, "Customer name description should be in prompt"
         assert "continent name" in prompt, "Order market description should be in prompt"
@@ -193,7 +194,7 @@ class TestGenerateTimbrSqlChain:
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "customer_cube", "Concept customer_cube should be returned"
-        prompt = timbr_llm_utils.decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], timbr_llm_utils.generate_key())
+        prompt = decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], generate_key())
         assert "customer cube related info" in prompt, "Customer description should be in prompt"
         assert "concat of first and last name" in prompt, "Customer name description should be in prompt"
         assert "continent name" in prompt, "Order market description should be in prompt"
@@ -216,7 +217,7 @@ class TestGenerateTimbrSqlChain:
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "product", "Concept product should be returned"
         assert chain.usage_metadata_key in result, "Chain should return 'usage_metadata'"
-        prompt = timbr_llm_utils.decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], timbr_llm_utils.generate_key())
+        prompt = decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], generate_key())
         assert "commodity" in prompt, "Product tag value of synonym should be in prompt"
         assert "synonym" in prompt, "Product tag synonym should be in prompt"
         assert "length" in prompt, "Material tag should be in prompt"
@@ -240,7 +241,7 @@ class TestGenerateTimbrSqlChain:
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "product", "Concept product should be returned"
         assert chain.usage_metadata_key in result, "Chain should return 'usage_metadata'"
-        prompt = timbr_llm_utils.decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], timbr_llm_utils.generate_key())
+        prompt = decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], generate_key())
         assert "commodity" in prompt, "Product tag value of synonym should be in prompt"
         assert "synonym" in prompt, "Product tag synonym should be in prompt"
         assert "length" in prompt, "Material tag should be in prompt"
@@ -265,7 +266,7 @@ class TestGenerateTimbrSqlChain:
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "product_cube", "Concept product_cube should be returned"
         assert chain.usage_metadata_key in result, "Chain should return 'usage_metadata'"
-        prompt = timbr_llm_utils.decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], timbr_llm_utils.generate_key())
+        prompt = decrypt_prompt(result["generate_sql_usage_metadata"]["generate_sql"]["p_hash"], generate_key())
         assert "commodity cube" in prompt, "Product tag value of synonym should be in prompt"
         assert "synonym" in prompt, "Product tag synonym should be in prompt"
         assert "length" in prompt, "Material tag should be in prompt"
