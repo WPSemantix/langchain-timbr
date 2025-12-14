@@ -14,8 +14,12 @@ class TestLangchainChainsReasoningIntegration:
         assert 'sql_reasoning_step_1' in usage_metadata
 
         # if first reasoning was incorrect, there must be a re-generating sql & a second reasoning step
-        if usage_metadata['sql_reasoning_step_2']:
+        if 'sql_reasoning_step_2' in usage_metadata:
           assert 'generate_sql_reasoning_step_1' in usage_metadata
+
+        # if the final result was incorrect - there must have two re-genrteration steps
+        if result['reasoning_status'] == 'incorrect':
+            assert 'generate_sql_reasoning_step_2' in usage_metadata
 
     def test_generate_timbr_sql_chain(self, llm, config):
         chain = GenerateTimbrSqlChain(
