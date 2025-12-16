@@ -3,7 +3,7 @@ from langchain.llms.base import LLM
 from langgraph.graph import StateGraph
 
 from ..langchain.validate_timbr_sql_chain import ValidateTimbrSqlChain
-
+from .. import config
 
 class ValidateSemanticSqlNode:
     """
@@ -25,7 +25,7 @@ class ValidateSemanticSqlNode:
         include_logic_concepts: Optional[bool] = False,
         include_tags: Optional[Union[list[str], str]] = None,
         exclude_properties: Optional[Union[list[str], str]] = ['entity_id', 'entity_type', 'entity_label'],
-        max_limit: Optional[int] = 500,
+        max_limit: Optional[int] = config.llm_default_limit,
         note: Optional[str] = None,
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
@@ -33,8 +33,8 @@ class ValidateSemanticSqlNode:
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        enable_reasoning: Optional[bool] = False,
-        reasoning_steps: Optional[int] = 2,
+        enable_reasoning: Optional[bool] = config.enable_reasoning,
+        reasoning_steps: Optional[int] = config.reasoning_steps,
         debug: Optional[bool] = False,
         **kwargs,
     ):
