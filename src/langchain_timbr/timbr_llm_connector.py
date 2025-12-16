@@ -279,7 +279,7 @@ class TimbrLlmConnector:
     ) -> dict[str, Any]:
         agent = create_timbr_sql_agent(
             llm=self._llm,
-            **self._get_conn_params(),
+            conn_params=self._get_conn_params(),
             concept=None,
             concepts_list=concepts_list,
             views_list=views_list,
