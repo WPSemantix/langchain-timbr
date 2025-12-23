@@ -248,6 +248,7 @@ class ExecuteTimbrQueryChain(Chain):
             is_sql_valid = True
             error = None
             reasoning_status = None
+            rows = []
             usage_metadata = {}
 
             if sql and self._should_validate_sql:

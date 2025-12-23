@@ -178,6 +178,7 @@ class ValidateTimbrSqlChain(Chain):
         prompt = inputs["prompt"]
         schema = self._schema
         concept = self._concept
+        reasoning_status = None
 
         is_sql_valid, error = validate_sql(sql, self._get_conn_params())
         if not is_sql_valid:
