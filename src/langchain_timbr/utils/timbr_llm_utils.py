@@ -276,43 +276,37 @@ def determine_concept(
     
     determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
     tags = get_tags(conn_params=conn_params, include_tags=include_tags)
-    concepts = get_concepts(
+    concepts_and_views = get_concepts(
         conn_params=conn_params,
         concepts_list=concepts_list,
         views_list=views_list,
         include_logic_concepts=include_logic_concepts,
     )
 
-    if not concepts:
+    if not concepts_and_views:
         raise Exception("No relevant concepts found for the query.")
 
     concepts_desc_arr = []
-    for concept in concepts.values():
-        concept_name = concept.get('concept')
-        concept_desc = concept.get('description')
-        concept_tags = tags.get('concept_tags').get(concept_name) if concept.get('is_view') == 'false' else tags.get('view_tags').get(concept_name)
+    for item in concepts_and_views.values():
+        item_name = item.get('concept')
+        item_desc = item.get('description')
+        item_tags = tags.get('concept_tags').get(item_name) if item.get('is_view') == 'false' else tags.get('view_tags').get(item_name)
 
-        if concept_tags:
-            concept_tags = str(concept_tags).replace('{', '').replace('}', '').replace("'", '')
+        if item_tags:
+            item_tags = str(item_tags).replace('{', '').replace('}', '').replace("'", '')
 
-        concept_verbose = f"`{concept_name}`"
-        if concept_desc:
-            concept_verbose += f" (description: {concept_desc})"
-        if concept_tags:
-            concept_verbose += f" [tags: {concept_tags}]"
-            concepts[concept_name]['tags'] = f"- Annotations and constraints: {concept_tags}\n"
+        concept_verbose = f"`{item_name}`"
+        if item_desc:
+            concept_verbose += f" (description: {item_desc})"
+        if item_tags:
+            concept_verbose += f" [tags: {item_tags}]"
+            concepts_and_views[item_name]['tags'] = f"- Annotations and constraints: {item_tags}\n"
 
         concepts_desc_arr.append(concept_verbose)
     
-    combined_list = concepts_list + views_list
-    
-    if len(combined_list) == 1 and not (combined_list[0].lower() == 'none' or combined_list[0].lower() == 'null'):
+    if len(concepts_and_views) == 1: # and not (concepts[0].lower() == 'none' or concepts[0].lower() == 'null'):
         # If only one concept is provided, return it directly
-        determined_concept_name = concepts_list[0] if concepts_list else views_list[0]
-
-        if determined_concept_name not in concepts:
-            raise Exception(f"'{determined_concept_name}' was not found in the ontology.")
-
+        determined_concept_name = list(concepts_and_views.keys())[0]
     else:
         # Use LLM to determine the concept based on the question
         iteration = 0
@@ -347,7 +341,7 @@ def determine_concept(
 
             response_text = _get_response_text(response)
             candidate = response_text.strip()
-            if should_validate and candidate not in concepts.keys():
+            if should_validate and candidate not in concepts_and_views.keys():
                 error = f"Concept '{determined_concept_name}' not found in the list of concepts."
                 continue
             
@@ -358,9 +352,9 @@ def determine_concept(
             raise Exception(f"Failed to determine concept: {error}")
 
     if determined_concept_name:
-        schema = 'vtimbr' if concepts.get(determined_concept_name).get('is_view') == 'true' else 'dtimbr'
+        schema = 'vtimbr' if concepts_and_views.get(determined_concept_name).get('is_view') == 'true' else 'dtimbr'
     return {
-        "concept_metadata": concepts.get(determined_concept_name) if determined_concept_name else None,
+        "concept_metadata": concepts_and_views.get(determined_concept_name) if determined_concept_name else None,
         "concept": determined_concept_name,
         "schema": schema,
         "usage_metadata": usage_metadata,

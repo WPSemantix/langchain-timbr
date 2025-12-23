@@ -192,7 +192,7 @@ def _should_ignore_tag(tag_name: str) -> bool:
 def _prepare_tags_dict(
     type: Optional[str] = 'concept',
     tags_list: Optional[list] = [],
-    include_tags: Optional[str] = '',
+    include_tags: Optional[list] = [],
 ) -> dict:
     tags_dict = {}
     if not include_tags:
@@ -206,7 +206,7 @@ def _prepare_tags_dict(
         tag_name = tag.get('tag_name')
 
         # Check if the tag is included
-        if (include_tags != '*' and tag_name not in include_tags) or _should_ignore_tag(tag_name):
+        if (not _should_select_all(include_tags) and tag_name not in include_tags) or _should_ignore_tag(tag_name):
             continue
         
         key = tag.get('target_name')
@@ -242,11 +242,11 @@ def get_tags(conn_params: dict, include_tags: Optional[Any] = None) -> dict:
 
 
 def _should_ignore_list(list: list) -> bool:
-    return bool(list and len(list) == 1 and (list[0] == 'none' or list[0] == 'null'))
+    return bool(list and len(list) == 1 and (list[0].lower() in ['none', 'null']))
 
 
 def _should_select_all(list: list) -> bool:
-    return list and len(list) == 1 and list[0] == '*'
+    return bool(list and len(list) == 1 and list[0] == '*')
 
 
 @cache_with_version_check
