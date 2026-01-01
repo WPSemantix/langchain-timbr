@@ -241,24 +241,36 @@ def get_tags(conn_params: dict, include_tags: Optional[Any] = None) -> dict:
     }
 
 
-def _should_ignore_list(list: list) -> bool:
+def _should_ignore_list(list: list[Any] | None) -> bool:
     return bool(list and len(list) == 1 and (list[0].lower() in ['none', 'null']))
 
 
-def _should_select_all(list: list) -> bool:
+def _should_select_all(list: list[Any] | None) -> bool:
     return bool(list and len(list) == 1 and list[0] == '*')
+
+
+def _has_dtimbr_permissions(conn_params: dict) -> bool:
+    has_perms = True
+    dtimbr_query = "SHOW TABLES IN dtimbr"
+    try:
+        dtimbr_tables = run_query(dtimbr_query, conn_params)
+        has_perms = len(dtimbr_tables) > 0
+    except Exception:
+        has_perms = False
+
+    return has_perms
 
 
 @cache_with_version_check
 def get_concepts(
     conn_params,
-    concepts_list: Optional[list] = None,
-    views_list: Optional[list] = None,
+    concepts_list: Optional[list[Any]] = None,
+    views_list: Optional[list[Any]] = None,
     include_logic_concepts: Optional[bool] = False,
 ) -> dict:
     """Fetch concepts (or views) from timbr.sys_concepts and/or timbr.sys_views."""
     joined_views = ','.join(f"'{v}'" for v in views_list) if views_list else ''
-    should_ignore_concepts = _should_ignore_list(concepts_list)
+    should_ignore_concepts = _should_ignore_list(concepts_list) or not _has_dtimbr_permissions(conn_params)
     should_ignore_views = _should_ignore_list(views_list)
 
     filter_concepts = " WHERE concept IN (SELECT DISTINCT concept FROM timbr.sys_concept_properties)" if not include_logic_concepts else ""

@@ -304,7 +304,7 @@ def determine_concept(
 
         concepts_desc_arr.append(concept_verbose)
     
-    if len(concepts_and_views) == 1: # and not (concepts[0].lower() == 'none' or concepts[0].lower() == 'null'):
+    if len(concepts_and_views) == 1:
         # If only one concept is provided, return it directly
         determined_concept_name = list(concepts_and_views.keys())[0]
     else:

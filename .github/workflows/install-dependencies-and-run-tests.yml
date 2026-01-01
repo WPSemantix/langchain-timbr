@@ -9,6 +9,8 @@ on:
 env:
   TIMBR_URL: ${{ secrets.TIMBR_URL }}
   TIMBR_TOKEN: ${{ secrets.TIMBR_TOKEN }}
+  TIMBR_ONTOLOGY_NO_DTIMBR_PERMS: ${{ secrets.TIMBR_ONTOLOGY_NO_DTIMBR_PERMS }}
+  TIMBR_TOKEN_NO_DTIMBR_PERMS: ${{ secrets.TIMBR_TOKEN_NO_DTIMBR_PERMS }}
   LLM_TYPE: ${{ secrets.LLM_TYPE }}
   LLM_MODEL: ${{ secrets.LLM_MODEL }}
   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
