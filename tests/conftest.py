@@ -13,6 +13,8 @@ def config():
         "timbr_url": os.environ.get("TIMBR_URL", "https://demo-env.timbr.ai"),
         "timbr_token": os.environ.get("TIMBR_TOKEN"),
         "timbr_ontology": os.environ.get("TIMBR_ONTOLOGY", "supply_metrics_llm_tests"),
+        "timbr_token_no_dtimbr_perms": os.environ.get("TIMBR_TOKEN_NO_DTIMBR_PERMS"),
+        "timbr_ontology_no_dtimbr_perms": os.environ.get("TIMBR_ONTOLOGY_NO_DTIMBR_PERMS", "timbr_calls"),
         "test_prompt": os.environ.get("TEST_PROMPT", "What are the total sales for consumer customers?"),
         "test_prompt_2": os.environ.get("TEST_PROMPT_2", "Get all customers"),
         "test_prompt_3": os.environ.get("TEST_PROMPT_3", "Get all products and materials"),

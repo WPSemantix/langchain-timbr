@@ -403,3 +403,16 @@ class TestGenerateAnswerChain:
         assert result["answer"], "Answer should not be empty"
         assert chain.usage_metadata_key in result, "Chain should return 'generate_answer_usage_metadata'"
         assert len(result[chain.usage_metadata_key]) == 1 and 'answer_question' in result[chain.usage_metadata_key], "Generate answer chain usage metadata should contain only 'answer_question'"
+
+    def test_generate_timbr_sql_with_no_dtimbr_perms(self, llm, config):
+        """Test SQL generation with a user that lacks dtimbr schema permissions."""
+        chain = GenerateTimbrSqlChain(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token_no_dtimbr_perms"],
+            ontology=config["timbr_ontology_no_dtimbr_perms"],
+            verify_ssl=config["verify_ssl"],
+        )
+        result = chain.invoke({ "prompt": "all calls" })
+        print("GenerateTimbrSqlChain with concepts_list=['plant'] result:", result)
+        assert "error" in result and "User doesn't have access to query Knowledge Graph schema: dtimbr" in result["error"], "Should return permission error message"
