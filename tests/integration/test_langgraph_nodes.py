@@ -29,7 +29,7 @@ class TestLangGraphNodes:
         # Create a test state payload.
         state = {
             "prompt": config["test_prompt"],
-            "messages": [{ "content": config["test_prompt"] }],
+            # "messages": [{ "content": config["test_prompt"] }],
         }
         result = node(state)
         print("IdentifyConceptNode result:", result)
@@ -111,3 +111,24 @@ class TestLangGraphNodes:
         print("GenerateResponseNode result:", result)
         assert "answer" in result, "Result should contain 'answer'"
         assert result["answer"], "Answer should not be empty"
+
+    def test_execute_node_with_state_graph(self, llm, config):
+        """Test basic ExecuteSemanticQueryNode functionality."""
+        from langgraph.graph import StateGraph
+        state = StateGraph(dict)
+        state.messages = [{"content": config["test_prompt"]}]
+
+        execute_query_node = ExecuteSemanticQueryNode(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"],
+            verify_ssl=config["verify_ssl"],
+        )
+
+        output = execute_query_node(state)
+
+        print("ExecuteSemanticQueryNode result:", output)
+        assert "rows" in output, "Result should contain 'rows'"
+        assert isinstance(output["rows"], list), "'rows' should be a list"
+        assert output["sql"], "SQL should be present in the result"

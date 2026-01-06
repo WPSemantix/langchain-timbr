@@ -102,7 +102,7 @@ class ExecuteSemanticQueryNode:
 
     def run(self, state: StateGraph) -> dict:
         try:
-            prompt = state.messages[-1].content if state.messages[-1] else None
+            prompt = state.messages[-1].get('content') if state.messages[-1] and 'content' in state.messages[-1] else None
         except Exception:
             prompt = state.get('prompt', None)
 
