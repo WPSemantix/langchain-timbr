@@ -776,7 +776,7 @@ def generate_sql(
                 regen_error = ''
                 regen_sql = None
                 
-                while regen_sql is None or (validation_iteration < retries and not regen_is_valid):
+                while validation_iteration < retries and (regen_sql is None or not regen_is_valid):
                     validation_iteration += 1
                     validation_err_txt = f"\nThe regenerated SQL (`{regen_sql}`) was invalid with error: {regen_error}. Please generate a corrected query." if regen_error and "snowflake" not in llm._llm_type else ""
                     
