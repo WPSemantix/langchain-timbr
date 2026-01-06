@@ -22,6 +22,7 @@ env:
   JWT_PASSWORD: ${{ secrets.JWT_PASSWORD }}
   JWT_SCOPE: ${{ secrets.JWT_SCOPE }}
   JWT_SECRET: ${{ secrets.JWT_SECRET }}
+  LLM_TIMEOUT: ${{ secrets.LLM_TIMEOUT }}
 
 jobs:
   test-python-310:
