@@ -19,7 +19,7 @@ llm_model = os.environ.get('LLM_MODEL')
 llm_api_key = os.environ.get('LLM_API_KEY')
 llm_temperature = os.environ.get('LLM_TEMPERATURE', 0.0)
 llm_additional_params = os.environ.get('LLM_ADDITIONAL_PARAMS', '')
-llm_timeout = to_integer(os.environ.get('LLM_TIMEOUT', 60))  # Default 60 seconds timeout
+llm_timeout = to_integer(os.environ.get('LLM_TIMEOUT', 120))  # Default 120 seconds timeout
 
 # Optional for Azure OpenAI with Service Principal authentication
 llm_tenant_id = os.environ.get('LLM_TENANT_ID', None)

@@ -180,7 +180,7 @@ class ValidateTimbrSqlChain(Chain):
         concept = self._concept
         reasoning_status = None
 
-        is_sql_valid, error = validate_sql(sql, self._get_conn_params())
+        is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
         if not is_sql_valid:
             prompt_extension = self._note + '\n' if self._note else ""
             generate_res = generate_sql(
