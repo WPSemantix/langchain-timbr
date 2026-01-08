@@ -164,7 +164,7 @@ def _validate(sql: str, conn_params: dict) -> bool:
     return to_boolean(explain_res and explain_res[0].get('PLAN') and query_res is not None)
 
 
-def validate_sql(sql: str, conn_params: dict) -> tuple[bool, str]:
+def validate_sql(sql: str, conn_params: dict) -> tuple[bool, str, str]:
     if not sql:
         raise Exception("Please provide SQL to validate.")
     
@@ -174,12 +174,15 @@ def validate_sql(sql: str, conn_params: dict) -> tuple[bool, str]:
     try:
         is_valid = _validate(sql, conn_params)
     except Exception as e:
+        error = str(getattr(e, 'doc', e))
         if not sql.upper().startswith("SELECT"):
             sql = sql[sql.upper().index("SELECT"):]
             try:
                 is_valid = _validate(sql, conn_params)
+                if is_valid:
+                    error = None
             except Exception:
-                error = str(getattr(e, 'doc', e))
+                pass
 
     return is_valid, error, sql
 
