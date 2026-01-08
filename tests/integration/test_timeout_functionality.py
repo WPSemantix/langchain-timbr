@@ -13,14 +13,14 @@ from unittest.mock import Mock
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'langchain_timbr'))
 
 
-def _call_llm_with_timeout(llm, prompt, timeout: int = 60):
+def _call_llm_with_timeout(llm, prompt, timeout: int = 120):
     """
     Call LLM with timeout to prevent hanging.
     
     Args:
         llm: The LLM instance (mock for testing)
         prompt: The prompt to send
-        timeout: Timeout in seconds (default: 60)
+        timeout: Timeout in seconds (default: 120)
         
     Returns:
         LLM response

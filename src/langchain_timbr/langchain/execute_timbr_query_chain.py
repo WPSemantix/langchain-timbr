@@ -252,7 +252,7 @@ class ExecuteTimbrQueryChain(Chain):
             usage_metadata = {}
 
             if sql and self._should_validate_sql:
-                is_sql_valid, error = validate_sql(sql, self._get_conn_params())
+                is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
 
             is_infered = False
             iteration = 0

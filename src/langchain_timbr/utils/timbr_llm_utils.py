@@ -52,14 +52,14 @@ def _clean_snowflake_prompt(prompt: Any) -> None:
     prompt[1].content = clean_func(prompt[1].content)  # User message
 
 
-def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 60) -> Any:
+def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 120) -> Any:
     """
     Call LLM with timeout to prevent hanging.
     
     Args:
         llm: The LLM instance
         prompt: The prompt to send
-        timeout: Timeout in seconds (default: 60)
+        timeout: Timeout in seconds (default: 120)
         
     Returns:
         LLM response
@@ -626,7 +626,7 @@ def _generate_sql_with_llm(
         result["p_hash"] = encrypt_prompt(prompt)
     
     if should_validate_sql:
-        result["is_valid"], result["error"] = validate_sql(result["sql"], conn_params)
+        result["is_valid"], result["error"], result["sql"] = validate_sql(result["sql"], conn_params)
     
     return result
 
@@ -764,7 +764,7 @@ def generate_sql(
                     break
                 
                 # Step 2: Regenerate SQL with feedback (with validation retries)
-                evaluation_note = note + f"\n\nThe previously generated SQL: `{sql_query}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'."
+                evaluation_note = note + f"\n\nThe previously generated SQL: `{sql_query}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
                 
                 # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
                 context_graph_depth = min(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
