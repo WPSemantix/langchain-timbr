@@ -571,11 +571,9 @@ def _build_sql_generation_context(
 def _generate_sql_with_llm(
     question: str,
     llm: LLM,
-    conn_params: dict,
     generate_sql_prompt: Any,
     current_context: dict,
     note: str,
-    should_validate_sql: bool,
     timeout: int,
     debug: bool = False,
 ) -> dict:
@@ -625,11 +623,161 @@ def _generate_sql_with_llm(
     if debug:
         result["p_hash"] = encrypt_prompt(prompt)
     
-    if should_validate_sql:
-        result["is_valid"], result["error"], result["sql"] = validate_sql(result["sql"], conn_params)
     
     return result
 
+def handle_generate_sql_reasoning(
+    sql_query: str,
+    question: str,
+    llm: LLM,
+    conn_params: dict,
+    schema: str,
+    concept: str,
+    concept_metadata: dict,
+    include_tags: bool,
+    exclude_properties: list,
+    db_is_case_sensitive: bool,
+    max_limit: int,
+    reasoning_steps: int,
+    note: str,
+    graph_depth: int,
+    usage_metadata: dict,
+    timeout: int,
+    debug: bool,
+) -> tuple[str, int]:
+    generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
+    context_graph_depth = graph_depth
+    reasoned_sql = sql_query
+    for step in range(reasoning_steps):
+        try:
+            # Step 1: Evaluate the current SQL
+            eval_result = _evaluate_sql_enable_reasoning(
+                question=question,
+                sql_query=reasoned_sql,
+                llm=llm,
+                conn_params=conn_params,
+                timeout=timeout,
+            )
+            
+            usage_metadata[f'sql_reasoning_step_{step + 1}'] = {
+                "approximate": eval_result['apx_token_count'],
+                **eval_result['usage_metadata'],
+            }
+            
+            evaluation = eval_result['evaluation']
+            reasoning_status = evaluation.get("assessment", "partial").lower()
+            
+            if reasoning_status == "correct":
+                break
+            
+            # Step 2: Regenerate SQL with feedback
+            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
+            
+            # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
+            context_graph_depth = min(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
+            regen_result = _generate_sql_with_llm(
+                question=question,
+                llm=llm,
+                generate_sql_prompt=generate_sql_prompt,
+                current_context=_build_sql_generation_context(
+                    conn_params=conn_params,
+                    schema=schema,
+                    concept=concept,
+                    concept_metadata=concept_metadata,
+                    graph_depth=context_graph_depth,
+                    include_tags=include_tags,
+                    exclude_properties=exclude_properties,
+                    db_is_case_sensitive=db_is_case_sensitive,
+                    max_limit=max_limit),
+                note=evaluation_note,
+                timeout=timeout,
+                debug=debug,
+            )
+            
+            reasoned_sql = regen_result['sql']
+            error = regen_result['error']
+
+            step_key = f'generate_sql_reasoning_step_{step + 1}'
+            usage_metadata[step_key] = {
+                "approximate": regen_result['apx_token_count'],
+                **regen_result['usage_metadata'],
+            }
+            if debug and 'p_hash' in regen_result:
+                usage_metadata[step_key]['p_hash'] = regen_result['p_hash']
+
+            if error:
+                raise Exception(error)
+            
+        except TimeoutError as e:
+            raise Exception(f"LLM call timed out: {str(e)}")
+        except Exception as e:
+            print(f"Warning: LLM reasoning failed: {e}")
+            break
+    
+    return reasoned_sql, context_graph_depth
+
+def handle_validate_generate_sql(
+    sql_query: str,
+    question: str,
+    llm: LLM,
+    conn_params: dict,
+    generate_sql_prompt: Any,
+    schema: str,
+    concept: str,
+    concept_metadata: dict,
+    include_tags: bool,
+    exclude_properties: list,
+    db_is_case_sensitive: bool,
+    max_limit: int,
+    graph_depth: int,
+    retries: int,
+    timeout: int,
+    debug: bool,
+    usage_metadata: dict,
+):
+    is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
+    validation_iteration = 0
+  
+    while validation_iteration < retries and not is_sql_valid:
+        validation_iteration += 1
+        validation_err_txt = f"\nThe generated SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query that achieves the intended result." if error and "snowflake" not in llm._llm_type else ""
+
+        regen_result = _generate_sql_with_llm(
+            question=question,
+            llm=llm,
+            generate_sql_prompt=generate_sql_prompt,
+            current_context=_build_sql_generation_context(
+                conn_params=conn_params,
+                schema=schema,
+                concept=concept,
+                concept_metadata=concept_metadata,
+                graph_depth=graph_depth,
+                include_tags=include_tags,
+                exclude_properties=exclude_properties,
+                db_is_case_sensitive=db_is_case_sensitive,
+                max_limit=max_limit),
+            note=validation_err_txt,
+            timeout=timeout,
+            debug=debug,
+        )
+        
+        regen_error = regen_result['error']
+        sql_query = regen_result['sql']
+
+        validation_key = f'generate_sql_validation_regen_{validation_iteration}'
+        usage_metadata[validation_key] = {
+            "approximate": regen_result['apx_token_count'],
+            **regen_result['usage_metadata'],
+        }
+        if debug and 'p_hash' in regen_result:
+            usage_metadata[validation_key]['p_hash'] = regen_result['p_hash']
+
+        if regen_error:
+            raise Exception(regen_error)
+        
+        is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
+
+    return is_sql_valid, error, sql_query
 
 def generate_sql(
         question: str,
@@ -656,13 +804,11 @@ def generate_sql(
     usage_metadata = {}
     concept_metadata = None
     reasoning_status = 'correct'
-    
+
     # Use config default timeout if none provided
     if timeout is None:
         timeout = config.llm_timeout
     
-    generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
-   
     if concept and concept != "" and (schema is None or schema != "vtimbr"):
         concepts_list = [concept]
     elif concept and concept != "" and schema == "vtimbr":
@@ -682,154 +828,102 @@ def generate_sql(
         debug=debug,
         timeout=timeout,
     )
-    concept, schema, concept_metadata = determine_concept_res.get('concept'), determine_concept_res.get('schema'), determine_concept_res.get('concept_metadata')
+
+    concept = determine_concept_res.get('concept')
+    schema = determine_concept_res.get('schema')
+    concept_metadata = determine_concept_res.get('concept_metadata')
     usage_metadata.update(determine_concept_res.get('usage_metadata', {}))
 
     if not concept:
         raise Exception("No relevant concept found for the query.")
 
+    generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
     sql_query = None
-    iteration = 0
-    is_sql_valid = True
+    is_sql_valid = not (should_validate_sql or enable_reasoning) # Default to True if no validation or reasoning
     error = ''
-    while sql_query is None or (should_validate_sql and iteration < retries and not is_sql_valid):
-        iteration += 1
-        err_txt = f"\nThe original SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query." if error and "snowflake" not in llm._llm_type else ""
 
-        try:
-            result = _generate_sql_with_llm(
+    try:
+        result = _generate_sql_with_llm(
+            question=question,
+            llm=llm,
+            generate_sql_prompt=generate_sql_prompt,
+            current_context=_build_sql_generation_context(
+                conn_params=conn_params,
+                schema=schema,
+                concept=concept,
+                concept_metadata=concept_metadata,
+                graph_depth=graph_depth,
+                include_tags=include_tags,
+                exclude_properties=exclude_properties,
+                db_is_case_sensitive=db_is_case_sensitive,
+                max_limit=max_limit),
+            note=note,
+            timeout=timeout,
+            debug=debug,
+        )
+        
+        usage_metadata['generate_sql'] = {
+            "approximate": result['apx_token_count'],
+            **result['usage_metadata'],
+        }
+        if debug and 'p_hash' in result:
+            usage_metadata['generate_sql']["p_hash"] = result['p_hash']
+        
+        sql_query = result['sql']
+        error = result['error']
+
+        if error:
+            raise Exception(error)
+        
+        if enable_reasoning and sql_query is not None:
+            sql_query, graph_depth = handle_generate_sql_reasoning(
+                sql_query=sql_query,
+                question=question,
+                llm=llm,
+                conn_params=conn_params,
+                schema=schema,
+                concept=concept,
+                concept_metadata=concept_metadata,
+                include_tags=include_tags,
+                exclude_properties=exclude_properties,
+                db_is_case_sensitive=db_is_case_sensitive,
+                max_limit=max_limit,
+                reasoning_steps=reasoning_steps,
+                note=note,
+                graph_depth=graph_depth,
+                usage_metadata=usage_metadata,
+                timeout=timeout,
+                debug=debug,
+            )
+
+        if should_validate_sql or enable_reasoning:
+            # Validate & regenerate only once if reasoning enabled and validation is disabled
+            validate_retries = 1 if not should_validate_sql else retries            
+            is_sql_valid, error, sql_query = handle_validate_generate_sql(
+                sql_query=sql_query,
                 question=question,
                 llm=llm,
                 conn_params=conn_params,
                 generate_sql_prompt=generate_sql_prompt,
-                current_context=_build_sql_generation_context(
-                    conn_params=conn_params,
-                    schema=schema,
-                    concept=concept,
-                    concept_metadata=concept_metadata,
-                    graph_depth=graph_depth,
-                    include_tags=include_tags,
-                    exclude_properties=exclude_properties,
-                    db_is_case_sensitive=db_is_case_sensitive,
-                    max_limit=max_limit),
-                note=note + err_txt,
-                should_validate_sql=should_validate_sql,
+                schema=schema,
+                concept=concept,
+                concept_metadata=concept_metadata,
+                include_tags=include_tags,
+                exclude_properties=exclude_properties,
+                db_is_case_sensitive=db_is_case_sensitive,
+                max_limit=max_limit,
+                graph_depth=graph_depth,
+                retries=validate_retries,
                 timeout=timeout,
                 debug=debug,
+                usage_metadata=usage_metadata,
             )
-            
-            usage_metadata['generate_sql'] = {
-                "approximate": result['apx_token_count'],
-                **result['usage_metadata'],
-            }
-            if debug and 'p_hash' in result:
-                usage_metadata['generate_sql']["p_hash"] = result['p_hash']
-            
-            sql_query = result['sql']
-            is_sql_valid = result['is_valid']
-            error = result['error']
-            
-        except TimeoutError as e:
-            error = f"LLM call timed out: {str(e)}"
-            raise Exception(error)
-        except Exception as e:
-            error = f"LLM call failed: {str(e)}"
-            if should_validate_sql:
-                continue
-            else:
-                raise Exception(error)
-    
-    
-    if enable_reasoning and sql_query is not None:
-        for step in range(reasoning_steps):
-            try:
-                # Step 1: Evaluate the current SQL
-                eval_result = _evaluate_sql_enable_reasoning(
-                    question=question,
-                    sql_query=sql_query,
-                    llm=llm,
-                    conn_params=conn_params,
-                    timeout=timeout,
-                )
-                
-                usage_metadata[f'sql_reasoning_step_{step + 1}'] = {
-                    "approximate": eval_result['apx_token_count'],
-                    **eval_result['usage_metadata'],
-                }
-                
-                evaluation = eval_result['evaluation']
-                reasoning_status = evaluation.get("assessment", "partial").lower()
-                
-                if reasoning_status == "correct":
-                    break
-                
-                # Step 2: Regenerate SQL with feedback (with validation retries)
-                evaluation_note = note + f"\n\nThe previously generated SQL: `{sql_query}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
-                
-                # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
-                context_graph_depth = min(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
-                
-                # Regenerate SQL with validation retries
-                # Always validate during reasoning to ensure quality, regardless of global should_validate_sql flag
-                validation_iteration = 0
-                regen_is_valid = False
-                regen_error = ''
-                regen_sql = None
-                
-                while validation_iteration < retries and (regen_sql is None or not regen_is_valid):
-                    validation_iteration += 1
-                    validation_err_txt = f"\nThe regenerated SQL (`{regen_sql}`) was invalid with error: {regen_error}. Please generate a corrected query." if regen_error and "snowflake" not in llm._llm_type else ""
-                    
-                    regen_result = _generate_sql_with_llm(
-                        question=question,
-                        llm=llm,
-                        conn_params=conn_params,
-                        generate_sql_prompt=generate_sql_prompt,
-                        current_context=_build_sql_generation_context(
-                            conn_params=conn_params,
-                            schema=schema,
-                            concept=concept,
-                            concept_metadata=concept_metadata,
-                            graph_depth=context_graph_depth,
-                            include_tags=include_tags,
-                            exclude_properties=exclude_properties,
-                            db_is_case_sensitive=db_is_case_sensitive,
-                            max_limit=max_limit),
-                        note=evaluation_note + validation_err_txt,
-                        should_validate_sql=True,  # Always validate during reasoning
-                        timeout=timeout,
-                        debug=debug,
-                    )
-                    
-                    regen_sql = regen_result['sql']
-                    regen_is_valid = regen_result['is_valid']
-                    regen_error = regen_result['error']
-                    
-                    # Track token usage for each validation iteration
-                    if validation_iteration == 1:
-                        usage_metadata[f'generate_sql_reasoning_step_{step + 1}'] = {
-                            "approximate": regen_result['apx_token_count'],
-                            **regen_result['usage_metadata'],
-                        }
-                        if debug and 'p_hash' in regen_result:
-                            usage_metadata[f'generate_sql_reasoning_step_{step + 1}']['p_hash'] = regen_result['p_hash']
-                    else:
-                        usage_metadata[f'generate_sql_reasoning_step_{step + 1}_validation_{validation_iteration}'] = {
-                            "approximate": regen_result['apx_token_count'],
-                            **regen_result['usage_metadata'],
-                        }
-                        if debug and 'p_hash' in regen_result:
-                            usage_metadata[f'generate_sql_reasoning_step_{step + 1}_validation_{validation_iteration}']['p_hash'] = regen_result['p_hash']
-                
-                sql_query = regen_sql
-                is_sql_valid = regen_is_valid
-                error = regen_error
-                
-            except TimeoutError as e:
-                raise Exception(f"LLM call timed out: {str(e)}")
-            except Exception as e:
-                print(f"Warning: LLM reasoning failed: {e}")
-                break
+    except TimeoutError as e:
+        error = f"LLM call timed out: {str(e)}"
+        raise Exception(error)
+    except Exception as e:
+        error = f"LLM call failed: {str(e)}"
+        raise Exception(error)
     
     return {
         "sql": sql_query,
