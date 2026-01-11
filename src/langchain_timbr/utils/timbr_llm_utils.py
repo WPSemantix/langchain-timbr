@@ -734,12 +734,12 @@ def handle_validate_generate_sql(
     timeout: int,
     debug: bool,
     usage_metadata: dict,
-):
+) -> tuple[bool, str, str]:
     is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
-    validation_iteration = 0
+    validation_attempt = 0
   
-    while validation_iteration < retries and not is_sql_valid:
-        validation_iteration += 1
+    while validation_attempt < retries and not is_sql_valid:
+        validation_attempt += 1
         validation_err_txt = f"\nThe generated SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query that achieves the intended result." if error and "snowflake" not in llm._llm_type else ""
 
         regen_result = _generate_sql_with_llm(
@@ -764,7 +764,7 @@ def handle_validate_generate_sql(
         regen_error = regen_result['error']
         sql_query = regen_result['sql']
 
-        validation_key = f'generate_sql_validation_regen_{validation_iteration}'
+        validation_key = f'generate_sql_validation_regen_{validation_attempt}'
         usage_metadata[validation_key] = {
             "approximate": regen_result['apx_token_count'],
             **regen_result['usage_metadata'],
@@ -839,7 +839,7 @@ def generate_sql(
 
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
     sql_query = None
-    is_sql_valid = not (should_validate_sql or enable_reasoning) # Default to True if no validation or reasoning
+    is_sql_valid = True  # Assume valid by default; set to False only if validation fails
     error = ''
 
     try:
@@ -898,7 +898,7 @@ def generate_sql(
 
         if should_validate_sql or enable_reasoning:
             # Validate & regenerate only once if reasoning enabled and validation is disabled
-            validate_retries = 1 if not should_validate_sql else retries            
+            validate_retries = 1 if not should_validate_sql else retries
             is_sql_valid, error, sql_query = handle_validate_generate_sql(
                 sql_query=sql_query,
                 question=question,
