@@ -247,6 +247,8 @@ class ExecuteTimbrQueryChain(Chain):
             concept_name = inputs.get("concept", self._concept)
             is_sql_valid = True
             error = None
+            identify_concept_reason = None
+            generate_sql_reason = None
             reasoning_status = None
             rows = []
             usage_metadata = {}
@@ -270,6 +272,8 @@ class ExecuteTimbrQueryChain(Chain):
                         is_sql_valid = True
 
                     error = generate_res.get("error")
+                    identify_concept_reason = generate_res.get("identify_concept_reason")
+                    generate_sql_reason = generate_res.get("generate_sql_reason")
                     usage_metadata = self._summarize_usage_metadata(usage_metadata, generate_res.get("usage_metadata", {}))
                 
                 is_sql_not_tried = not any(sql.lower().strip() == gen.lower().strip() for gen in generated)
@@ -305,6 +309,8 @@ class ExecuteTimbrQueryChain(Chain):
                 "concept": concept_name,
                 "error": error if not is_sql_valid else None,
                 "reasoning_status": reasoning_status,
+                "identify_concept_reason": identify_concept_reason,
+                "generate_sql_reason": generate_sql_reason,
                 self.usage_metadata_key: usage_metadata,
             }
 

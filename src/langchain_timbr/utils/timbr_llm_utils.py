@@ -268,6 +268,7 @@ def determine_concept(
 ) -> dict[str, Any]:
     usage_metadata = {}
     determined_concept_name = None
+    identify_concept_reason = None
     schema = 'dtimbr'
     
     # Use config default timeout if none provided
@@ -339,10 +340,21 @@ def determine_concept(
             if debug:
                 usage_metadata['determine_concept']["p_hash"] = encrypt_prompt(prompt)
 
-            response_text = _get_response_text(response)
-            candidate = response_text.strip()
+            # Try to parse as JSON first (with 'result' and 'reason' keys)
+            try:
+                parsed_response = _parse_json_from_llm_response(response)
+                if isinstance(parsed_response, dict) and 'result' in parsed_response:
+                    candidate = parsed_response.get('result', '').strip()
+                    identify_concept_reason = parsed_response.get('reason', None)
+                else:
+                    # Fallback to plain text if JSON doesn't have expected structure
+                    candidate = _get_response_text(response).strip()
+            except (json.JSONDecodeError, ValueError):
+                # If not JSON, treat as plain text (backwards compatibility)
+                candidate = _get_response_text(response).strip()
+            
             if should_validate and candidate not in concepts_and_views.keys():
-                error = f"Concept '{determined_concept_name}' not found in the list of concepts."
+                error = f"Concept '{candidate}' not found in the list of concepts."
                 continue
             
             determined_concept_name = candidate
@@ -356,6 +368,7 @@ def determine_concept(
     return {
         "concept_metadata": concepts_and_views.get(determined_concept_name) if determined_concept_name else None,
         "concept": determined_concept_name,
+        "identify_concept_reason": identify_concept_reason,
         "schema": schema,
         "usage_metadata": usage_metadata,
     }
@@ -423,19 +436,82 @@ def _build_rel_columns_str(relationships: list[dict], columns_tags: Optional[dic
     return '.\n'.join(rel_str_arr) if rel_str_arr else ''
 
 
-def _parse_sql_from_llm_response(response: Any) -> str:
+def _parse_sql_and_reason_from_llm_response(response: Any) -> dict:
+    """
+    Parse SQL & reason from LLM response. Handles both plain SQL strings and JSON format with 'result' and 'reason' keys.
+    
+    Returns:
+        dict with 'sql' and 'reason' keys (reason may be None if not provided)
+    """
+    # Try to parse as JSON first
+    try:
+        parsed_json = _parse_json_from_llm_response(response)
+        
+        # Extract SQL from 'result' key and reason from 'reason' key
+        if isinstance(parsed_json, dict) and 'result' in parsed_json:
+            sql = parsed_json.get('result', '')
+            reason = parsed_json.get('reason', None)
+            
+            # Clean the SQL
+            sql = (sql
+                   .replace("```sql", "")
+                   .replace("```", "")
+                   .replace('SELECT \n', 'SELECT ')
+                   .replace(';', '')
+                   .strip())
+            
+            return {'sql': sql, 'reason': reason}
+    except (json.JSONDecodeError, ValueError):
+        # If not JSON, treat as plain SQL string (backwards compatibility)
+        pass
+    
+    # Fallback to plain text parsing
     response_text = _get_response_text(response)
-    return (response_text
-            .replace("```sql", "")
-            .replace("```", "")
-            .replace('SELECT \n', 'SELECT ')
-            .replace(';', '')
-            .strip())
+    sql = (response_text
+           .replace("```sql", "")
+           .replace("```", "")
+           .replace('SELECT \n', 'SELECT ')
+           .replace(';', '')
+           .strip())
+    
+    return {'sql': sql, 'reason': None}
 
 
 def _get_active_datasource(conn_params: dict) -> dict:
     datasources = get_datasources(conn_params, filter_active=True)
     return datasources[0] if datasources else None
+
+
+def _parse_json_from_llm_response(response: Any) -> dict:
+    """
+    Parse JSON from LLM response. Handles markdown code blocks and extracts valid JSON.
+    
+    Args:
+        response: LLM response object
+        
+    Returns:
+        dict containing parsed JSON
+        
+    Raises:
+        json.JSONDecodeError: If response cannot be parsed as JSON
+        ValueError: If response format is unexpected
+    """
+    response_text = _get_response_text(response)
+    
+    # Remove markdown code block markers if present
+    content = response_text.strip()
+    if content.startswith("```json"):
+        content = content[7:]  # Remove ```json
+    elif content.startswith("```"):
+        content = content[3:]  # Remove ```
+    
+    if content.endswith("```"):
+        content = content[:-3]  # Remove closing ```
+    
+    content = content.strip()
+    
+    # Parse and return JSON
+    return json.loads(content)
 
 
 def _evaluate_sql_enable_reasoning(
@@ -463,22 +539,8 @@ def _evaluate_sql_enable_reasoning(
     
     response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
     
-    # Extract JSON from response content (handle markdown code blocks)
-    content = response.content.strip()
-    
-    # Remove markdown code block markers if present
-    if content.startswith("```json"):
-        content = content[7:]  # Remove ```json
-    elif content.startswith("```"):
-        content = content[3:]  # Remove ```
-    
-    if content.endswith("```"):
-        content = content[:-3]  # Remove closing ```
-    
-    content = content.strip()
-    
     # Parse JSON response
-    evaluation = json.loads(content)
+    evaluation = _parse_json_from_llm_response(response)
     
     return {
         "evaluation": evaluation,
@@ -612,8 +674,12 @@ def _generate_sql_with_llm(
     
     response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
     
+    # Parse response which now includes both SQL and reason
+    parsed_response = _parse_sql_and_reason_from_llm_response(response)
+    
     result = {
-        "sql": _parse_sql_from_llm_response(response),
+        "sql": parsed_response['sql'],
+        "generate_sql_reason": parsed_response['reason'],
         "apx_token_count": apx_token_count,
         "usage_metadata": _extract_usage_metadata(response),
         "is_valid": True,
@@ -644,10 +710,11 @@ def handle_generate_sql_reasoning(
     usage_metadata: dict,
     timeout: int,
     debug: bool,
-) -> tuple[str, int]:
+) -> tuple[str, int, str]:
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
     context_graph_depth = graph_depth
     reasoned_sql = sql_query
+    reasoned_sql_reason = None
     for step in range(reasoning_steps):
         try:
             # Step 1: Evaluate the current SQL
@@ -695,6 +762,7 @@ def handle_generate_sql_reasoning(
             )
             
             reasoned_sql = regen_result['sql']
+            reasoned_sql_reason = regen_result['generate_sql_reason']
             error = regen_result['error']
 
             step_key = f'generate_sql_reasoning_step_{step + 1}'
@@ -714,7 +782,7 @@ def handle_generate_sql_reasoning(
             print(f"Warning: LLM reasoning failed: {e}")
             break
     
-    return reasoned_sql, context_graph_depth
+    return reasoned_sql, context_graph_depth, reasoned_sql_reason
 
 def handle_validate_generate_sql(
     sql_query: str,
@@ -830,6 +898,7 @@ def generate_sql(
     )
 
     concept = determine_concept_res.get('concept')
+    identify_concept_reason = determine_concept_res.get('identify_concept_reason', None)
     schema = determine_concept_res.get('schema')
     concept_metadata = determine_concept_res.get('concept_metadata')
     usage_metadata.update(determine_concept_res.get('usage_metadata', {}))
@@ -839,6 +908,7 @@ def generate_sql(
 
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
     sql_query = None
+    generate_sql_reason = None
     is_sql_valid = True  # Assume valid by default; set to False only if validation fails
     error = ''
 
@@ -870,13 +940,14 @@ def generate_sql(
             usage_metadata['generate_sql']["p_hash"] = result['p_hash']
         
         sql_query = result['sql']
+        generate_sql_reason = result.get('generate_sql_reason', None)
         error = result['error']
 
         if error:
             raise Exception(error)
         
         if enable_reasoning and sql_query is not None:
-            sql_query, graph_depth = handle_generate_sql_reasoning(
+            sql_query, graph_depth, generate_sql_reason = handle_generate_sql_reasoning(
                 sql_query=sql_query,
                 question=question,
                 llm=llm,
@@ -931,6 +1002,8 @@ def generate_sql(
         "schema": schema,
         "error": error if not is_sql_valid else None,
         "is_sql_valid": is_sql_valid if should_validate_sql else None,
+        "identify_concept_reason": identify_concept_reason,
+        "generate_sql_reason": generate_sql_reason,
         "reasoning_status": reasoning_status,
         "usage_metadata": usage_metadata,
     }
