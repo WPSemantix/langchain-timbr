@@ -27,6 +27,8 @@ class TestIdentifyTimbrConceptChain:
         print("IdentifyTimbrConceptChain result:", result)
         assert "concept" in result, "Chain should return a 'concept'"
         assert result["concept"], "Returned concept should not be empty"
+        assert "identify_concept_reason" in result, "Chain should return a 'identify_concept_reason'"
+        assert result["identify_concept_reason"], "Returned identify_concept_reason should not be empty"
         assert chain.usage_metadata_key in result, "Chain should return 'usage_metadata'"
         assert len(result[chain.usage_metadata_key]) == 1 and 'determine_concept' in result[chain.usage_metadata_key], "Usage metadata should contain only 'determine_concept'"
 
@@ -63,6 +65,11 @@ class TestGenerateTimbrSqlChain:
         assert "concept" in result and result["concept"], "Concept name should be returned"
         assert chain.usage_metadata_key in result, "Chain should return 'usage_metadata'"
         assert len(result[chain.usage_metadata_key]) == 2 and 'determine_concept' in result[chain.usage_metadata_key] and 'generate_sql' in result[chain.usage_metadata_key], "Usage metadata should contain both 'determine_concept' and 'generate_sql'"
+        assert "identify_concept_reason" in result, "Chain should return a 'identify_concept_reason'"
+        assert result["identify_concept_reason"], "Returned identify_concept_reason should not be empty"
+        assert "generate_sql_reason" in result, "Chain should return a 'generate_sql_reason'"
+        assert result["generate_sql_reason"], "Returned generate_sql_reason should not be empty"
+
 
     def test_generate_timbr_sql_with_limit_chain(self, llm, config):
         """Test SQL generation with row limit."""
