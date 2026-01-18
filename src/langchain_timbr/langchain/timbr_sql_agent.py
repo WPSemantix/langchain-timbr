@@ -181,6 +181,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "schema": None,
                     "concept": None,
                     "reasoning_status": None,
+                    "identify_concept_reason": None,
+                    "generate_sql_reason": None,
                     "usage_metadata": {},
                 },
                 log="Empty input received"
@@ -210,6 +212,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "error": result.get("error", None),
                     "reasoning_status": result.get("reasoning_status", None),
                     "usage_metadata": usage_metadata,
+                    "identify_concept_reason": None,
+                    "generate_sql_reason": None,
                 },
                 log=f"Successfully executed query on concept: {result.get('concept', '')}"
             )
@@ -224,6 +228,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "schema": None,
                     "concept": None,
                     "reasoning_status": None,
+                    "identify_concept_reason": None,
+                    "generate_sql_reason": None,
                     "usage_metadata": {},
                 },
                 log=error_context
@@ -245,6 +251,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "schema": None,
                     "concept": None,
                     "reasoning_status": None,
+                    "identify_concept_reason": None,
+                    "generate_sql_reason": None,
                     "usage_metadata": {},
                 },
                 log="Empty or whitespace-only input received"
@@ -286,6 +294,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "concept": result.get("concept", ""),
                     "error": result.get("error", None),
                     "reasoning_status": result.get("reasoning_status", None),
+                    "identify_concept_reason": result.get("identify_concept_reason", None),
+                    "generate_sql_reason": result.get("generate_sql_reason", None),
                     "usage_metadata": usage_metadata,
                 },
                 log=f"Successfully executed query on concept: {result.get('concept', '')}"
@@ -301,6 +311,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "schema": None,
                     "concept": None,
                     "reasoning_status": None,
+                    "identify_concept_reason": None,
+                    "generate_sql_reason": None,
                     "usage_metadata": {},
                 },
                 log=error_context

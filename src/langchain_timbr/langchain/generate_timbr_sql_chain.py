@@ -206,6 +206,8 @@ class GenerateTimbrSqlChain(Chain):
             "concept": concept,
             "is_sql_valid": generate_res.get("is_sql_valid"),
             "error": generate_res.get("error"),
+            "identify_concept_reason": generate_res.get("identify_concept_reason"),
+            "generate_sql_reason": generate_res.get("generate_sql_reason"),
             "reasoning_status": generate_res.get("reasoning_status"),
             self.usage_metadata_key: generate_res.get("usage_metadata"),
         }

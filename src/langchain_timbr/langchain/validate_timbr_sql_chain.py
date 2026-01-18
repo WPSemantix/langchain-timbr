@@ -179,6 +179,8 @@ class ValidateTimbrSqlChain(Chain):
         schema = self._schema
         concept = self._concept
         reasoning_status = None
+        identify_concept_reason = None
+        generate_sql_reason = None
 
         is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
         if not is_sql_valid:
@@ -211,6 +213,8 @@ class ValidateTimbrSqlChain(Chain):
             is_sql_valid = generate_res.get("is_sql_valid")
             reasoning_status = generate_res.get("reasoning_status")
             error = generate_res.get("error")
+            identify_concept_reason = generate_res.get("identify_concept_reason")
+            generate_sql_reason = generate_res.get("generate_sql_reason")
 
         return {
             "sql": sql,
@@ -219,5 +223,7 @@ class ValidateTimbrSqlChain(Chain):
             "is_sql_valid": is_sql_valid,
             "error": error,
             "reasoning_status": reasoning_status,
+            "identify_concept_reason": identify_concept_reason,
+            "generate_sql_reason": generate_sql_reason,
             self.usage_metadata_key: usage_metadata,
         }
