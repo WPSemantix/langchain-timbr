@@ -2,6 +2,8 @@ from typing import Optional, Dict, Any
 from langchain.chains.base import Chain
 from langchain.llms.base import LLM
 
+from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
+
 from ..utils.general import to_boolean, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import answer_question
 from ..llm_wrapper.llm_wrapper import LlmWrapper
@@ -19,11 +21,12 @@ class GenerateAnswerChain(Chain):
         llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
+        note: Optional[str] = '',
+        agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        note: Optional[str] = '',
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -31,6 +34,8 @@ class GenerateAnswerChain(Chain):
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response (optional, will use LlmWrapper with env variables if not provided)
         :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
         :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param note: Optional additional note to extend our llm prompt
+        :param agent: Optional Timbr agent name for options setup.
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
@@ -79,7 +84,17 @@ class GenerateAnswerChain(Chain):
         self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
-        self._note = note
+
+        self._agent = agent
+        if self._agent:
+            agent_options = get_timbr_agent_options(self._agent, conn_params=self._get_conn_params())
+
+            self._note = agent_options.get("note") if "note" in agent_options else ''
+            if note:
+                self._note = ((self._note + '\n') if self._note else '') + note
+        
+        else:
+            self._note = note
 
 
     @property
@@ -100,7 +115,7 @@ class GenerateAnswerChain(Chain):
         return {
             "url": self._url,
             "token": self._token,
-            # "ontology": self._ontology,
+            "ontology": config.ontology,
             "verify_ssl": self._verify_ssl,
             "is_jwt": self._is_jwt,
             "jwt_tenant_id": self._jwt_tenant_id,

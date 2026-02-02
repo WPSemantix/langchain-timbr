@@ -19,6 +19,7 @@ def config():
         "test_prompt_2": os.environ.get("TEST_PROMPT_2", "Get all customers"),
         "test_prompt_3": os.environ.get("TEST_PROMPT_3", "Get all products and materials"),
         "test_reasoning_prompt": os.environ.get("TEST_REASONING_PROMPT", "show me 10 orders in 2021 that contain metal"),
+        "timbr_agent_name": os.environ.get("TIMBR_AGENT_NAME", "langchain_timbr_sdk_tests"),
         "verify_ssl": os.environ.get("VERIFY_SSL", "true"),
         "jwt_timbr_url": os.environ.get("JWT_TIMBR_URL", "https://staging.timbr.ai:443/"),
         "jwt_timbr_ontology": os.environ.get("JWT_TIMBR_ONTOLOGY", "supply_metrics"),
