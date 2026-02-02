@@ -89,7 +89,7 @@ class GenerateAnswerChain(Chain):
 
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
-                self._note = (self._note + '\n') if self._note else '' + note
+                self._note = ((self._note + '\n') if self._note else '') + note
         
         else:
             self._note = note
@@ -113,7 +113,7 @@ class GenerateAnswerChain(Chain):
         return {
             "url": self._url,
             "token": self._token,
-            # "ontology": self._ontology,
+            "ontology": config.ontology,
             "verify_ssl": self._verify_ssl,
             "is_jwt": self._is_jwt,
             "jwt_tenant_id": self._jwt_tenant_id,

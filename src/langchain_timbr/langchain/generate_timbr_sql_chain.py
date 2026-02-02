@@ -126,6 +126,7 @@ class GenerateTimbrSqlChain(Chain):
         self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
+        self._max_limit = config.llm_default_limit # use default value so the self._get_conn_params() won't fail before agent options are processed
 
         self._agent = agent
         if self._agent:
@@ -146,7 +147,7 @@ class GenerateTimbrSqlChain(Chain):
             self._graph_depth = to_integer(agent_options.get("graph_depth")) if "graph_depth" in agent_options else 1
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
-                self._note = (self._note + '\n') if self._note else '' + note
+                self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_reasoning = to_boolean(agent_options.get("enable_reasoning")) if "enable_reasoning" in agent_options else config.enable_reasoning
             if enable_reasoning is not None and enable_reasoning != self._enable_reasoning:
                 self._enable_reasoning = to_boolean(enable_reasoning)

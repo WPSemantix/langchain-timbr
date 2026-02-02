@@ -122,7 +122,7 @@ class IdentifyTimbrConceptChain(Chain):
             self._retries = to_integer(agent_options.get("retries") if "retries" in agent_options else retries)
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
-                self._note = (self._note + '\n') if self._note else '' + note
+                self._note = ((self._note + '\n') if self._note else '') + note
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._concepts_list = parse_list(concepts_list)
