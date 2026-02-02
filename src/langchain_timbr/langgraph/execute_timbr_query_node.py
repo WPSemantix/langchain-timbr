@@ -32,6 +32,7 @@ class ExecuteSemanticQueryNode:
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
@@ -61,6 +62,7 @@ class ExecuteSemanticQueryNode:
         :param note: Optional additional note to extend our llm prompt
         :param db_is_case_sensitive: Whether the database is case sensitive (default is False).
         :param graph_depth: Maximum number of relationship hops to traverse from the source concept during schema exploration (default is 1).
+        :param agent: Optional Timbr agent name for options setup.
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
@@ -89,6 +91,7 @@ class ExecuteSemanticQueryNode:
             note=note,
             db_is_case_sensitive=db_is_case_sensitive,
             graph_depth=graph_depth,
+            agent=agent,
             verify_ssl=verify_ssl,
             is_jwt=is_jwt,
             jwt_tenant_id=jwt_tenant_id,

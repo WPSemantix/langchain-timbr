@@ -19,6 +19,7 @@ class IdentifyConceptNode:
         should_validate: Optional[bool] = False,
         retries: Optional[int] = 3,
         note: Optional[str] = None,
+        agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
@@ -38,6 +39,7 @@ class IdentifyConceptNode:
         :param should_validate: Whether to validate the identified concept before returning it
         :param retries: Number of retry attempts if the identified concept is invalid
         :param note: Optional additional note to extend our llm prompt
+        :param agent: Optional Timbr agent name for options setup.
         :param verify_ssl: Whether to verify SSL certificates
         :param is_jwt: Whether to use JWT authentication (default: False)
         :param jwt_tenant_id: Tenant ID for JWT authentication when using multi-tenant setup
@@ -55,6 +57,7 @@ class IdentifyConceptNode:
             should_validate=should_validate,
             retries=retries,
             note=note,
+            agent=agent,
             verify_ssl=verify_ssl,
             is_jwt=is_jwt,
             jwt_tenant_id=jwt_tenant_id,
