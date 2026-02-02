@@ -2,6 +2,8 @@ from typing import Optional, Union, Dict, Any
 from langchain.chains.base import Chain
 from langchain.llms.base import LLM
 
+from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
+
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
 from ..utils.timbr_llm_utils import determine_concept
 from ..llm_wrapper.llm_wrapper import LlmWrapper
@@ -16,6 +18,8 @@ class IdentifyTimbrConceptChain(Chain):
     within a Timbr ontology/knowledge graph that best matches the user's intent. It uses an LLM
     to process prompts and connects to Timbr via URL and token for concept identification.
     """
+
+    _ontology: Optional[str] = None
     
     def __init__(
         self,
@@ -30,6 +34,7 @@ class IdentifyTimbrConceptChain(Chain):
         should_validate: Optional[bool] = False,
         retries: Optional[int] = 3,
         note: Optional[str] = '',
+        agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
@@ -49,6 +54,7 @@ class IdentifyTimbrConceptChain(Chain):
         :param should_validate: Whether to validate the identified concept before returning it
         :param retries: Number of retry attempts if the identified concept is invalid
         :param note: Optional additional note to extend our llm prompt
+        :param agent: Optional Timbr agent name for options setup.
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
@@ -93,24 +99,40 @@ class IdentifyTimbrConceptChain(Chain):
         
         self._url = url if url is not None else config.url
         self._token = token if token is not None else config.token
-        self._ontology = ontology if ontology is not None else config.ontology
         
         # Validate required parameters
         validate_timbr_connection_params(self._url, self._token)
         
-        self._concepts_list = parse_list(concepts_list)
-        self._views_list = parse_list(views_list)
-        self._include_logic_concepts = to_boolean(include_logic_concepts)
-        self._include_tags = parse_list(include_tags)
-        self._should_validate = to_boolean(should_validate)
-        self._retries = to_integer(retries)
-        self._note = note
         self._verify_ssl = to_boolean(verify_ssl)
         self._is_jwt = to_boolean(is_jwt)
         self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
         self._conn_params = conn_params or {}
 
+        self._agent = agent
+        if self._agent:
+            agent_options = get_timbr_agent_options(self._agent, conn_params=self._get_conn_params())
+
+            self._ontology = agent_options.get("ontology") if "ontology" in agent_options else None
+            self._concepts_list = parse_list(agent_options.get("concepts_list")) if "concepts_list" in agent_options else None
+            self._views_list = parse_list(agent_options.get("views_list")) if "views_list" in agent_options else None
+            self._include_logic_concepts = to_boolean(agent_options.get("include_logic_concepts")) if "include_logic_concepts" in agent_options else False
+            self._include_tags = parse_list(agent_options.get("include_tags")) if "include_tags" in agent_options else None
+            self._should_validate = to_boolean(agent_options.get("should_validate")) if "should_validate" in agent_options else False
+            self._retries = to_integer(agent_options.get("retries") if "retries" in agent_options else retries)
+            self._note = agent_options.get("note") if "note" in agent_options else ''
+            if note:
+                self._note = (self._note + '\n') if self._note else '' + note
+        else:
+            self._ontology = ontology if ontology is not None else config.ontology
+            self._concepts_list = parse_list(concepts_list)
+            self._views_list = parse_list(views_list)
+            self._include_logic_concepts = to_boolean(include_logic_concepts)
+            self._include_tags = parse_list(include_tags)
+            self._should_validate = to_boolean(should_validate)
+            self._retries = to_integer(retries)
+            self._note = note
+        
 
     @property
     def usage_metadata_key(self) -> str:
@@ -131,7 +153,7 @@ class IdentifyTimbrConceptChain(Chain):
         return {
             "url": self._url,
             "token": self._token,
-            "ontology": self._ontology,
+            "ontology": self._ontology if self._ontology is not None else config.ontology,
             "verify_ssl": self._verify_ssl,
             "is_jwt": self._is_jwt,
             "jwt_tenant_id": self._jwt_tenant_id,

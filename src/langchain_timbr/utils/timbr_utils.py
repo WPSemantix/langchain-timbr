@@ -154,6 +154,33 @@ def get_datasources(conn_params: dict, filter_active: Optional[bool] = False) ->
     return res
 
 
+def get_timbr_agent_options(agent_name: str, conn_params: dict) -> dict:
+    """
+    Get all options for a specific agent from timbr sys_agents_options table.
+    
+    Args:
+        agent_name: Name of the agent to get options for
+        conn_params: Connection parameters for Timbr system engine
+        
+    Returns:
+        Dictionary of option_name -> option_value pairs
+    """
+    options = {}
+    
+    # Query agent options (case-insensitive match on agent_name)
+    options_query = f"SELECT option_name, option_value FROM timbr.sys_agents_options WHERE LOWER(agent_name) = LOWER('{agent_name}')"
+    
+    results = run_query(options_query, conn_params)
+    if len(results) == 0:
+        raise Exception(f'Agent "{agent_name}" not found or has no options defined.')
+    for row in results:
+        option_name = row.get('option_name')
+        option_value = row.get('option_value', '')
+        options[option_name] = option_value
+
+    return options
+
+
 def _validate(sql: str, conn_params: dict) -> bool:
     explain_sql = f"EXPLAIN {sql}"
     explain_res = run_query(explain_sql, conn_params)
