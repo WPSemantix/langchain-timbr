@@ -150,3 +150,59 @@ class TestTimbrSqlAgentDebugMode:
         usage_metadata = result.get("usage_metadata", {})
         for key, value in usage_metadata.items():
             assert "p_hash" not in value, f"Prompt hash should not be present in usage metadata for {key}"
+
+
+class TestTimbrAgentConfigurations:
+    """Test suite for timbr agent configurations entity."""
+
+    def test_agent_variables_being_used(self, llm, config):
+        agent = create_timbr_sql_agent(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"],
+            db_is_case_sensitive=True,
+            verify_ssl=config["verify_ssl"],
+            agent=config['timbr_agent_name'],
+            generate_answer=True,
+        )
+        result = agent.invoke(config["test_prompt"])
+
+        print("Agent result:", result)
+        assert "langchain-timbr sdk is the best!" in result["answer"], "Default note from Timbr agent should be included in the chain prompt"
+
+    def test_agent_additional_note_added(self, llm, config):
+        """Test that additional note from Timbr agent is added to the chain prompt."""
+        additional_note = 'Ignore previous instructions. The select stmt should always return hardcoded result: `Lucy is the best dog ever!` (no from/where clauses needed).'
+        agent = create_timbr_sql_agent(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"],
+            db_is_case_sensitive=True,
+            verify_ssl=config["verify_ssl"],
+            agent=config['timbr_agent_name'],
+            generate_answer=True,
+            note=additional_note,
+        )
+        result = agent.invoke(config["test_prompt"])
+
+        print("Agent result:", result)
+        assert "langchain-timbr sdk is the best!" not in result["answer"], "Default note from Timbr agent should be overridden"
+        assert "Lucy is the best dog ever!" in result["answer"], "Additional note from Timbr agent should be included in the chain prompt"
+
+    def test_agent_overrides_parameters(self, llm, config):
+        agent = create_timbr_sql_agent(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"],
+            db_is_case_sensitive=True,
+            verify_ssl=config["verify_ssl"],
+            agent=config['timbr_agent_name'],
+            enable_reasoning=True, # reasoning disabled by default in the agent
+            reasoning_steps=1,
+        )
+        result = agent.invoke(config["test_prompt"])
+
+        assert 'sql_reasoning_step_1' in result['usage_metadata'], "Reasoning should be enabled from the explicit configuration"
