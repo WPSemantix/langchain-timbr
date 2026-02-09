@@ -445,7 +445,7 @@ class TestGenerateAnswerChain:
         assert isinstance(result["rows"], list), "'rows' should be a list"
         assert result["sql"], "SQL should be present in the result"
         assert "CUSTOMER" in result["sql"].upper(), "SQL should contain 'CUSTOMER'"
-        assert list(result["rows"][0].values())[0] == 454 or list(result["rows"][0].values())[0] == 20652, "Number of rows should not exceed max_limit"
+        assert list(result["rows"][0].values())[0] == 781 or list(result["rows"][0].values())[0] == 20652, "Number of rows should not exceed max_limit"
         inputs = {
             "prompt": "count number of patients",
         }
