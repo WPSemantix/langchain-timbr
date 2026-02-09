@@ -290,7 +290,6 @@ def determine_concept(
     candidates = []
 
     for ontology in ontologies_conn_params.keys():
-
         tags = get_tags(conn_params=ontologies_conn_params[ontology], include_tags=include_tags)
         ontology_description, domain_description = get_ontology_description(ontologies_conn_params[ontology])
 
@@ -307,10 +306,12 @@ def determine_concept(
             formatted_ontology_desc = f"-- Schema `{ontology}`" 
             
             if ontology_description != "":
-                formatted_ontology_desc += f" description: {ontology_description.replace("\r\n", " ").replace("\n", " ")}"
+                cleaned_ontology_desc = ontology_description.replace("\r\n", " ").replace("\n", " ")
+                formatted_ontology_desc += f" description: {cleaned_ontology_desc}"
 
             if domain_description != "":
-                formatted_ontology_desc += f". Related Domains description: {domain_description.replace("\r\n", " ").replace("\n", " ")}"
+                cleaned_domain_desc = domain_description.replace("\r\n", " ").replace("\n", " ")
+                formatted_ontology_desc += f". Related Domains description: {cleaned_domain_desc}"
             concepts_desc_arr.append(formatted_ontology_desc + "\n")
 
             for item in concepts_and_views.values():
@@ -337,6 +338,8 @@ def determine_concept(
                     concepts_and_views[item_name]['tags'] = f"- Annotations and constraints: {item_tags}\n"
 
                 concepts_desc_arr.append(concept_verbose)
+            
+            concepts_desc_arr.append('\n')
 
     if len(ontologies_concepts_and_views) == 0:
             raise Exception("No relevant concepts found for the query.")

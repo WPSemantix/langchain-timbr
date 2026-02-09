@@ -282,6 +282,7 @@ class ExecuteTimbrQueryChain(Chain):
             prompt = inputs.get("prompt")
             sql = inputs.get("sql", None)
             schema_name = inputs.get("schema", self._schema)
+            ontology_name = inputs.get("ontology", self._ontology)
             concept_name = inputs.get("concept", self._concept)
             is_sql_valid = True
             error = None
@@ -304,6 +305,7 @@ class ExecuteTimbrQueryChain(Chain):
                     generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params)
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
+                    ontology_name = generate_res.get("ontology", ontology_name)
                     schema_name = generate_res.get("schema", schema_name)
                     concept_name = generate_res.get("concept", concept_name)
                     is_sql_valid = generate_res.get("is_sql_valid")
@@ -345,6 +347,7 @@ class ExecuteTimbrQueryChain(Chain):
             return {
                 "rows": rows,
                 "sql": sql,
+                "ontology": ontology_name,
                 "schema": schema_name,
                 "concept": concept_name,
                 "error": error if not is_sql_valid else None,
