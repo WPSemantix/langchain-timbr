@@ -423,3 +423,36 @@ class TestGenerateAnswerChain:
         result = chain.invoke({ "prompt": "all calls" })
         print("GenerateTimbrSqlChain with concepts_list=['plant'] result:", result)
         assert "error" in result and "User doesn't have access to query Knowledge Graph schema: dtimbr" in result["error"], "Should return permission error message"
+
+
+    def test_execute_with_multiple_ontologies(self, llm, config):
+        """Test query execution with row limit and tags."""
+        chain = ExecuteTimbrQueryChain(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"] + ",timbr_patient_journey",
+            #max_limit=3,
+            include_tags="*",
+            verify_ssl=config["verify_ssl"],
+        )
+        inputs = {
+            "prompt": "count number of customers",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count customers result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "CUSTOMER" in result["sql"].upper(), "SQL should contain 'CUSTOMER'"
+        assert list(result["rows"][0].values())[0] == 454 or list(result["rows"][0].values())[0] == 20652, "Number of rows should not exceed max_limit"
+        inputs = {
+            "prompt": "count number of patients",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count patients result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "PATIENT" in result["sql"].upper(), "SQL should contain 'PATIENT'"
+        assert list(result["rows"][0].values())[0] == 1176837, "Number of rows should not exceed max_limit"
