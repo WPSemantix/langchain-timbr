@@ -342,7 +342,7 @@ def determine_concept(
             concepts_desc_arr.append('\n')
 
     if len(ontologies_concepts_and_views) == 0:
-            raise Exception("No relevant concepts found for the query.")
+        raise Exception("No relevant concepts found for the query.")
 
     if len(ontologies_concepts_and_views) == 1 and len(list(ontologies_concepts_and_views.values())[0]) == 1:
         # If only one concept is provided, return it directly
@@ -798,10 +798,11 @@ def handle_generate_sql_reasoning(
             evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
             
             # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
-            context_graph_depth = graph_depth
+            max_context_graph_depth = 3
+            context_graph_depth = min(max_context_graph_depth, graph_depth)
 
             if (step >= 1 and type(previous_token_count) == int and previous_token_count > 0 and previous_token_count < 20000):
-                context_graph_depth += 1
+                context_graph_depth = min(max_context_graph_depth, context_graph_depth + 1)
 
             regen_result = _generate_sql_with_llm(
                 question=question,
