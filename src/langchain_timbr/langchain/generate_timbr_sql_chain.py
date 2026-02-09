@@ -232,11 +232,13 @@ class GenerateTimbrSqlChain(Chain):
         )
         
         sql = generate_res.get("sql", "")
+        ontology = generate_res.get("ontology", self._ontology)
         schema = generate_res.get("schema", self._schema)
         concept = generate_res.get("concept", self._concept)
         
         return {
             "sql": sql,
+            "ontology": ontology,
             "schema": schema,
             "concept": concept,
             "is_sql_valid": generate_res.get("is_sql_valid"),
