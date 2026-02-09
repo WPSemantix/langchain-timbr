@@ -123,7 +123,7 @@ def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use
         # Remove results-limit
         if 'additional_headers' in conn_params and 'results-limit' in conn_params['additional_headers']:
             query_upper = query.strip().upper()
-            if query_upper.startswith('SHOW') or query_upper.startswith('DESC'):
+            if query_upper.startswith('SHOW') or query_upper.startswith('DESC') or '.SYS' in query_upper:
                 query_conn_params = conn_params.copy()
                 query_conn_params['additional_headers'] = conn_params['additional_headers'].copy()
                 del query_conn_params['additional_headers']['results-limit']
