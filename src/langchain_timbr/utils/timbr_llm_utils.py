@@ -4,7 +4,7 @@ from datetime import datetime
 import concurrent.futures
 import json
 
-from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt
+from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt, get_ontology_description
 from .prompt_service import (
     get_determine_concept_prompt_template,
     get_generate_sql_prompt_template,
@@ -276,38 +276,77 @@ def determine_concept(
         timeout = config.llm_timeout
     
     determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
-    tags = get_tags(conn_params=conn_params, include_tags=include_tags)
-    concepts_and_views = get_concepts(
-        conn_params=conn_params,
-        concepts_list=concepts_list,
-        views_list=views_list,
-        include_logic_concepts=include_logic_concepts,
-    )
 
-    if not concepts_and_views:
-        raise Exception("No relevant concepts found for the query.")
+    ontologies_conn_params = {}
+    ontologies = [o.strip().lower() for o in conn_params.get("ontology").split(",")]
+
+    for ontology in ontologies:
+        ontology_conn_param =  conn_params.copy()
+        ontology_conn_param["ontology"] = ontology
+        ontologies_conn_params[ontology] = ontology_conn_param
 
     concepts_desc_arr = []
-    for item in concepts_and_views.values():
-        item_name = item.get('concept')
-        item_desc = item.get('description')
-        item_tags = tags.get('concept_tags').get(item_name) if item.get('is_view') == 'false' else tags.get('view_tags').get(item_name)
+    ontologies_concepts_and_views = {}
+    candidates = []
 
-        if item_tags:
-            item_tags = str(item_tags).replace('{', '').replace('}', '').replace("'", '')
+    for ontology in ontologies_conn_params.keys():
+        tags = get_tags(conn_params=ontologies_conn_params[ontology], include_tags=include_tags)
+        ontology_description, domain_description = get_ontology_description(ontologies_conn_params[ontology])
 
-        concept_verbose = f"`{item_name}`"
-        if item_desc:
-            concept_verbose += f" (description: {item_desc})"
-        if item_tags:
-            concept_verbose += f" [tags: {item_tags}]"
-            concepts_and_views[item_name]['tags'] = f"- Annotations and constraints: {item_tags}\n"
+        concepts_and_views = get_concepts(
+            conn_params=ontologies_conn_params[ontology],
+            concepts_list=concepts_list,
+            views_list=views_list,
+            include_logic_concepts=include_logic_concepts,
+        )
 
-        concepts_desc_arr.append(concept_verbose)
-    
-    if len(concepts_and_views) == 1:
+        if concepts_and_views:
+            ontologies_concepts_and_views[ontology] = concepts_and_views
+
+            formatted_ontology_desc = f"-- Schema `{ontology}`" 
+            
+            if ontology_description != "":
+                cleaned_ontology_desc = ontology_description.replace("\r\n", " ").replace("\n", " ")
+                formatted_ontology_desc += f" description: {cleaned_ontology_desc}"
+
+            if domain_description != "":
+                cleaned_domain_desc = domain_description.replace("\r\n", " ").replace("\n", " ")
+                formatted_ontology_desc += f". Related Domains description: {cleaned_domain_desc}"
+            concepts_desc_arr.append(formatted_ontology_desc + "\n")
+
+            for item in concepts_and_views.values():
+                item_name = item.get('concept')
+                item_desc = item.get('description')
+                item_tags = tags.get('concept_tags').get(item_name) if item.get('is_view') == 'false' else tags.get('view_tags').get(item_name)
+
+                if item_tags:
+                    item_tags = str(item_tags).replace('{', '').replace('}', '').replace("'", '')
+
+                clean_prefix = ""
+                prefix = ""
+
+                if len(ontologies_conn_params) > 1:
+                    clean_prefix = f"{ontology}."
+                    prefix = f"`{ontology}`."
+
+                candidates.append(clean_prefix + item_name)
+                concept_verbose = prefix + f"`{item_name}`"
+                if item_desc:
+                    concept_verbose += f" (description: {item_desc})"
+                if item_tags:
+                    concept_verbose += f" [tags: {item_tags}]"
+                    concepts_and_views[item_name]['tags'] = f"- Annotations and constraints: {item_tags}\n"
+
+                concepts_desc_arr.append(concept_verbose)
+            
+            concepts_desc_arr.append('\n')
+
+    if len(ontologies_concepts_and_views) == 0:
+        raise Exception("No relevant concepts found for the query.")
+
+    if len(ontologies_concepts_and_views) == 1 and len(list(ontologies_concepts_and_views.values())[0]) == 1:
         # If only one concept is provided, return it directly
-        determined_concept_name = list(concepts_and_views.keys())[0]
+        determined_concept_name = list(list(ontologies_concepts_and_views.values())[0].keys())[0]
     else:
         # Use LLM to determine the concept based on the question
         iteration = 0
@@ -317,10 +356,10 @@ def determine_concept(
             err_txt = f"\nLast try got an error: {error}" if error else ""
             prompt = determine_concept_prompt.format_messages(
                 question=question.strip(),
-                concepts=",".join(concepts_desc_arr),
+                concepts="\n".join(concepts_desc_arr),
                 note=(note or '') + err_txt,
             )
-
+            
             apx_token_count = _calculate_token_count(llm, prompt)
             if "snowflake" in llm._llm_type:
                 _clean_snowflake_prompt(prompt)
@@ -344,18 +383,25 @@ def determine_concept(
             try:
                 parsed_response = _parse_json_from_llm_response(response)
                 if isinstance(parsed_response, dict) and 'result' in parsed_response:
-                    candidate = parsed_response.get('result', '').strip()
+                    candidate = parsed_response.get('result', '').strip().replace("`", "").replace('"', "").lower()
                     identify_concept_reason = parsed_response.get('reason', None)
                 else:
                     # Fallback to plain text if JSON doesn't have expected structure
-                    candidate = _get_response_text(response).strip()
+                    candidate = _get_response_text(response).strip().replace("`", "").replace('"', "").lower()
             except (json.JSONDecodeError, ValueError):
                 # If not JSON, treat as plain text (backwards compatibility)
-                candidate = _get_response_text(response).strip()
+                candidate = _get_response_text(response).strip().replace("`", "").replace('"', "").lower()
             
-            if should_validate and candidate not in concepts_and_views.keys():
-                error = f"Concept '{candidate}' not found in the list of concepts."
-                continue
+            if candidate not in candidates:
+
+                if len(ontologies_conn_params) > 1:
+                    for existing in candidates:
+                        if existing.endswith("." + candidate):
+                            candidate = existing
+
+                if candidate not in candidates:            
+                    error = f"Concept '{candidate}' not found in the list of concepts."
+                    continue
             
             determined_concept_name = candidate
             error = ''
@@ -363,14 +409,24 @@ def determine_concept(
         if determined_concept_name is None and error != '':
             raise Exception(f"Failed to determine concept: {error}")
 
-    if determined_concept_name:
-        schema = 'vtimbr' if concepts_and_views.get(determined_concept_name).get('is_view') == 'true' else 'dtimbr'
+    ontology = list(ontologies_concepts_and_views.keys())[0]
+    concepts_and_views = list(ontologies_concepts_and_views.values())[0]
+    
+    if "." in determined_concept_name:
+        ontology = determined_concept_name.split(".")[0]
+        determined_concept_name = determined_concept_name.split(".")[1]
+        concepts_and_views = ontologies_concepts_and_views.get(ontology)    
+
+    schema = 'vtimbr' if concepts_and_views.get(determined_concept_name).get('is_view') == 'true' else 'dtimbr'
+
     return {
         "concept_metadata": concepts_and_views.get(determined_concept_name) if determined_concept_name else None,
         "concept": determined_concept_name,
         "identify_concept_reason": identify_concept_reason,
         "schema": schema,
         "usage_metadata": usage_metadata,
+        "ontology": ontology,
+        "conn_params": ontologies_conn_params.get(ontology)
     }
 
 
@@ -710,6 +766,7 @@ def handle_generate_sql_reasoning(
     usage_metadata: dict,
     timeout: int,
     debug: bool,
+    previous_token_count
 ) -> tuple[str, int, str]:
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
     context_graph_depth = graph_depth
@@ -741,7 +798,12 @@ def handle_generate_sql_reasoning(
             evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
             
             # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
-            context_graph_depth = min(3, int(graph_depth) + step) if graph_depth < 3 and step > 0 else graph_depth
+            max_context_graph_depth = 3
+            context_graph_depth = min(max_context_graph_depth, graph_depth)
+
+            if (step >= 1 and type(previous_token_count) == int and previous_token_count > 0 and previous_token_count < 20000):
+                context_graph_depth = min(max_context_graph_depth, context_graph_depth + 1)
+
             regen_result = _generate_sql_with_llm(
                 question=question,
                 llm=llm,
@@ -770,6 +832,8 @@ def handle_generate_sql_reasoning(
                 "approximate": regen_result['apx_token_count'],
                 **regen_result['usage_metadata'],
             }
+            previous_token_count = regen_result['apx_token_count']
+
             if debug and 'p_hash' in regen_result:
                 usage_metadata[step_key]['p_hash'] = regen_result['p_hash']
 
@@ -897,6 +961,9 @@ def generate_sql(
         timeout=timeout,
     )
 
+    if ',' in conn_params.get('ontology'):
+        conn_params = determine_concept_res.get('conn_params')
+
     concept = determine_concept_res.get('concept')
     identify_concept_reason = determine_concept_res.get('identify_concept_reason', None)
     schema = determine_concept_res.get('schema')
@@ -965,6 +1032,7 @@ def generate_sql(
                 usage_metadata=usage_metadata,
                 timeout=timeout,
                 debug=debug,
+                previous_token_count=result['apx_token_count']
             )
 
         if should_validate_sql or enable_reasoning:
@@ -1006,6 +1074,8 @@ def generate_sql(
         "generate_sql_reason": generate_sql_reason,
         "reasoning_status": reasoning_status,
         "usage_metadata": usage_metadata,
+        "ontology": conn_params.get('ontology'),
+        "conn_params": conn_params
     }
 
 

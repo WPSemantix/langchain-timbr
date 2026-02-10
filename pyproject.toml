@@ -86,8 +86,8 @@ snowflake = [
   "snowflake-snowpark-python>=1.39.1; python_version=='3.10'"
 ]
 databricks = [
-  "databricks-langchain==0.7.1",
-  "databricks-sdk==0.64.0"
+  "databricks-langchain<=0.7.1",
+  "databricks-sdk<=0.64.0"
 ]
 bedrock = [
   "langchain-aws==0.2.35",
@@ -107,8 +107,8 @@ all = [
   "uvicorn==0.34.0",
   "anthropic==0.42.0",
   "google-generativeai==0.8.4",
-  "databricks-langchain==0.7.1",
-  "databricks-sdk==0.64.0",
+  "databricks-langchain<=0.7.1",
+  "databricks-sdk<=0.64.0",
   "langchain-aws>=0.2.35,<1",
   # Python 3.11+ versions
   "azure-identity==1.25.0; python_version>='3.11'",

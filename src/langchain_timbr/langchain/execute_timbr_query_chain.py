@@ -229,6 +229,7 @@ class ExecuteTimbrQueryChain(Chain):
         concept_name: Optional[str] = None,
         schema_name: Optional[str] = None,
         error: Optional[str] = None,
+        conn_params: dict = None
     ) -> Dict[str, Any]:
 
         if not prompt:
@@ -238,7 +239,7 @@ class ExecuteTimbrQueryChain(Chain):
         generate_res = generate_sql(
             prompt,
             self._llm,
-            self._get_conn_params(),
+            conn_params,
             concept=concept_name,
             schema=schema_name,
             concepts_list=self._concepts_list,
@@ -281,6 +282,7 @@ class ExecuteTimbrQueryChain(Chain):
             prompt = inputs.get("prompt")
             sql = inputs.get("sql", None)
             schema_name = inputs.get("schema", self._schema)
+            ontology_name = inputs.get("ontology", self._ontology)
             concept_name = inputs.get("concept", self._concept)
             is_sql_valid = True
             error = None
@@ -296,11 +298,14 @@ class ExecuteTimbrQueryChain(Chain):
             is_infered = False
             iteration = 0
             generated = []
+
             while not is_infered and iteration <= self._no_results_max_retries:
+                conn_params = self._get_conn_params()
                 if prompt is not None and not sql or not is_sql_valid:
-                    generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error)
-                    
+                    generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params)
+                    conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
+                    ontology_name = generate_res.get("ontology", ontology_name)
                     schema_name = generate_res.get("schema", schema_name)
                     concept_name = generate_res.get("concept", concept_name)
                     is_sql_valid = generate_res.get("is_sql_valid")
@@ -317,7 +322,7 @@ class ExecuteTimbrQueryChain(Chain):
 
                 rows = run_query(
                     sql,
-                    self._get_conn_params(),
+                    conn_params,
                     llm_prompt=prompt,
                     use_query_limit=True,
                 ) if is_sql_valid and is_sql_not_tried else []
@@ -342,6 +347,7 @@ class ExecuteTimbrQueryChain(Chain):
             return {
                 "rows": rows,
                 "sql": sql,
+                "ontology": ontology_name,
                 "schema": schema_name,
                 "concept": concept_name,
                 "error": error if not is_sql_valid else None,

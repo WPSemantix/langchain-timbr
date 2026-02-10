@@ -123,7 +123,7 @@ def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use
         # Remove results-limit
         if 'additional_headers' in conn_params and 'results-limit' in conn_params['additional_headers']:
             query_upper = query.strip().upper()
-            if query_upper.startswith('SHOW') or query_upper.startswith('DESC'):
+            if query_upper.startswith('SHOW') or query_upper.startswith('DESC') or '.SYS' in query_upper:
                 query_conn_params = conn_params.copy()
                 query_conn_params['additional_headers'] = conn_params['additional_headers'].copy()
                 del query_conn_params['additional_headers']['results-limit']
@@ -368,6 +368,34 @@ def get_concepts(
 
     return uniq_concepts
 
+@cache_with_version_check
+def get_ontology_description(conn_params):
+    
+    ontology = conn_params.get("ontology")
+    query = f"SELECT description FROM timbr.sys_ontologies WHERE ontology = '{ontology}'"
+    
+    res = run_query(query, conn_params)
+    ontology_description = ""
+
+    for row in res:
+        ontology_description = row.get('description') or ""
+    
+    query = f"SELECT name, description, ontologies FROM timbr.sys_domains WHERE ontologies like '%{ontology}%'"
+    
+    res = run_query(query, conn_params)
+    domain_description = ""
+
+    for row in res:
+        ontologies_list = row.get("ontologies").split(",")
+        if ontology in ontologies_list:
+            domain_name = row.get("name")
+            domain_additional_description = row.get("description") or ""
+            if domain_additional_description != "":
+                if domain_description != "":
+                    domain_description += " "
+                domain_description += f"{domain_name} - {domain_additional_description}."
+
+    return ontology_description, domain_description
 
 def _generate_column_relationship_description(column_name):
     """
