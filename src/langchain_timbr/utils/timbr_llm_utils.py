@@ -4,6 +4,7 @@ from datetime import datetime
 import concurrent.futures
 import json
 
+from .general import parse_list
 from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt, get_ontology_description
 from .prompt_service import (
     get_determine_concept_prompt_template,
@@ -251,6 +252,18 @@ def _extract_usage_metadata(response: Any) -> dict:
     
     return usage_metadata
 
+def filter_list_by_ontology(concepts_list, ontology) -> list:
+    ontology_specific_concepts = concepts_list
+    
+    if concepts_list is not None and isinstance(concepts_list, list):
+        ontology_specific_concepts = []
+        for concept in concepts_list:
+            if "." not in concept:
+                ontology_specific_concepts.append(concept)
+            elif concept.startswith(f"{ontology}."):
+                ontology_specific_concepts.append(concept.split(".", 1)[1])
+    
+    return ontology_specific_concepts
 
 def determine_concept(
     question: str,
@@ -278,7 +291,8 @@ def determine_concept(
     determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
 
     ontologies_conn_params = {}
-    ontologies = [o.strip().lower() for o in conn_params.get("ontology").split(",")]
+    #ontologies = [o.strip().lower() for o in conn_params.get("ontology").split(",")]
+    ontologies = parse_list(conn_params.get("ontology"))
 
     for ontology in ontologies:
         ontology_conn_param =  conn_params.copy()
@@ -293,10 +307,13 @@ def determine_concept(
         tags = get_tags(conn_params=ontologies_conn_params[ontology], include_tags=include_tags)
         ontology_description, domain_description = get_ontology_description(ontologies_conn_params[ontology])
 
+        ontology_specific_concepts = filter_list_by_ontology(concepts_list, ontology)
+        ontology_specific_views = filter_list_by_ontology(views_list, ontology)
+
         concepts_and_views = get_concepts(
             conn_params=ontologies_conn_params[ontology],
-            concepts_list=concepts_list,
-            views_list=views_list,
+            concepts_list=ontology_specific_concepts,
+            views_list=ontology_specific_views,
             include_logic_concepts=include_logic_concepts,
         )
 
@@ -359,6 +376,10 @@ def determine_concept(
                 concepts="\n".join(concepts_desc_arr),
                 note=(note or '') + err_txt,
             )
+
+            # temporary fix to old prompts 
+            if len(prompt) == 2:
+                prompt[1].content = prompt[1].content.replace("no quotes", "no backtick quotes")
             
             apx_token_count = _calculate_token_count(llm, prompt)
             if "snowflake" in llm._llm_type:
@@ -961,7 +982,7 @@ def generate_sql(
         timeout=timeout,
     )
 
-    if ',' in conn_params.get('ontology'):
+    if (type(conn_params.get('ontology')) == list and len(conn_params.get('ontology')) > 1) or ',' in conn_params.get('ontology'):
         conn_params = determine_concept_res.get('conn_params')
 
     concept = determine_concept_res.get('concept')

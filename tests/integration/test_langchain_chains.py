@@ -426,13 +426,13 @@ class TestGenerateAnswerChain:
 
 
     def test_execute_with_multiple_ontologies(self, llm, config):
-        """Test query execution with row limit and tags."""
+        """Test query execution with multiple ontologies"""
         chain = ExecuteTimbrQueryChain(
             llm=llm,
             url=config["timbr_url"],
             token=config["timbr_token"],
             ontology=config["timbr_ontology"] + ",timbr_patient_journey",
-            max_limit=3,
+            max_limit=1,
             include_tags="*",
             verify_ssl=config["verify_ssl"],
         )
@@ -455,4 +455,101 @@ class TestGenerateAnswerChain:
         assert isinstance(result["rows"], list), "'rows' should be a list"
         assert result["sql"], "SQL should be present in the result"
         assert "PATIENT" in result["sql"].upper(), "SQL should contain 'PATIENT'"
+        assert list(result["rows"][0].values())[0] == 1176837, "Number of rows should not exceed max_limit"
+
+    def test_execute_with_multiple_ontologies2(self, llm, config):
+        """Test query execution with multiple ontologies."""
+        chain = ExecuteTimbrQueryChain(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"] + ",timbr_patient_journey",
+            concepts_list=["customer", "patient"],
+            include_tags="*",
+            verify_ssl=config["verify_ssl"],
+        )
+        inputs = {
+            "prompt": "count number of customers",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count customers result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "CUSTOMER" in result["sql"].upper(), "SQL should contain 'CUSTOMER'"
+        assert list(result["rows"][0].values())[0] == 781 or list(result["rows"][0].values())[0] == 20652, "Number of rows should not exceed max_limit"
+        inputs = {
+            "prompt": "count number of patients",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count patients result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "PATIENT" in result["sql"].upper(), "SQL should contain 'PATIENT'"
+        assert list(result["rows"][0].values())[0] == 1176837, "Number of rows should not exceed max_limit"
+
+    def test_execute_with_multiple_ontologies3(self, llm, config):
+        """Test query execution with multiple ontologies."""
+        chain = ExecuteTimbrQueryChain(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=[config["timbr_ontology"] , "timbr_patient_journey"],
+            concepts_list=[config["timbr_ontology"] + "." + "customer", "timbr_patient_journey.patient"],
+            include_tags="*",
+            verify_ssl=config["verify_ssl"],
+        )
+        inputs = {
+            "prompt": "count number of customers",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count customers result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "CUSTOMER" in result["sql"].upper(), "SQL should contain 'CUSTOMER'"
+        assert list(result["rows"][0].values())[0] == 781 or list(result["rows"][0].values())[0] == 20652, "Number of rows should not exceed max_limit"
+        inputs = {
+            "prompt": "count number of patients",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count patients result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "PATIENT" in result["sql"].upper(), "SQL should contain 'PATIENT'"
+        assert list(result["rows"][0].values())[0] == 1176837, "Number of rows should not exceed max_limit"
+
+    def test_execute_with_multiple_ontologies4(self, llm, config):
+        """Test query execution with multiple ontologies."""
+        chain = ExecuteTimbrQueryChain(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=[config["timbr_ontology"] , "timbr_patient_journey"],
+            concepts_list="None",
+            views_list=[config["timbr_ontology"] + "." + "order_cube", "timbr_patient_journey.patient_cube"],
+            include_tags="*",
+            verify_ssl=config["verify_ssl"],
+        )
+        inputs = {
+            "prompt": "count number of customers",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count customers result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "ORDER_CUBE" in result["sql"].upper(), "SQL should contain 'ORDER_CUBE'"
+        assert list(result["rows"][0].values())[0] == 12508, "Number of rows should not exceed max_limit"
+        inputs = {
+            "prompt": "count number of patients",
+        }
+        result = chain.invoke(inputs)
+        print("ExecuteTimbrQueryChain with count patients result:", result)
+        assert "rows" in result, "Result should contain 'rows'"
+        assert isinstance(result["rows"], list), "'rows' should be a list"
+        assert result["sql"], "SQL should be present in the result"
+        assert "PATIENT_CUBE" in result["sql"].upper(), "SQL should contain 'PATIENT_CUBE'"
         assert list(result["rows"][0].values())[0] == 1176837, "Number of rows should not exceed max_limit"
