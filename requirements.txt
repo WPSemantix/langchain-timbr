@@ -1,6 +1,6 @@
 anthropic==0.42.0
 azure-identity==1.25.0
-cryptography>=45.0.7
+cryptography>=46.0.5
 databricks-langchain==0.7.1
 databricks-sdk==0.64.0
 google-generativeai==0.8.4

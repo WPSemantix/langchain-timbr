@@ -32,14 +32,14 @@ dependencies = [
   "langgraph-checkpoint==3.0.0",
 
   # Python 3.11+ versions (same for 3.11 and 3.12+)
-  "cryptography==45.0.7; python_version>='3.11'",
+  "cryptography>=46.0.5; python_version>='3.11'",
   "langchain==0.3.27; python_version>='3.11'",
   "langchain-community==0.3.30; python_version>='3.11'",
   "langgraph==1.0.1; python_version>='3.11'",
   "transformers==4.57.0; python_version>='3.11'",
 
   # Python 3.10 specific versions
-  "cryptography>=44.0.3; python_version=='3.10'",
+  "cryptography>=46.0.5; python_version=='3.10'",
   "langchain>=0.3.25; python_version=='3.10'",
   "langchain-community>=0.3.27; python_version=='3.10'",
   "langgraph>=0.3.20; python_version=='3.10'",
