@@ -80,8 +80,8 @@ vertex_ai = [
 snowflake = [
   "opentelemetry-api==1.38.0; python_version<'3.12'",
   "opentelemetry-sdk==1.38.0; python_version<'3.12'",
-  "snowflake==1.8.0; python_version>='3.11'", 
-  "snowflake-snowpark-python==1.39.1; python_version>='3.11'",
+  "snowflake>=1.8.0; python_version>='3.11'", 
+  "snowflake-snowpark-python>=1.39.1; python_version>='3.11'",
   "snowflake>=1.8.0; python_version=='3.10'", 
   "snowflake-snowpark-python>=1.39.1; python_version=='3.10'"
 ]
@@ -117,8 +117,8 @@ all = [
   "langchain-openai==0.3.34; python_version>='3.11'",
   "langchain-google-genai==2.0.10; python_version>='3.11'",
   "langchain-google-vertexai==2.1.2; python_version>='3.11'",
-  "snowflake==1.8.0; python_version>='3.11'",
-  "snowflake-snowpark-python==1.39.1; python_version>='3.11'",
+  "snowflake>=1.8.0; python_version>='3.11'",
+  "snowflake-snowpark-python>=1.39.1; python_version>='3.11'",
   "langchain-tests==0.3.22; python_version>='3.11'",
   # Python 3.10 versions
   "azure-identity>=1.16.1; python_version=='3.10'",
