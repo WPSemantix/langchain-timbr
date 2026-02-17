@@ -24,7 +24,7 @@ classifiers = [
 
 dependencies = [
   # Core dependencies that are the same across all Python versions
-  "pydantic>=2.12.5",
+  "pydantic>=2.10.4",
   "tiktoken==0.8.0",
   "uvicorn==0.34.0",
   "pytimbr-api>=2.1.0",
