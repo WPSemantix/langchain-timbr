@@ -1,5 +1,5 @@
 from typing import Optional, Union
-from langchain.llms.base import LLM
+from langchain_core.language_models.llms import LLM
 from langgraph.graph import StateGraph
 
 from ..langchain.execute_timbr_query_chain import ExecuteTimbrQueryChain

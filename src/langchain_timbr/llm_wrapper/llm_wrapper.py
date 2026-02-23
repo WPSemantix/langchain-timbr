@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Optional
-from langchain.llms.base import LLM
+from langchain_core.language_models.llms import LLM
 from pydantic import Field
 
 from .timbr_llm_wrapper import TimbrLlmWrapper
@@ -389,10 +389,10 @@ class LlmWrapper(LLM):
 
 
   def _call(self, prompt, **kwargs):
-    # TODO: Remove this condition on next langchain-timbr major release
-    if is_llm_type(self._llm_type, LlmTypes.Bedrock):
-      return self.client.invoke(prompt, **kwargs)
-    return self.client(prompt, **kwargs)
+    response = self.client.invoke(prompt, **kwargs)
+    if hasattr(response, 'content'):
+      return response.content
+    return str(response)
 
 
   def __call__(self, prompt, **kwargs):

@@ -1,6 +1,6 @@
 from typing import Optional, Union, Dict, Any
-from langchain.chains.base import Chain
-from langchain.llms.base import LLM
+from ..utils._base_chain import Chain
+from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
