@@ -1,14 +1,13 @@
 from typing import Optional, Any, Union
-from langchain.agents import AgentExecutor, BaseSingleActionAgent
-from langchain.llms.base import LLM
-from langchain.schema import AgentAction, AgentFinish
+from langchain_core.language_models.llms import LLM
+from langchain_core.runnables import Runnable
 
 from ..utils.general import parse_list, to_boolean, to_integer
 from .execute_timbr_query_chain import ExecuteTimbrQueryChain
 from .generate_answer_chain import GenerateAnswerChain
 from .. import config
 
-class TimbrSqlAgent(BaseSingleActionAgent):
+class TimbrSqlAgent(Runnable):
     def __init__(
         self,
         llm: Optional[LLM] = None,
@@ -162,35 +161,26 @@ class TimbrSqlAgent(BaseSingleActionAgent):
         return False
 
 
-    @property
-    def input_keys(self) -> list[str]:
-        """Get the input keys required by the agent."""
-        return ["input"]
+    def invoke(
+        self, input: dict, config=None, **kwargs: Any
+    ) -> dict:
+        """Run the agent and return results."""
+        user_input = input.get("input", "") if isinstance(input, dict) else input
 
-
-    def plan(
-        self, intermediate_steps: list[tuple[AgentAction, str]], **kwargs: Any
-    ) -> Union[AgentAction, AgentFinish]:
-        """Plan the next action based on the input."""
-        user_input = kwargs.get("input", "")
-        
         # Enhanced input validation
         if not user_input or not user_input.strip():
-            return AgentFinish(
-                return_values={
-                    "error": "No input provided or input is empty",
-                    "answer": None,
-                    "rows": None,
-                    "sql": None,
-                    "schema": None,
-                    "concept": None,
-                    "reasoning_status": None,
-                    "identify_concept_reason": None,
-                    "generate_sql_reason": None,
-                    "usage_metadata": {},
-                },
-                log="Empty input received"
-            )
+            return {
+                "error": "No input provided or input is empty",
+                "answer": None,
+                "rows": None,
+                "sql": None,
+                "schema": None,
+                "concept": None,
+                "reasoning_status": None,
+                "identify_concept_reason": None,
+                "generate_sql_reason": None,
+                "usage_metadata": {},
+            }
 
         try:
             result = self._chain.invoke({ "prompt": user_input })
@@ -206,61 +196,51 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                 answer = answer_res.get("answer", "")
                 usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
 
-            return AgentFinish(
-                return_values={
-                    "answer": answer,
-                    "rows": result.get("rows", []),
-                    "sql": result.get("sql", ""),
-                    "schema": result.get("schema", ""),
-                    "concept": result.get("concept", ""),
-                    "error": result.get("error", None),
-                    "reasoning_status": result.get("reasoning_status", None),
-                    "usage_metadata": usage_metadata,
-                    "identify_concept_reason": None,
-                    "generate_sql_reason": None,
-                },
-                log=f"Successfully executed query on concept: {result.get('concept', '')}"
-            )
+            return {
+                "answer": answer,
+                "rows": result.get("rows", []),
+                "sql": result.get("sql", ""),
+                "schema": result.get("schema", ""),
+                "concept": result.get("concept", ""),
+                "error": result.get("error", None),
+                "reasoning_status": result.get("reasoning_status", None),
+                "usage_metadata": usage_metadata,
+                "identify_concept_reason": None,
+                "generate_sql_reason": None,
+            }
         except Exception as e:
-            error_context = f"Error in TimbrSqlAgent.plan (sync): {str(e)}"
-            return AgentFinish(
-                return_values={
-                    "error": str(e),
-                    "answer": None,
-                    "rows": None,
-                    "sql": None,
-                    "schema": None,
-                    "concept": None,
-                    "reasoning_status": None,
-                    "identify_concept_reason": None,
-                    "generate_sql_reason": None,
-                    "usage_metadata": {},
-                },
-                log=error_context
-            )
+            return {
+                "error": str(e),
+                "answer": None,
+                "rows": None,
+                "sql": None,
+                "schema": None,
+                "concept": None,
+                "reasoning_status": None,
+                "identify_concept_reason": None,
+                "generate_sql_reason": None,
+                "usage_metadata": {},
+            }
 
-    async def aplan(
-        self, intermediate_steps: list[tuple[AgentAction, str]], **kwargs: Any
-    ) -> Union[AgentAction, AgentFinish]:
-        """Async version of the plan method."""
-        user_input = kwargs.get("input", "")
-        
+    async def ainvoke(
+        self, input: dict, config=None, **kwargs: Any
+    ) -> dict:
+        """Async version of invoke."""
+        user_input = input.get("input", "") if isinstance(input, dict) else input
+
         if not user_input or not user_input.strip():
-            return AgentFinish(
-                return_values={
-                    "error": "No input provided or input is empty",
-                    "answer": None,
-                    "rows": None,
-                    "sql": None,
-                    "schema": None,
-                    "concept": None,
-                    "reasoning_status": None,
-                    "identify_concept_reason": None,
-                    "generate_sql_reason": None,
-                    "usage_metadata": {},
-                },
-                log="Empty or whitespace-only input received"
-            )
+            return {
+                "error": "No input provided or input is empty",
+                "answer": None,
+                "rows": None,
+                "sql": None,
+                "schema": None,
+                "concept": None,
+                "reasoning_status": None,
+                "identify_concept_reason": None,
+                "generate_sql_reason": None,
+                "usage_metadata": {},
+            }
 
         try:
             # Use async invoke if available, fallback to sync
@@ -268,12 +248,11 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                 result = await self._chain.ainvoke({ "prompt": user_input })
             else:
                 result = self._chain.invoke({ "prompt": user_input })
-                
+
             answer = None
             usage_metadata = result.get("usage_metadata", {})
-            
+
             if not self._should_skip_answer_generation(result) and self._answer_chain:
-                # Use async invoke if available for answer chain too
                 if hasattr(self._answer_chain, 'ainvoke'):
                     answer_res = await self._answer_chain.ainvoke({
                         "prompt": user_input,
@@ -289,51 +268,31 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                 answer = answer_res.get("answer", "")
                 usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
 
-            return AgentFinish(
-                return_values={
-                    "answer": answer,
-                    "rows": result.get("rows", []),
-                    "sql": result.get("sql", ""),
-                    "schema": result.get("schema", ""),
-                    "concept": result.get("concept", ""),
-                    "error": result.get("error", None),
-                    "reasoning_status": result.get("reasoning_status", None),
-                    "identify_concept_reason": result.get("identify_concept_reason", None),
-                    "generate_sql_reason": result.get("generate_sql_reason", None),
-                    "usage_metadata": usage_metadata,
-                },
-                log=f"Successfully executed query on concept: {result.get('concept', '')}"
-            )
+            return {
+                "answer": answer,
+                "rows": result.get("rows", []),
+                "sql": result.get("sql", ""),
+                "schema": result.get("schema", ""),
+                "concept": result.get("concept", ""),
+                "error": result.get("error", None),
+                "reasoning_status": result.get("reasoning_status", None),
+                "identify_concept_reason": result.get("identify_concept_reason", None),
+                "generate_sql_reason": result.get("generate_sql_reason", None),
+                "usage_metadata": usage_metadata,
+            }
         except Exception as e:
-            error_context = f"Error in TimbrSqlAgent.aplan (async): {str(e)}"
-            return AgentFinish(
-                return_values={
-                    "error": str(e),
-                    "answer": None,
-                    "rows": None,
-                    "sql": None,
-                    "schema": None,
-                    "concept": None,
-                    "reasoning_status": None,
-                    "identify_concept_reason": None,
-                    "generate_sql_reason": None,
-                    "usage_metadata": {},
-                },
-                log=error_context
-            )
-
-    @property
-    def return_values(self) -> list[str]:
-        """Get the return values that this agent can produce."""
-        return [
-            "answer",
-            "rows",
-            "sql",
-            "schema",
-            "concept",
-            "error",
-            "usage_metadata",
-        ]
+            return {
+                "error": str(e),
+                "answer": None,
+                "rows": None,
+                "sql": None,
+                "schema": None,
+                "concept": None,
+                "reasoning_status": None,
+                "identify_concept_reason": None,
+                "generate_sql_reason": None,
+                "usage_metadata": {},
+            }
 
 
 def create_timbr_sql_agent(
@@ -365,7 +324,7 @@ def create_timbr_sql_agent(
     enable_reasoning: Optional[bool] = None,
     reasoning_steps: Optional[int] = None,
     debug: Optional[bool] = False
-) -> AgentExecutor:
+) -> TimbrSqlAgent:
     """
     Create and configure a Timbr agent with its executor.
     
@@ -398,7 +357,7 @@ def create_timbr_sql_agent(
     :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
 
     Returns:
-        AgentExecutor: Configured agent executor ready to use
+        TimbrSqlAgent: Configured agent ready to use
     
     ## Example
         ```
@@ -468,8 +427,4 @@ def create_timbr_sql_agent(
         debug=debug,
     )
     
-    return AgentExecutor.from_agent_and_tools(
-        agent=agent,
-        tools=[],  # No tools needed as we're directly using the chain
-        verbose=True
-    )
+    return agent

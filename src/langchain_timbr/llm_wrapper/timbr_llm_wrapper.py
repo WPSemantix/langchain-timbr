@@ -1,4 +1,4 @@
-from langchain.llms.base import LLM
+from langchain_core.language_models.llms import LLM
 import requests
 from typing import Optional, List
 
