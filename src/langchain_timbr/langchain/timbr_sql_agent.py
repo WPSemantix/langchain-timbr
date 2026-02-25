@@ -36,8 +36,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        enable_reasoning: Optional[bool] = config.enable_reasoning,
-        reasoning_steps: Optional[int] = config.reasoning_steps,
+        enable_reasoning: Optional[bool] = None,
+        reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False
     ):
         """
@@ -121,8 +121,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
             is_jwt=to_boolean(is_jwt),
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
-            enable_reasoning=to_boolean(enable_reasoning),
-            reasoning_steps=to_integer(reasoning_steps),
+            enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
+            reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
             debug=to_boolean(debug),
         )
         self._generate_answer = to_boolean(generate_answer)
@@ -362,8 +362,8 @@ def create_timbr_sql_agent(
     is_jwt: Optional[bool] = False,
     jwt_tenant_id: Optional[str] = None,
     conn_params: Optional[dict] = None,
-    enable_reasoning: Optional[bool] = config.enable_reasoning,
-    reasoning_steps: Optional[int] = config.reasoning_steps,
+    enable_reasoning: Optional[bool] = None,
+    reasoning_steps: Optional[int] = None,
     debug: Optional[bool] = False
 ) -> AgentExecutor:
     """
