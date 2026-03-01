@@ -733,7 +733,7 @@ def _generate_sql_with_llm(
         current_date=current_context['cur_date'],
         datasource_type=current_context['datasource_type'],
         schema=current_context['schema'],
-        concept=f"`{current_context['concept']}`",
+        concept=current_context['concept'],
         description=current_context['concept_description'],
         tags=current_context['concept_tags'],
         question=question,

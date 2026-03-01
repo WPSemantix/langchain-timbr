@@ -235,7 +235,7 @@ class ExecuteTimbrQueryChain(Chain):
         if not prompt:
             raise ValueError("Timbr SQL or user prompt is required for executing the chain.")
 
-        err_txt = f"\nThe original SQL (`{sql}`) was invalid with error: {error}. Please generate a corrected query." if error else ""
+        err_txt = error or ""
         generate_res = generate_sql(
             prompt,
             self._llm,
