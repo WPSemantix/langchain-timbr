@@ -5,6 +5,8 @@ from .utils.general import to_boolean, to_integer, parse_list
 url = os.environ.get('TIMBR_URL')
 token = os.environ.get('TIMBR_TOKEN')
 ontology = os.environ.get('TIMBR_ONTOLOGY', os.environ.get('ONTOLOGY', 'system_db'))
+thrift_host = os.environ.get('THRIFT_HOST', 'http://localhost')
+thrift_port = to_integer(os.environ.get('THRIFT_PORT', 11000))
 
 # OPTIONAL VARIABLES
 is_jwt = to_boolean(os.environ.get('IS_JWT', 'false'))

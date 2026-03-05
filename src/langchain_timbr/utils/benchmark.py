@@ -22,12 +22,16 @@ Usage::
     results = run_benchmark(agent="my_agent")
 """
 
+import base64
 import copy
 import json
 import logging
+import uuid
 from datetime import datetime
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple
+
+import requests
 
 from pytimbr_api import timbr_http_connector
 
@@ -36,7 +40,16 @@ from ..langchain.timbr_sql_agent import create_timbr_sql_agent
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .general import to_boolean, to_integer
 from .prompt_service import get_benchmark_judge_prompt_template
-from .timbr_utils import get_timbr_agent_options
+from .timbr_utils import get_timbr_agent_options, get_timbr_benchmark_info
+
+try:
+    # from .._version import __version__ as _langchain_timbr_version
+    from importlib.metadata import version
+    _langchain_timbr_version = version("langchain_timbr")
+    if '.dev' in _langchain_timbr_version:
+        _langchain_timbr_version = _langchain_timbr_version.split('.dev')[0] + '.dev'
+except ImportError:
+    _langchain_timbr_version = "unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -424,11 +437,58 @@ class BenchmarkScorer:
 
 
 # ---------------------------------------------------------------------------
+# Benchmark run logging helpers
+# ---------------------------------------------------------------------------
+
+def _build_benchmark_log_headers(token: str) -> Dict[str, str]:
+    """Build Basic Auth headers for the benchmark logging endpoints."""
+    encoded = base64.b64encode(f"token:{token}".encode()).decode()
+    return {
+        "Authorization": f"Basic {encoded}",
+        "Content-Type": "application/json",
+    }
+
+
+def _log_benchmark_running(url: str, token: str, payload: Dict[str, Any]) -> None:
+    """POST to /timbr-server/log_benchmark/running to register a benchmark run start."""
+    endpoint = f"{url.rstrip('/')}/timbr-server/log_benchmark/running"
+    headers = _build_benchmark_log_headers(token)
+    response = requests.post(endpoint, json=payload, headers=headers)
+    if not response.ok:
+        raise RuntimeError(
+            f"Failed to log benchmark start [{response.status_code}]: {response.text}"
+        )
+
+
+def _log_benchmark_update_completed(url: str, token: str, run_id: str, completed: int, agent_name: str) -> None:
+    """POST to /timbr-server/log_benchmark/running_update_completed to update progress."""
+    endpoint = f"{url.rstrip('/')}/timbr-server/log_benchmark/running_update_completed"
+    headers = _build_benchmark_log_headers(token)
+    payload = {"run_id": run_id, "completed": completed, "agent_name": agent_name}
+    response = requests.post(endpoint, json=payload, headers=headers)
+    if not response.ok:
+        raise RuntimeError(
+            f"Failed to update benchmark progress [{response.status_code}]: {response.text}"
+        )
+
+
+def _log_benchmark_history(url: str, token: str, payload: Dict[str, Any]) -> None:
+    """POST to /timbr-server/log_benchmark/history to finalise a benchmark run."""
+    endpoint = f"{url.rstrip('/')}/timbr-server/log_benchmark/history"
+    headers = _build_benchmark_log_headers(token)
+    response = requests.post(endpoint, json=payload, headers=headers)
+    if not response.ok:
+        raise RuntimeError(
+            f"Failed to log benchmark history [{response.status_code}]: {response.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # run_benchmark
 # ---------------------------------------------------------------------------
 
 def run_benchmark(
-    agent: str,
+    benchmark_name: str,
     queries: Optional[Dict[str, Any]] = None,
     url: Optional[str] = None,
     token: Optional[str] = None,
@@ -438,12 +498,14 @@ def run_benchmark(
     verify_ssl: bool = False,
     is_jwt: Optional[bool] = None,
     jwt_tenant_id: Optional[str] = None,
+    number_of_iterations: int = 1,
 ) -> Dict[str, Any]:
     """
     Run an LLM benchmark against a Timbr agent and return scored results.
 
     Args:
-        agent: **Mandatory.** The Timbr agent name (looked up in ``sys_agents_options``).
+        benchmark_name: **Mandatory.** The benchmark name (looked up in ``SYS_AGENTS_BENCHMARKS``).
+            The associated agent name and default questions are retrieved from this table.
         queries: Questions to evaluate.  Must follow the *questions-enhanced* format::
 
                 {
@@ -455,8 +517,8 @@ def run_benchmark(
                     ...
                 }
 
-            When omitted the questions are read from the agent's ``questions`` option
-            in ``sys_agents_options`` (stored as a JSON string in the same format).
+            When omitted the questions are read from the benchmark's ``benchmark`` field
+            in ``SYS_AGENTS_BENCHMARKS`` (stored as a JSON string in the same format).
 
         url: Timbr server URL.  Defaults to the ``TIMBR_URL`` environment variable.
         token: Timbr authentication token.  Defaults to ``TIMBR_TOKEN``.
@@ -472,6 +534,7 @@ def run_benchmark(
             Defaults to ``False``.
         is_jwt: Whether to use JWT authentication. Defaults to ``None``.
         jwt_tenant_id: JWT tenant ID. Defaults to ``None``.
+        number_of_iterations: Number of iterations for the benchmark run. Defaults to ``1``.
 
     Returns:
         A dictionary with one entry per question ID (matching the input *queries*
@@ -492,13 +555,24 @@ def run_benchmark(
         configuration.
 
     Raises:
-        ValueError: If *agent* is missing, if *queries* cannot be resolved, or if
+        ValueError: If *benchmark_name* is missing, if *queries* cannot be resolved, or if
                     required connection parameters are not available.
+        RuntimeError: If any benchmark logging HTTP call fails.
     """
-    if not agent:
-        raise ValueError("The 'agent' parameter is mandatory.")
+    if not benchmark_name:
+        raise ValueError("The 'benchmark_name' parameter is mandatory.")
 
     # Build system-level conn_params for calls to timbr schema (sys_agents_options)
+    thrift_host = config.thrift_host
+    thrift_port = config.thrift_port
+
+    if not thrift_host or not thrift_port:
+        raise ValueError(
+            "Thrift host and port are required for benchmark execution. "
+            "Set THRIFT_HOST and THRIFT_PORT environment variables."
+        )
+
+    server_url = f"{thrift_host}:{thrift_port}"
     resolved_url = url or config.url
     resolved_token = token or config.token
 
@@ -521,26 +595,33 @@ def run_benchmark(
     }
 
     # ------------------------------------------------------------------
+    # Resolve benchmark info
+    # ------------------------------------------------------------------
+    logger.info(f"Fetching benchmark info for '{benchmark_name}'…")
+    benchmark_info = get_timbr_benchmark_info(benchmark_name, system_conn_params)
+    agent_name: str = benchmark_info["agent_name"]
+
+    # ------------------------------------------------------------------
     # Resolve agent options
     # ------------------------------------------------------------------
-    logger.info(f"Fetching agent options for '{agent}'…")
-    agent_options = get_timbr_agent_options(agent, system_conn_params)
+    logger.info(f"Fetching agent options for '{agent_name}'…")
+    agent_options = get_timbr_agent_options(agent_name, system_conn_params)
 
     # ------------------------------------------------------------------
     # Resolve queries
     # ------------------------------------------------------------------
     if queries is None:
-        raw_questions = agent_options.get("questions")
+        raw_questions = benchmark_info.get("benchmark")
         if not raw_questions:
             raise ValueError(
-                f"No 'queries' argument provided and agent '{agent}' has no 'questions' option "
-                "in sys_agents_options."
+                f"No 'queries' argument provided and benchmark '{benchmark_name}' has no "
+                "'benchmark' (questions) field in SYS_AGENTS_BENCHMARKS."
             )
         try:
             loaded = json.loads(raw_questions)
         except json.JSONDecodeError as exc:
             raise ValueError(
-                f"Agent option 'questions' is not valid JSON: {exc}"
+                f"Benchmark field 'benchmark' is not valid JSON: {exc}"
             ) from exc
 
         if isinstance(loaded, list):
@@ -549,7 +630,7 @@ def run_benchmark(
             queries = loaded
         else:
             raise ValueError(
-                "Agent option 'questions' must be a JSON object (dict) or array (list)."
+                "Benchmark field 'benchmark' must be a JSON object (dict) or array (list)."
             )
 
     if not queries:
@@ -589,13 +670,17 @@ def run_benchmark(
     }
 
     # ------------------------------------------------------------------
+    # Resolve LLM info (used for judge scoring and benchmark logging)
+    # ------------------------------------------------------------------
+    llm_type: str = agent_options.get("llm_type") or config.llm_type or ""
+    llm_model: str = agent_options.get("llm_model") or config.llm_model or ""
+    llm_api_key: Optional[str] = agent_options.get("llm_api_key") or config.llm_api_key
+
+    # ------------------------------------------------------------------
     # Build LLM wrapper for judge scoring (if needed)
     # ------------------------------------------------------------------
     judge_llm: Optional[Any] = None
     if resolved_use_llm_judge:
-        llm_type = agent_options.get("llm_type") or config.llm_type
-        llm_model = agent_options.get("llm_model") or config.llm_model
-        llm_api_key = agent_options.get("llm_api_key") or config.llm_api_key
         judge_llm = LlmWrapper(
             llm_type=llm_type,
             model=llm_model,
@@ -613,12 +698,12 @@ def run_benchmark(
         use_llm_judge=resolved_use_llm_judge,
     )
 
-    logger.info(f"Creating Timbr SQL agent for '{agent}'…")
+    logger.info(f"Creating Timbr SQL agent for '{agent_name}'…")
     agent_executor = create_timbr_sql_agent(
         url=resolved_url,
         token=resolved_token,
         # ontology=resolved_ontology,
-        agent=agent,
+        agent=agent_name,
         # include_tags="*",
         # enable_reasoning=to_boolean(agent_options.get("enable_reasoning", config.enable_reasoning)),
         # graph_depth=to_integer(agent_options.get("graph_depth", 1)),
@@ -629,13 +714,34 @@ def run_benchmark(
     )
 
     # ------------------------------------------------------------------
+    # Initialise run tracking
+    # ------------------------------------------------------------------
+    run_id = str(uuid.uuid4())
+    start_time = datetime.now()
+    total_questions = len(queries)
+
+    _log_benchmark_running(
+        url=server_url,
+        token=resolved_token,
+        payload={
+            "benchmark_name": benchmark_name,
+            "agent_name": agent_name,
+            "run_id": run_id,
+            "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "number_of_questions": total_questions,
+            "completed": 0,
+        },
+    )
+
+    # ------------------------------------------------------------------
     # Benchmark loop
     # ------------------------------------------------------------------
     benchmark_results: Dict[str, Any] = copy.deepcopy(queries)
-    correct_count = partial_count = incorrect_count = 0
-    total_questions = len(queries)
+    correct_count = partial_count = incorrect_count = inconsistent_count = error_count = 0
+    total_tokens_used = 0
+    completed_count = 0
 
-    logger.info(f"Running benchmark on {total_questions} question(s)…")
+    logger.info(f"Running benchmark '{benchmark_name}' on {total_questions} question(s)…")
 
     for question_id, question_data in queries.items():
         question_text: str = question_data.get("question", "")
@@ -645,28 +751,34 @@ def run_benchmark(
         logger.info(f"  [{question_id}] {question_text[:100]}…")
 
         # Execute question via agent
+        had_error = False
         try:
             llm_result = agent_executor({"input": question_text})
         except Exception as exc:
             llm_result = {"sql": None, "rows": [], "error": str(exc)}
+            had_error = True
+
+        if had_error or llm_result.get("error"):
+            error_count += 1
 
         generated_sql: str = llm_result.get("sql") or ""
         generated_rows: List[Dict[str, Any]] = llm_result.get("rows") or []
 
         # Collect token usage
         usage_metadata = llm_result.get("usage_metadata") or {}
-        total_tokens = sum(
+        question_tokens = sum(
             v.get("total_tokens", v.get("approximate", 0))
             for v in usage_metadata.values()
             if isinstance(v, dict)
         )
+        total_tokens_used += question_tokens
 
         # Write agent outputs back to results
         benchmark_results[question_id]["generated_sql"] = generated_sql
         benchmark_results[question_id]["selected_concept"] = llm_result.get("concept") or ""
         benchmark_results[question_id]["answer"] = llm_result.get("answer") or ""
         benchmark_results[question_id]["timbr_reasoning_status"] = llm_result.get("reasoning_status") or ""
-        benchmark_results[question_id]["tokens_used"] = total_tokens
+        benchmark_results[question_id]["tokens_used"] = question_tokens
 
         # Execute correct SQL to obtain expected rows (deterministic mode)
         expected_rows: Optional[List[Dict[str, Any]]] = None
@@ -708,10 +820,54 @@ def run_benchmark(
             correct_count += 1
         elif result_status == "partial":
             partial_count += 1
-        else:
+        elif result_status == "incorrect":
             incorrect_count += 1
+        else:
+            inconsistent_count += 1
+
+        completed_count += 1
+        _log_benchmark_update_completed(
+            url=server_url,
+            token=resolved_token,
+            run_id=run_id,
+            completed=completed_count,
+            agent_name=agent_name,
+        )
 
         logger.info(f"  [{question_id}] → {result_status.upper()}")
+
+    # ------------------------------------------------------------------
+    # Finalise run and log history
+    # ------------------------------------------------------------------
+    end_time = datetime.now()
+    duration_ms = int((end_time - start_time).total_seconds() * 1000)
+    correct_rate = round((correct_count / total_questions) * 100, 2) if total_questions > 0 else 0.0
+
+    _log_benchmark_history(
+        url=server_url,
+        token=resolved_token,
+        payload={
+            "benchmark_name": benchmark_name,
+            "agent_name": agent_name,
+            "run_id": run_id,
+            "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "duration": duration_ms,
+            "number_of_questions": total_questions,
+            "correct_count": correct_count,
+            "partial_count": partial_count,
+            "incorrect_count": incorrect_count,
+            "inconsistent_count": inconsistent_count,
+            "error_count": error_count,
+            "correct_rate": correct_rate,
+            "number_of_iterations": number_of_iterations,
+            "total_tokens_used": total_tokens_used,
+            "langchain_timbr_version": _langchain_timbr_version,
+            "llm_type": llm_type,
+            "llm_model": llm_model,
+            "result": benchmark_results,
+        },
+    )
 
     # ------------------------------------------------------------------
     # Summary
@@ -721,14 +877,20 @@ def run_benchmark(
         "correct_count": correct_count,
         "partial_count": partial_count,
         "incorrect_count": incorrect_count,
-        "correct_rate": round((correct_count / total_questions) * 100, 2) if total_questions > 0 else 0,
-        "timestamp": datetime.now().isoformat(),
+        "inconsistent_count": inconsistent_count,
+        "error_count": error_count,
+        "correct_rate": correct_rate,
+        "total_tokens_used": total_tokens_used,
+        "timestamp": start_time.isoformat(),
+        "duration_ms": duration_ms,
         "config": {
-            "agent": agent,
+            "benchmark_name": benchmark_name,
+            "agent_name": agent_name,
             "ontology": resolved_ontology,
             "timbr_url": resolved_url,
             "use_deterministic_scoring": resolved_use_deterministic,
             "use_llm_judge_scoring": resolved_use_llm_judge,
+            "number_of_iterations": number_of_iterations,
         },
     }
 
