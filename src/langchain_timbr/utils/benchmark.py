@@ -36,7 +36,7 @@ import requests
 from pytimbr_api import timbr_http_connector
 
 from .. import config
-from ..langchain.timbr_sql_agent import create_timbr_sql_agent
+from langchain_timbr import create_timbr_sql_agent, GenerateTimbrSqlChain
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .general import to_boolean
 from .prompt_service import get_benchmark_judge_prompt_template
@@ -148,6 +148,22 @@ def _compare_results(
 
 
 # ---------------------------------------------------------------------------
+# SQL normalization helpers
+# ---------------------------------------------------------------------------
+
+# Similarity threshold for SQL-to-SQL partial match (generate_sql_only mode)
+SQL_PARTIAL_MATCH_THRESHOLD = 0.85
+
+
+def _normalize_sql(sql: str) -> str:
+    """Normalise SQL for comparison: lowercase, collapse all whitespace to single
+    spaces, and strip trailing semicolons."""
+    if not sql:
+        return ""
+    return " ".join(sql.lower().split()).rstrip(";").strip()
+
+
+# ---------------------------------------------------------------------------
 # BenchmarkScorer
 # ---------------------------------------------------------------------------
 
@@ -201,6 +217,7 @@ class BenchmarkScorer:
         expected_answer: Optional[str] = None,
         expected_rows: Optional[List[Dict[str, Any]]] = None,
         execution_error: Optional[str] = None,
+        execution_mode: str = "full",
     ) -> Dict[str, Any]:
         """
         Score a single benchmark result.
@@ -247,6 +264,7 @@ class BenchmarkScorer:
                 expected_answer,
                 expected_rows,
                 execution_error,
+                execution_mode=execution_mode,
             )
             all_assessments.append(det_result)
             combined_breakdown.update(
@@ -256,7 +274,7 @@ class BenchmarkScorer:
                 combined_reasoning.append(f"[Deterministic] {det_result['reasoning']}")
 
         if "llm_judge" in methods_to_use:
-            llm_result = self._llm_judge_score(question, generated_sql, answer)
+            llm_result = self._llm_judge_score(question, generated_sql, answer, execution_mode=execution_mode)
             all_assessments.append(llm_result)
             combined_breakdown.update(
                 {f"llm_{k}": v for k, v in llm_result["breakdown"].items()}
@@ -304,10 +322,45 @@ class BenchmarkScorer:
         expected_answer: Optional[str],
         expected_rows: Optional[List[Dict[str, Any]]],
         execution_error: Optional[str],
+        execution_mode: str = "full",
     ) -> Dict[str, Any]:
         breakdown: Dict[str, Any] = {}
-        assessment = "correct"
         reasoning_parts: List[str] = []
+
+        # ---- SQL-only mode: compare generated SQL against expected SQL directly ----
+        if execution_mode == "generate_sql_only":
+            if not expected_sql:
+                return {
+                    "assessment": "incorrect",
+                    "breakdown": {},
+                    "reasoning": "No expected SQL provided for SQL comparison",
+                    "scoring_method": "error",
+                }
+            norm_generated = _normalize_sql(generated_sql)
+            norm_expected = _normalize_sql(expected_sql)
+            ratio = round(SequenceMatcher(None, norm_expected, norm_generated).ratio(), 4)
+            breakdown["sql_similarity"] = ratio
+            if ratio == 1.0:
+                breakdown["sql_match"] = "exact"
+                assessment = "correct"
+                reasoning_parts.append("SQL matches expected exactly")
+            elif ratio >= SQL_PARTIAL_MATCH_THRESHOLD:
+                breakdown["sql_match"] = "partial"
+                assessment = "partial"
+                reasoning_parts.append(f"SQL partially matches expected (similarity: {ratio:.2f})")
+            else:
+                breakdown["sql_match"] = "none"
+                assessment = "incorrect"
+                reasoning_parts.append(f"SQL does not match expected (similarity: {ratio:.2f})")
+            return {
+                "assessment": assessment,
+                "breakdown": breakdown,
+                "scoring_method": "deterministic",
+                "reasoning": " | ".join(reasoning_parts),
+            }
+
+        # ---- Full mode: row-comparison scoring ----
+        assessment = "correct"
 
         if execution_error:
             breakdown["execution_success"] = "failed"
@@ -349,6 +402,7 @@ class BenchmarkScorer:
         question: str,
         generated_sql: str,
         answer: str,
+        execution_mode: str = "full",
     ) -> Dict[str, Any]:
         """Use LLM (via the benchmark-judge template from timbr-api) to score the result."""
         try:
@@ -357,10 +411,17 @@ class BenchmarkScorer:
                     conn_params=self.conn_params
                 )
 
+            # In SQL-only mode there is no executed answer; pass an empty context so
+            # the template section is absent and the judge evaluates SQL alone.
+            if execution_mode == "generate_sql_only":
+                answer_context = ""
+            else:
+                answer_context = f"**Generated Answer:**\n{answer or '(no answer generated)'}\n\n"
+
             messages = self._judge_prompt_template.format_messages(
                 question=question,
                 generated_sql=generated_sql,
-                answer=answer or "(no answer generated)",
+                answer_context=answer_context,
                 expected_sql_context="",
                 expected_answer_context="",
             )
@@ -497,10 +558,11 @@ def run_benchmark(
     ontology: Optional[str] = None,
     use_deterministic: Optional[bool] = None,
     use_llm_judge: Optional[bool] = None,
+    execution: str = "full",
+    number_of_iterations: int = 1,
     verify_ssl: bool = False,
     is_jwt: Optional[bool] = None,
     jwt_tenant_id: Optional[str] = None,
-    number_of_iterations: int = 1,
 ) -> Dict[str, Any]:
     """
     Run an LLM benchmark against a Timbr agent and return scored results.
@@ -536,7 +598,21 @@ def run_benchmark(
             Defaults to ``False``.
         is_jwt: Whether to use JWT authentication. Defaults to ``None``.
         jwt_tenant_id: JWT tenant ID. Defaults to ``None``.
-        number_of_iterations: Number of iterations for the benchmark run. Defaults to ``1``.
+        number_of_iterations: How many times each question is executed. Defaults to ``1``.
+            When greater than 1, the benchmark checks result *consistency*: a question is
+            marked ``"inconsistent"`` when different iterations produce different assessments,
+            and ``consistent`` / ``iterations_detail`` fields are added to each question
+            result.
+        execution: Execution method. One of:
+
+            * ``"full"`` *(default)* – run the full Timbr SQL agent (concept
+              identification → SQL generation → execution → answer generation)
+              and score using row comparison and/or LLM judge.
+            * ``"generate_sql_only"`` – use GenerateTimbrSqlChain to generate
+              SQL without executing it. Deterministic scoring compares the generated SQL
+              against ``correct_sql`` (exact match → *correct*, similarity ≥
+              :data:`SQL_PARTIAL_MATCH_THRESHOLD` → *partial*, else → *incorrect*).
+              LLM-judge scoring evaluates whether the SQL looks correct for the question.
 
     Returns:
         A dictionary with one entry per question ID (matching the input *queries*
@@ -568,6 +644,12 @@ def run_benchmark(
     """
     if not benchmark_name:
         raise ValueError("The 'benchmark_name' parameter is mandatory.")
+
+    _valid_execution_modes = ("full", "generate_sql_only")
+    if execution not in _valid_execution_modes:
+        raise ValueError(
+            f"Invalid execution mode '{execution}'. Must be one of: {_valid_execution_modes}."
+        )
 
     # Build system-level conn_params for calls to timbr schema (sys_agents_options)
     thrift_host = config.thrift_host
@@ -696,7 +778,7 @@ def run_benchmark(
         )
 
     # ------------------------------------------------------------------
-    # Instantiate scorer and agent executor
+    # Instantiate scorer and agent executor / SQL-only chain
     # ------------------------------------------------------------------
     scorer = BenchmarkScorer(
         conn_params=agent_conn_params,
@@ -705,20 +787,45 @@ def run_benchmark(
         use_llm_judge=resolved_use_llm_judge,
     )
 
-    logger.info(f"Creating Timbr SQL agent for '{agent_name}'…")
-    agent_executor = create_timbr_sql_agent(
-        url=resolved_url,
-        token=resolved_token,
-        # ontology=resolved_ontology,
-        agent=agent_name,
-        # include_tags="*",
-        # enable_reasoning=to_boolean(agent_options.get("enable_reasoning", config.enable_reasoning)),
-        # graph_depth=to_integer(agent_options.get("graph_depth", 1)),
-        verify_ssl=verify_ssl,
-        is_jwt=is_jwt,
-        jwt_tenant_id=jwt_tenant_id,
-        generate_answer=True,
-    )
+    agent_executor = None
+    sql_chain = None
+
+    if execution == "generate_sql_only":
+        # Build an LLM for the chain (same config as judge LLM; create separately so
+        # generate_sql_only mode works even when use_llm_judge is False)
+        sql_chain_llm: Optional[Any] = None
+        if llm_type and llm_api_key:
+            sql_chain_llm = LlmWrapper(
+                llm_type=llm_type,
+                model=llm_model,
+                api_key=llm_api_key,
+                temperature=0,
+            )
+        logger.info(f"Creating GenerateTimbrSqlChain for '{agent_name}'…")
+        sql_chain = GenerateTimbrSqlChain(
+            url=resolved_url,
+            token=resolved_token,
+            agent=agent_name,
+            verify_ssl=verify_ssl,
+            is_jwt=is_jwt,
+            jwt_tenant_id=jwt_tenant_id,
+            llm=sql_chain_llm,
+        )
+    else:
+        logger.info(f"Creating Timbr SQL agent for '{agent_name}'…")
+        agent_executor = create_timbr_sql_agent(
+            url=resolved_url,
+            token=resolved_token,
+            # ontology=resolved_ontology,
+            agent=agent_name,
+            # include_tags="*",
+            # enable_reasoning=to_boolean(agent_options.get("enable_reasoning", config.enable_reasoning)),
+            # graph_depth=to_integer(agent_options.get("graph_depth", 1)),
+            verify_ssl=verify_ssl,
+            is_jwt=is_jwt,
+            jwt_tenant_id=jwt_tenant_id,
+            generate_answer=True,
+        )
 
     # ------------------------------------------------------------------
     # Initialise run tracking
@@ -736,6 +843,8 @@ def run_benchmark(
             "run_id": run_id,
             "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
             "number_of_questions": total_questions,
+            "execution": execution,
+            "number_of_iterations": number_of_iterations,
             "completed": 0,
         },
     )
@@ -748,7 +857,10 @@ def run_benchmark(
     total_tokens_used = 0
     completed_count = 0
 
-    logger.info(f"Running benchmark '{benchmark_name}' on {total_questions} question(s)…")
+    logger.info(
+        f"Running benchmark '{benchmark_name}' on {total_questions} question(s) "
+        f"[execution={execution}, iterations={number_of_iterations}]…"
+    )
 
     for question_id, question_data in queries.items():
         question_text: str = question_data.get("question", "")
@@ -759,52 +871,10 @@ def run_benchmark(
 
         logger.info(f"  [{question_id}] {question_text[:100]}…")
 
-        # Execute question via agent
-        had_error = False
-        try:
-            llm_result = agent_executor({"input": question_text})
-        except Exception as exc:
-            llm_result = {"sql": None, "rows": [], "error": str(exc)}
-            had_error = True
-
-        if had_error or llm_result.get("error"):
-            error_count += 1
-
-        generated_sql: str = llm_result.get("sql") or ""
-        generated_rows: List[Dict[str, Any]] = llm_result.get("rows") or []
-
-        # Collect token usage
-        usage_metadata = llm_result.get("usage_metadata") or {}
-        question_tokens = sum(
-            v.get("total_tokens", v.get("approximate", 0))
-            for v in usage_metadata.values()
-            if isinstance(v, dict)
-        )
-        total_tokens_used += question_tokens
-
-        # Write agent outputs back to results
-        benchmark_results[question_id]["generated_sql"] = generated_sql
-        selected_concept = llm_result.get("concept")
-        selected_ontology = llm_result.get("ontology")
-        benchmark_results[question_id]["selected_concept"] = selected_concept or ""
-        benchmark_results[question_id]["selected_ontology"] = selected_ontology or ""
-        benchmark_results[question_id]["answer"] = llm_result.get("answer") or ""
-        benchmark_results[question_id]["timbr_reasoning_status"] = llm_result.get("reasoning_status") or ""
-        benchmark_results[question_id]["identify_concept_reason"] = llm_result.get("identify_concept_reason")
-        benchmark_results[question_id]["generate_sql_reason"] = llm_result.get("generate_sql_reason")
-        benchmark_results[question_id]["correct_concept"] = _matches_expected_value(
-            expected_concept,
-            selected_concept,
-        )
-        benchmark_results[question_id]["correct_ontology"] = _matches_expected_value(
-            expected_ontology,
-            selected_ontology,
-        )
-        benchmark_results[question_id]["tokens_used"] = question_tokens
-
-        # Execute correct SQL to obtain expected rows (deterministic mode)
+        # Execute correct SQL once (outside iteration loop) for deterministic full-mode scoring.
+        # In generate_sql_only mode we never execute SQL, so skip this.
         expected_rows: Optional[List[Dict[str, Any]]] = None
-        if correct_sql and resolved_use_deterministic:
+        if execution == "full" and correct_sql and resolved_use_deterministic:
             try:
                 expected_rows = timbr_http_connector.run_query(
                     query=correct_sql.replace(";", ""),
@@ -819,24 +889,131 @@ def run_benchmark(
                 logger.warning(f"  [{question_id}] Failed to execute correct SQL: {exc}")
                 expected_rows = []
 
-        # Score
-        score_result = scorer.score_result(
-            question=question_text,
-            generated_sql=generated_sql,
-            answer=llm_result.get("answer") or "",
-            generated_rows=generated_rows,
-            expected_sql=correct_sql,
-            expected_answer=expected_answer,
-            expected_rows=expected_rows,
-            execution_error=llm_result.get("error"),
-        )
+        # ------------------------------------------------------------------
+        # Iterations inner loop
+        # ------------------------------------------------------------------
+        iteration_results: List[Dict[str, Any]] = []
+        question_tokens_total: int = 0
+        had_error_in_any_iteration = False
+        last_llm_result: Dict[str, Any] = {}
+        last_score_result: Dict[str, Any] = {}
 
-        result_status: str = score_result["assessment"]
+        for iter_num in range(1, number_of_iterations + 1):
+            iter_label = f"[{question_id}][{iter_num}/{number_of_iterations}]" if number_of_iterations > 1 else f"[{question_id}]"
+
+            # ---- Execute via agent or SQL-only chain ----
+            try:
+                if execution == "generate_sql_only":
+                    raw = sql_chain.invoke({"prompt": question_text})  # type: ignore[union-attr]
+                    # Normalise the chain result to the same shape as agent_executor output
+                    llm_result: Dict[str, Any] = {
+                        "sql": raw.get("sql"),
+                        "rows": [],
+                        "answer": "",
+                        "ontology": raw.get("ontology") or resolved_ontology,
+                        "concept": raw.get("concept"),
+                        "schema": raw.get("schema"),
+                        "error": raw.get("error"),
+                        "reasoning_status": raw.get("reasoning_status"),
+                        "identify_concept_reason": raw.get("identify_concept_reason"),
+                        "generate_sql_reason": raw.get("generate_sql_reason"),
+                        # Wrap into the nested format used by the token-counting logic
+                        "usage_metadata": {
+                            "generate_sql": raw.get("generate_sql_usage_metadata") or {}
+                        },
+                    }
+                else:
+                    llm_result = agent_executor({"input": question_text})  # type: ignore[misc]
+            except Exception as exc:
+                llm_result = {"sql": None, "rows": [], "error": str(exc), "usage_metadata": {}}
+
+            if llm_result.get("error"):
+                had_error_in_any_iteration = True
+
+            generated_sql: str = llm_result.get("sql") or ""
+            generated_rows: List[Dict[str, Any]] = llm_result.get("rows") or []
+
+            # ---- Collect token usage ----
+            usage_metadata = llm_result.get("usage_metadata") or {}
+            iter_tokens = sum(
+                v.get("total_tokens", v.get("approximate", 0))
+                for v in usage_metadata.values()
+                if isinstance(v, dict)
+            )
+            question_tokens_total += iter_tokens
+
+            # ---- Score ----
+            score_result = scorer.score_result(
+                question=question_text,
+                generated_sql=generated_sql,
+                answer=llm_result.get("answer") or "",
+                generated_rows=generated_rows,
+                expected_sql=correct_sql,
+                expected_answer=expected_answer,
+                expected_rows=expected_rows,
+                execution_error=llm_result.get("error"),
+                execution_mode=execution,
+            )
+
+            iter_status: str = score_result["assessment"]
+            iter_entry: Dict[str, Any] = {
+                "iteration": iter_num,
+                "generated_sql": generated_sql,
+                "status": iter_status,
+                "scoring_method": score_result["scoring_method"],
+                "score_breakdown": score_result["breakdown"],
+                "tokens_used": iter_tokens,
+            }
+            if "reasoning" in score_result:
+                iter_entry["score_reasoning"] = score_result["reasoning"]
+            iteration_results.append(iter_entry)
+
+            last_llm_result = llm_result
+            last_score_result = score_result
+
+            logger.info(f"  {iter_label} → {iter_status.upper()}")
+
+        # ---- Determine final status and consistency ----
+        if number_of_iterations == 1:
+            result_status: str = iteration_results[0]["status"]
+            consistent = True
+        else:
+            statuses = [r["status"] for r in iteration_results]
+            consistent = len(set(statuses)) == 1
+            if consistent:
+                result_status = statuses[0]
+            else:
+                result_status = "inconsistent"
+                inconsistent_count += 1
+
+        if had_error_in_any_iteration:
+            error_count += 1
+
+        total_tokens_used += question_tokens_total
+
+        # ---- Write question results ----
+        selected_concept = last_llm_result.get("concept")
+        selected_ontology = last_llm_result.get("ontology")
+        benchmark_results[question_id]["generated_sql"] = last_llm_result.get("sql") or ""
+        benchmark_results[question_id]["selected_concept"] = selected_concept or ""
+        benchmark_results[question_id]["selected_ontology"] = selected_ontology or ""
+        benchmark_results[question_id]["answer"] = last_llm_result.get("answer") or ""
+        benchmark_results[question_id]["timbr_reasoning_status"] = last_llm_result.get("reasoning_status") or ""
+        benchmark_results[question_id]["identify_concept_reason"] = last_llm_result.get("identify_concept_reason")
+        benchmark_results[question_id]["generate_sql_reason"] = last_llm_result.get("generate_sql_reason")
+        benchmark_results[question_id]["correct_concept"] = _matches_expected_value(expected_concept, selected_concept)
+        benchmark_results[question_id]["correct_ontology"] = _matches_expected_value(expected_ontology, selected_ontology)
+        benchmark_results[question_id]["tokens_used"] = question_tokens_total
         benchmark_results[question_id]["status"] = result_status
-        benchmark_results[question_id]["score_breakdown"] = score_result["breakdown"]
-        benchmark_results[question_id]["scoring_method"] = score_result["scoring_method"]
-        if "reasoning" in score_result:
-            benchmark_results[question_id]["score_reasoning"] = score_result["reasoning"]
+        benchmark_results[question_id]["score_breakdown"] = last_score_result.get("breakdown", {})
+        benchmark_results[question_id]["scoring_method"] = last_score_result.get("scoring_method", "error")
+        if "reasoning" in last_score_result:
+            benchmark_results[question_id]["score_reasoning"] = last_score_result["reasoning"]
+
+        # Store per-iteration detail and consistency flag when iterations > 1
+        if number_of_iterations > 1:
+            benchmark_results[question_id]["iterations_detail"] = iteration_results
+            benchmark_results[question_id]["consistent"] = consistent
 
         if result_status == "correct":
             correct_count += 1
@@ -844,8 +1021,7 @@ def run_benchmark(
             partial_count += 1
         elif result_status == "incorrect":
             incorrect_count += 1
-        else:
-            inconsistent_count += 1
+        # "inconsistent" is already counted above
 
         completed_count += 1
         _log_benchmark_update_completed(
@@ -856,7 +1032,7 @@ def run_benchmark(
             agent_name=agent_name,
         )
 
-        logger.info(f"  [{question_id}] → {result_status.upper()}")
+        logger.info(f"  [{question_id}] FINAL → {result_status.upper()}")
 
     # ------------------------------------------------------------------
     # Finalise run and log history
@@ -882,6 +1058,7 @@ def run_benchmark(
             "inconsistent_count": inconsistent_count,
             "error_count": error_count,
             "correct_rate": correct_rate,
+            "execution": execution,
             "number_of_iterations": number_of_iterations,
             "total_tokens_used": total_tokens_used,
             "langchain_timbr_version": _langchain_timbr_version,
@@ -912,6 +1089,7 @@ def run_benchmark(
             "timbr_url": resolved_url,
             "use_deterministic_scoring": resolved_use_deterministic,
             "use_llm_judge_scoring": resolved_use_llm_judge,
+            "execution": execution,
             "number_of_iterations": number_of_iterations,
         },
     }
