@@ -218,8 +218,8 @@ class TimbrSqlAgent(BaseSingleActionAgent):
                     "error": result.get("error", None),
                     "reasoning_status": result.get("reasoning_status", None),
                     "usage_metadata": usage_metadata,
-                    "identify_concept_reason": None,
-                    "generate_sql_reason": None,
+                    "identify_concept_reason": result.get("identify_concept_reason", None),
+                    "generate_sql_reason": result.get("generate_sql_reason", None),
                 },
                 log=f"Successfully executed query on concept: {result.get('concept', '')}"
             )

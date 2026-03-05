@@ -304,7 +304,10 @@ class TestRunBenchmark:
             "rows": [{"count": 42}],
             "answer": "There are 42 policies.",
             "concept": concept,
+            "ontology": "Insurance",
             "reasoning_status": "correct",
+            "identify_concept_reason": "Question maps best to Policy concept.",
+            "generate_sql_reason": "Using aggregate count pattern.",
             "error": None,
             "usage_metadata": {
                 "identify_concept": {"total_tokens": 100},
@@ -339,6 +342,12 @@ class TestRunBenchmark:
         assert "Q1" in results
         assert "Q2" in results
         assert "generated_sql" in results["Q1"]
+        assert "selected_concept" in results["Q1"]
+        assert "selected_ontology" in results["Q1"]
+        assert "identify_concept_reason" in results["Q1"]
+        assert "generate_sql_reason" in results["Q1"]
+        assert "correct_concept" in results["Q1"]
+        assert "correct_ontology" in results["Q1"]
         assert "status" in results["Q1"]
 
         # Logging helpers should have been called
@@ -520,3 +529,39 @@ class TestRunBenchmark:
             assert field in payload, f"Missing field in history payload: {field}"
         assert payload["benchmark_name"] == MOCK_BENCHMARK_NAME
         assert payload["number_of_iterations"] == 1
+
+    @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_concept_ontology_checks_normalized(self, mock_get_options, mock_create_agent):
+        """Concept/ontology checks use normalized comparison and null when missing expected values."""
+        mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
+
+        mock_agent_executor = MagicMock()
+        mock_agent_executor.side_effect = [
+            self._make_agent_result(concept=" policy "),
+            self._make_agent_result(concept="Customer"),
+        ]
+        mock_create_agent.return_value = mock_agent_executor
+
+        queries = {
+            "Q1": {
+                "question": "How many active policies are there?",
+                "correct_concept": "POLICY",
+                "correct_ontology": "insurance",
+            },
+            "Q2": {
+                "question": "List all customers.",
+            },
+        }
+
+        results = run_benchmark(
+            benchmark_name=MOCK_BENCHMARK_NAME,
+            queries=queries,
+            url=MOCK_URL,
+            token=MOCK_TOKEN,
+        )
+
+        assert results["Q1"]["correct_concept"] is True
+        assert results["Q1"]["correct_ontology"] is True
+        assert results["Q2"]["correct_concept"] is None
+        assert results["Q2"]["correct_ontology"] is None

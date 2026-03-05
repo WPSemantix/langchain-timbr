@@ -38,7 +38,7 @@ from pytimbr_api import timbr_http_connector
 from .. import config
 from ..langchain.timbr_sql_agent import create_timbr_sql_agent
 from ..llm_wrapper.llm_wrapper import LlmWrapper
-from .general import to_boolean, to_integer
+from .general import to_boolean
 from .prompt_service import get_benchmark_judge_prompt_template
 from .timbr_utils import get_timbr_agent_options, get_timbr_benchmark_info
 
@@ -84,6 +84,17 @@ def _normalize_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     normalized = [_normalize_row(r) for r in results]
     normalized.sort(key=lambda r: str(sorted(r.items())))
     return normalized
+
+
+def _matches_expected_value(expected_value: Any, selected_value: Any) -> Optional[bool]:
+    """Compare expected and selected values using normalization.
+
+    Returns:
+        ``None`` when expected value is missing, otherwise ``True``/``False``.
+    """
+    if expected_value is None:
+        return None
+    return _normalize_value(expected_value) == _normalize_value(selected_value)
 
 
 def _compare_results(
@@ -542,8 +553,13 @@ def run_benchmark(
 
         * ``generated_sql`` – SQL produced by the agent
         * ``selected_concept`` – Timbr concept chosen by the agent
+        * ``selected_ontology`` – Timbr ontology selected by the agent
         * ``answer`` – natural-language answer (if the agent generates one)
         * ``timbr_reasoning_status`` – Timbr's own SQL reasoning assessment
+        * ``identify_concept_reason`` – reason returned by concept identification step
+        * ``generate_sql_reason`` – reason returned by SQL generation step
+        * ``correct_concept`` – ``True``/``False`` if expected concept is provided, else ``None``
+        * ``correct_ontology`` – ``True``/``False`` if expected ontology is provided, else ``None``
         * ``tokens_used`` – total tokens consumed for this question
         * ``status`` – ``"correct"``, ``"partial"``, or ``"incorrect"``
         * ``score_breakdown`` – method-specific detail dict
@@ -747,6 +763,8 @@ def run_benchmark(
         question_text: str = question_data.get("question", "")
         correct_sql: Optional[str] = question_data.get("correct_sql")
         expected_answer: Optional[str] = question_data.get("expected_answer")
+        expected_concept: Optional[str] = question_data.get("correct_concept")
+        expected_ontology: Optional[str] = question_data.get("correct_ontology")
 
         logger.info(f"  [{question_id}] {question_text[:100]}…")
 
@@ -775,9 +793,22 @@ def run_benchmark(
 
         # Write agent outputs back to results
         benchmark_results[question_id]["generated_sql"] = generated_sql
-        benchmark_results[question_id]["selected_concept"] = llm_result.get("concept") or ""
+        selected_concept = llm_result.get("concept")
+        selected_ontology = llm_result.get("ontology")
+        benchmark_results[question_id]["selected_concept"] = selected_concept or ""
+        benchmark_results[question_id]["selected_ontology"] = selected_ontology or ""
         benchmark_results[question_id]["answer"] = llm_result.get("answer") or ""
         benchmark_results[question_id]["timbr_reasoning_status"] = llm_result.get("reasoning_status") or ""
+        benchmark_results[question_id]["identify_concept_reason"] = llm_result.get("identify_concept_reason")
+        benchmark_results[question_id]["generate_sql_reason"] = llm_result.get("generate_sql_reason")
+        benchmark_results[question_id]["correct_concept"] = _matches_expected_value(
+            expected_concept,
+            selected_concept,
+        )
+        benchmark_results[question_id]["correct_ontology"] = _matches_expected_value(
+            expected_ontology,
+            selected_ontology,
+        )
         benchmark_results[question_id]["tokens_used"] = question_tokens
 
         # Execute correct SQL to obtain expected rows (deterministic mode)

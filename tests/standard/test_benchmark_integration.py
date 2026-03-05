@@ -106,6 +106,12 @@ class TestBenchmarkIntegration:
         # Each question key should have at minimum these fields
         for q_id, r in results.items():
             assert "generated_sql" in r, f"{q_id}: missing generated_sql"
+            assert "selected_concept" in r, f"{q_id}: missing selected_concept"
+            assert "selected_ontology" in r, f"{q_id}: missing selected_ontology"
+            assert "identify_concept_reason" in r, f"{q_id}: missing identify_concept_reason"
+            assert "generate_sql_reason" in r, f"{q_id}: missing generate_sql_reason"
+            assert "correct_concept" in r, f"{q_id}: missing correct_concept"
+            assert "correct_ontology" in r, f"{q_id}: missing correct_ontology"
             assert "status" in r, f"{q_id}: missing status"
             assert r["status"] in ("correct", "partial", "incorrect", "error"), \
                 f"{q_id}: unexpected status '{r['status']}'"
