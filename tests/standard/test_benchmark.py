@@ -117,7 +117,7 @@ class TestBenchmarkScorer:
             use_llm_judge=use_llm_judge,
         )
 
-    # -- Basic mode ----------------------------------------------------------
+    # -- No-scoring mode -----------------------------------------------------
 
     def test_basic_no_sql(self):
         scorer = self._make_scorer()
@@ -125,13 +125,13 @@ class TestBenchmarkScorer:
         assert result["assessment"] == "incorrect"
         assert result["scoring_method"] == "error"
 
-    def test_basic_with_sql_no_answer(self):
+    def test_no_scoring_methods_with_sql_no_answer(self):
         scorer = self._make_scorer()
         result = scorer.score_result(question="q", generated_sql="SELECT 1", answer="")
-        assert result["assessment"] == "partial"
-        assert result["scoring_method"] == "basic"
+        assert result["assessment"] == "incorrect"
+        assert result["scoring_method"] == "error"
 
-    def test_basic_execution_error(self):
+    def test_no_scoring_methods_with_execution_error(self):
         scorer = self._make_scorer()
         result = scorer.score_result(
             question="q",
@@ -140,16 +140,17 @@ class TestBenchmarkScorer:
             execution_error="Table not found",
         )
         assert result["assessment"] == "incorrect"
+        assert result["scoring_method"] == "error"
 
-    def test_basic_valid_sql_with_answer(self):
+    def test_no_scoring_methods_with_valid_sql_and_answer(self):
         scorer = self._make_scorer()
         result = scorer.score_result(
             question="q",
             generated_sql="SELECT * FROM Policy",
             answer="There are 5 policies",
         )
-        # Basic scoring can only say partial when no expected data
-        assert result["assessment"] == "partial"
+        assert result["assessment"] == "incorrect"
+        assert result["scoring_method"] == "error"
 
     # -- Deterministic mode --------------------------------------------------
 
@@ -237,12 +238,11 @@ class TestBenchmarkScorer:
                 answer="some answer",
             )
 
-        # fallback to basic
-        assert result["scoring_method"] == "basic"
+        assert result["scoring_method"] == "error"
 
-    # -- Hybrid mode ----------------------------------------------------------
+    # -- Full mode ------------------------------------------------------------
 
-    def test_hybrid_deterministic_wins(self):
+    def test_full_deterministic_wins(self):
         """When both modes are enabled, deterministic assessment takes priority."""
         mock_llm = MagicMock()
         mock_llm.return_value.content = json.dumps({
@@ -269,7 +269,7 @@ class TestBenchmarkScorer:
             )
 
         assert result["assessment"] == "correct"  # deterministic wins
-        assert result["scoring_method"] == "hybrid"
+        assert result["scoring_method"] == "full"
 
 
 # ---------------------------------------------------------------------------
@@ -329,6 +329,7 @@ class TestRunBenchmark:
             queries=SAMPLE_QUESTIONS,
             url=MOCK_URL,
             token=MOCK_TOKEN,
+            use_llm_judge=False,
         )
 
         assert "_summary" in results
@@ -370,7 +371,12 @@ class TestRunBenchmark:
         mock_agent_executor.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent_executor
 
-        results = run_benchmark(benchmark_name=MOCK_BENCHMARK_NAME, url=MOCK_URL, token=MOCK_TOKEN)
+        results = run_benchmark(
+            benchmark_name=MOCK_BENCHMARK_NAME,
+            url=MOCK_URL,
+            token=MOCK_TOKEN,
+            use_llm_judge=False,
+        )
 
         assert results["_summary"]["total_questions"] == 1
         assert "Q1" in results
@@ -394,7 +400,7 @@ class TestRunBenchmark:
             url=MOCK_URL,
             token=MOCK_TOKEN,
         )
-        assert results["Q1"]["scoring_method"] == "basic"
+        assert results["Q1"]["scoring_method"] == "error"
 
     @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
     @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
@@ -416,6 +422,7 @@ class TestRunBenchmark:
             url=MOCK_URL,
             token=MOCK_TOKEN,
             use_deterministic=True,  # explicit override
+            use_llm_judge=False,
         )
         # Deterministic mode was forced, scoring_method should be deterministic
         assert results["Q1"]["scoring_method"] == "deterministic"
@@ -430,7 +437,12 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         # SAMPLE_BENCHMARK_INFO already has benchmark=None
         with pytest.raises(ValueError, match="benchmark"):
-            run_benchmark(benchmark_name=MOCK_BENCHMARK_NAME, url=MOCK_URL, token=MOCK_TOKEN)
+            run_benchmark(
+                benchmark_name=MOCK_BENCHMARK_NAME,
+                url=MOCK_URL,
+                token=MOCK_TOKEN,
+                use_llm_judge=False,
+            )
 
     @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
     @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
@@ -446,6 +458,7 @@ class TestRunBenchmark:
             queries=SAMPLE_QUESTIONS,
             url=MOCK_URL,
             token=MOCK_TOKEN,
+            use_llm_judge=False,
         )
 
         summary = results["_summary"]
@@ -478,6 +491,7 @@ class TestRunBenchmark:
             queries={"Q1": {"question": "test?"}},
             url=MOCK_URL,
             token=MOCK_TOKEN,
+            use_llm_judge=False,
         )
         assert results["_summary"]["error_count"] == 1
 
@@ -496,6 +510,7 @@ class TestRunBenchmark:
             queries=SAMPLE_QUESTIONS,  # 2 questions
             url=MOCK_URL,
             token=MOCK_TOKEN,
+            use_llm_judge=False,
         )
         assert results["_summary"]["total_tokens_used"] == 600  # 300 × 2
 
@@ -515,6 +530,7 @@ class TestRunBenchmark:
             url=MOCK_URL,
             token=MOCK_TOKEN,
             number_of_iterations=1,
+            use_llm_judge=False,
         )
 
         _, kwargs = self.mock_log_history.call_args
@@ -559,9 +575,42 @@ class TestRunBenchmark:
             queries=queries,
             url=MOCK_URL,
             token=MOCK_TOKEN,
+            use_llm_judge=False,
         )
 
         assert results["Q1"]["correct_concept"] is True
         assert results["Q1"]["correct_ontology"] is True
         assert results["Q2"]["correct_concept"] is None
         assert results["Q2"]["correct_ontology"] is None
+
+    @patch("langchain_timbr.utils.benchmark.LlmWrapper")
+    @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_llm_judge_is_default_when_not_configured(self, mock_get_options, mock_create_agent, mock_llm_wrapper):
+        """When neither param nor option is provided, llm_judge is enabled by default."""
+        options = SAMPLE_AGENT_OPTIONS.copy()
+        options.pop("use_llm_judge_scoring", None)
+        options.pop("use_deterministic_scoring", None)
+        mock_get_options.return_value = options
+
+        mock_agent_executor = MagicMock()
+        mock_agent_executor.return_value = self._make_agent_result()
+        mock_create_agent.return_value = mock_agent_executor
+
+        mock_llm = MagicMock()
+        mock_llm.return_value.content = '{"assessment":"correct","reasoning":"ok"}'
+        mock_llm_wrapper.return_value = mock_llm
+
+        with patch("langchain_timbr.utils.benchmark.get_benchmark_judge_prompt_template") as mock_template_getter:
+            mock_template = MagicMock()
+            mock_template.format_messages.return_value = []
+            mock_template_getter.return_value = mock_template
+
+            results = run_benchmark(
+                benchmark_name=MOCK_BENCHMARK_NAME,
+                queries={"Q1": {"question": "How many?"}},
+                url=MOCK_URL,
+                token=MOCK_TOKEN,
+            )
+
+        assert results["Q1"]["scoring_method"] == "llm_judge"

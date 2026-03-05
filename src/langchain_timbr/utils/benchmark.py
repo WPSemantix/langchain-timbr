@@ -2,8 +2,8 @@
 LLM Benchmark utility for evaluating Timbr SQL agent performance.
 
 Runs a set of questions through a Timbr agent and scores the generated SQL and
-answers using basic heuristics, deterministic row-comparison, or an LLM-as-judge
-approach (all three modes are configurable).
+answers using deterministic row-comparison, an LLM-as-judge approach, or the
+combined full mode.
 
 Usage::
 
@@ -155,12 +155,12 @@ class BenchmarkScorer:
     """
     Score benchmark results using a configurable combination of:
 
-    * **basic** – pure heuristics (no expected data required)
     * **deterministic** – row comparison between LLM and expected results
     * **llm_judge** – LLM evaluates the SQL + answer quality
+    * **full** – deterministic and llm_judge together (deterministic assessment wins)
 
     When both *deterministic* and *llm_judge* are enabled the deterministic
-    assessment takes priority and the scoring method is reported as ``"hybrid"``.
+    assessment takes priority and the scoring method is reported as ``"full"``.
     """
 
     def __init__(
@@ -208,8 +208,8 @@ class BenchmarkScorer:
         Returns a dict with keys:
             ``assessment``    – ``"correct"``, ``"partial"``, or ``"incorrect"``
             ``breakdown``     – method-specific detail (populated by deterministic mode)
-            ``scoring_method``– one of ``"basic"``, ``"deterministic"``,
-                                ``"llm_judge"``, ``"hybrid"``, ``"error"``
+            ``scoring_method``– one of ``"deterministic"``, ``"llm_judge"``,
+                                ``"full"``, ``"error"``
             ``reasoning``     – optional human-readable explanation string
         """
         if not generated_sql or not generated_sql.strip():
@@ -227,7 +227,12 @@ class BenchmarkScorer:
             methods_to_use.append("llm_judge")
 
         if not methods_to_use:
-            return self._basic_score(generated_sql, answer, execution_error)
+            return {
+                "assessment": "incorrect",
+                "breakdown": {},
+                "reasoning": "No scoring method enabled",
+                "scoring_method": "error",
+            }
 
         all_assessments: List[Dict[str, Any]] = []
         combined_breakdown: Dict[str, Any] = {}
@@ -271,7 +276,7 @@ class BenchmarkScorer:
                     final_assessment = "partial"
                 else:
                     final_assessment = "correct"
-            scoring_method = "hybrid"
+            scoring_method = "full"
         else:
             final_assessment = all_assessments[0]["assessment"]
             scoring_method = all_assessments[0]["scoring_method"]
@@ -384,27 +389,13 @@ class BenchmarkScorer:
             }
 
         except Exception as exc:
-            logger.warning(f"LLM judge scoring failed, falling back to basic: {exc}")
-            return self._basic_score(generated_sql, answer)
-
-    def _basic_score(
-        self,
-        generated_sql: str,
-        answer: str,
-        execution_error: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if execution_error:
-            return {"assessment": "incorrect", "breakdown": {}, "reasoning": "Query execution failed", "scoring_method": "basic"}
-        if not generated_sql or not generated_sql.strip():
-            return {"assessment": "incorrect", "breakdown": {}, "reasoning": "No SQL generated", "scoring_method": "basic"}
-        if not answer or not answer.strip():
-            return {"assessment": "partial", "breakdown": {}, "reasoning": "SQL generated but no answer provided", "scoring_method": "basic"}
-
-        sql_lower = generated_sql.lower()
-        if "select" in sql_lower and "from" in sql_lower:
-            return {"assessment": "partial", "breakdown": {}, "reasoning": "Basic SQL structure valid, but cannot verify correctness without expected results", "scoring_method": "basic"}
-
-        return {"assessment": "incorrect", "breakdown": {}, "reasoning": "Invalid SQL structure", "scoring_method": "basic"}
+            logger.warning(f"LLM judge scoring failed: {exc}")
+            return {
+                "assessment": "incorrect",
+                "breakdown": {},
+                "reasoning": f"LLM judge scoring failed: {str(exc)}",
+                "scoring_method": "error",
+            }
 
     # ------------------------------------------------------------------
     # Similarity helpers
@@ -540,7 +531,7 @@ def run_benchmark(
             Defaults to ``False``.
         use_llm_judge: Enable LLM-as-judge scoring.
             Overrides the agent option ``use_llm_judge_scoring``.
-            Defaults to ``False``.
+            Defaults to ``True``.
         verify_ssl: Whether to verify SSL certificates when connecting to Timbr.
             Defaults to ``False``.
         is_jwt: Whether to use JWT authentication. Defaults to ``None``.
@@ -563,8 +554,8 @@ def run_benchmark(
         * ``tokens_used`` – total tokens consumed for this question
         * ``status`` – ``"correct"``, ``"partial"``, or ``"incorrect"``
         * ``score_breakdown`` – method-specific detail dict
-        * ``scoring_method`` – ``"basic"``, ``"deterministic"``, ``"llm_judge"``,
-          ``"hybrid"``, or ``"error"``
+        * ``scoring_method`` – ``"deterministic"``, ``"llm_judge"``, ``"full"``,
+                    or ``"error"``
         * ``score_reasoning`` – (optional) human-readable scoring explanation
 
         A special ``"_summary"`` key contains aggregate statistics and the run
@@ -656,16 +647,16 @@ def run_benchmark(
     # Resolve scoring modes
     # param > agent option > default (False)
     # ------------------------------------------------------------------
-    def _resolve_flag(param_val: Optional[bool], option_key: str) -> bool:
+    def _resolve_flag(param_val: Optional[bool], option_key: str, default: bool) -> bool:
         if param_val is not None:
             return param_val
         raw = agent_options.get(option_key)
         if raw is not None:
             return to_boolean(raw)
-        return False
+        return default
 
-    resolved_use_deterministic = _resolve_flag(use_deterministic, "use_deterministic_scoring")
-    resolved_use_llm_judge = _resolve_flag(use_llm_judge, "use_llm_judge_scoring")
+    resolved_use_deterministic = _resolve_flag(use_deterministic, "use_deterministic_scoring", False)
+    resolved_use_llm_judge = _resolve_flag(use_llm_judge, "use_llm_judge_scoring", True)
 
     # ------------------------------------------------------------------
     # Resolve ontology and agent-level connection details

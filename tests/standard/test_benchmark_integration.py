@@ -14,7 +14,7 @@ then run:
 
 or run a single test by name:
 
-    python -m pytest tests/standard/test_benchmark_integration.py::TestBenchmarkIntegration::test_basic_scoring -v -s
+    python -m pytest tests/standard/test_benchmark_integration.py::TestBenchmarkIntegration::test_no_scoring_methods -v -s
 
 Configuration
 -------------
@@ -80,10 +80,10 @@ def _print_results(results: dict):
 
 class TestBenchmarkIntegration:
 
-    def test_basic_scoring(self, config):
+    def test_no_scoring_methods(self, config):
         """
-        Run benchmark with basic scoring only (no deterministic, no LLM judge).
-        Score is based purely on whether the agent produced valid SQL and an answer.
+        Run benchmark with both scoring methods disabled.
+        Expected scoring_method is "error" because no scoring method is enabled.
         """
         _skip_if_not_configured(config)
 
@@ -116,6 +116,8 @@ class TestBenchmarkIntegration:
             assert r["status"] in ("correct", "partial", "incorrect", "error"), \
                 f"{q_id}: unexpected status '{r['status']}'"
             assert "scoring_method" in r, f"{q_id}: missing scoring_method"
+            assert r["scoring_method"] == "error", \
+                f"{q_id}: expected scoring_method 'error' when no methods enabled"
 
     def test_deterministic_scoring(self, config):
         """
@@ -148,7 +150,7 @@ class TestBenchmarkIntegration:
         _print_results(results)
 
         for q_id, r in results.items():
-            assert r["scoring_method"] in ("deterministic", "hybrid", "basic", "error"), \
+            assert r["scoring_method"] in ("deterministic", "full", "error"), \
                 f"{q_id}: unexpected scoring_method '{r['scoring_method']}'"
 
     def test_llm_judge_scoring(self, config):
@@ -174,12 +176,12 @@ class TestBenchmarkIntegration:
         _print_results(results)
 
         for q_id, r in results.items():
-            assert r["scoring_method"] in ("llm_judge", "hybrid", "basic", "error"), \
+            assert r["scoring_method"] in ("llm_judge", "full", "error"), \
                 f"{q_id}: unexpected scoring_method '{r['scoring_method']}'"
 
     def test_all_scoring_modes(self, config):
         """
-        Run benchmark with both deterministic and LLM-judge enabled (hybrid mode).
+        Run benchmark with both deterministic and LLM-judge enabled (full mode).
         Deterministic result takes precedence when correct_sql is available.
         """
         _skip_if_not_configured(config)
