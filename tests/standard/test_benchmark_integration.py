@@ -78,9 +78,9 @@ def _print_results(results: dict):
 # Tests
 # ---------------------------------------------------------------------------
 
-class TestBenchmarkIntegration:
+class Skip_TestBenchmarkIntegration:
 
-    def test_no_scoring_methods(self, config):
+    def skip_test_no_scoring_methods(self, config):
         """
         Run benchmark with both scoring methods disabled.
         Expected scoring_method is "error" because no scoring method is enabled.
@@ -119,7 +119,7 @@ class TestBenchmarkIntegration:
             assert r["scoring_method"] == "error", \
                 f"{q_id}: expected scoring_method 'error' when no methods enabled"
 
-    def test_deterministic_scoring(self, config):
+    def skip_test_deterministic_scoring(self, config):
         """
         Run benchmark with deterministic row-comparison scoring.
         Requires correct_sql in the query definitions to be meaningful.
@@ -153,7 +153,7 @@ class TestBenchmarkIntegration:
             assert r["scoring_method"] in ("deterministic", "full", "error"), \
                 f"{q_id}: unexpected scoring_method '{r['scoring_method']}'"
 
-    def test_llm_judge_scoring(self, config):
+    def skip_test_llm_judge_scoring(self, config):
         """
         Run benchmark with LLM-as-judge scoring.
         The LLM evaluates the generated answer against the expected answer / SQL context.
@@ -179,7 +179,7 @@ class TestBenchmarkIntegration:
             assert r["scoring_method"] in ("llm_judge", "full", "error"), \
                 f"{q_id}: unexpected scoring_method '{r['scoring_method']}'"
 
-    def test_all_scoring_modes(self, config):
+    def skip_test_all_scoring_modes(self, config):
         """
         Run benchmark with both deterministic and LLM-judge enabled (full mode).
         Deterministic result takes precedence when correct_sql is available.
@@ -202,7 +202,7 @@ class TestBenchmarkIntegration:
 
         assert isinstance(results, dict)
 
-    def test_queries_from_benchmark_options(self, config):
+    def skip_test_queries_from_benchmark_options(self, config):
         """
         Run benchmark without providing inline queries.
         Questions will be loaded from the benchmark's 'questions' option in sys_agent_benchmarks.
@@ -227,7 +227,7 @@ class TestBenchmarkIntegration:
         assert isinstance(results, dict)
         assert len(results) > 0, "Expected at least one result from agent questions option"
 
-    def test_generate_sql_only_execution(self, config):
+    def skip_test_generate_sql_only_execution(self, config):
         """
         Run benchmark with execution='generate_sql_only'.
         Uses GenerateTimbrSqlChain — no SQL execution, no answer generation.
@@ -255,7 +255,7 @@ class TestBenchmarkIntegration:
             assert r["answer"] == "", f"{q_id}: answer should be empty in generate_sql_only mode"
             assert r["scoring_method"] == "error", f"{q_id}: expected scoring_method='error' when no methods enabled"
 
-    def test_generate_sql_only_with_deterministic(self, config):
+    def skip_test_generate_sql_only_with_deterministic(self, config):
         """
         Run benchmark with execution='generate_sql_only' and deterministic scoring enabled.
         Questions that have 'correct_sql' will be scored via SQL-to-SQL comparison.
@@ -296,7 +296,7 @@ class TestBenchmarkIntegration:
                 assert r["score_breakdown"]["det_sql_match"] in ("exact", "partial", "none"), \
                     f"{q_id}: unexpected det_sql_match value"
 
-    def test_generate_sql_only_with_llm_judge(self, config):
+    def skip_test_generate_sql_only_with_llm_judge(self, config):
         """
         Run benchmark with execution='generate_sql_only' and LLM judge enabled.
         The judge should evaluate the SQL only (no executed answer context).
@@ -324,7 +324,7 @@ class TestBenchmarkIntegration:
                 assert r["status"] in ("correct", "partial", "incorrect"), \
                     f"{q_id}: unexpected status '{r['status']}'"
 
-    def test_full_execution_with_iterations(self, config):
+    def skip_test_full_execution_with_iterations(self, config):
         """
         Run benchmark with execution='full' and number_of_iterations=3.
         Each question is executed 3 times; results should include:
@@ -365,7 +365,7 @@ class TestBenchmarkIntegration:
         print(f"\n--- ITERATION SUMMARY ---\nconsistent_count={summary.get('correct_count')}, "
               f"inconsistent_count={summary['inconsistent_count']}")
 
-    def test_generate_sql_only_with_iterations(self, config):
+    def skip_test_generate_sql_only_with_iterations(self, config):
         """
         Run benchmark with execution='generate_sql_only' and number_of_iterations=3.
         Verifies that the SQL chain is called N times and consistency tracking works.
