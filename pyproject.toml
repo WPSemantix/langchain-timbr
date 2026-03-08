@@ -138,6 +138,9 @@ Documentation = "https://docs.timbr.ai/doc/docs/integration/langchain-sdk/"
 Source = "https://github.com/WPSemantix/langchain-timbr"
 Issues = "https://github.com/WPSemantix/langchain-timbr/issues"
 
+[project.scripts]
+langchain-timbr-benchmark = "langchain_timbr.benchmark_cli:main"
+
 [tool.hatch.version]
 source = "vcs"                                          # version comes from git
 

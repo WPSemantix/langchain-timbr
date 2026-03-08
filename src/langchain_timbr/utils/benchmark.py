@@ -29,7 +29,7 @@ import logging
 import uuid
 from datetime import datetime
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
 
@@ -552,7 +552,7 @@ def _log_benchmark_history(url: str, token: str, payload: Dict[str, Any]) -> Non
 
 def run_benchmark(
     benchmark_name: str,
-    queries: Optional[Dict[str, Any]] = None,
+    queries: Optional[Union[Dict[str, Any], List[str]]] = None,
     url: Optional[str] = None,
     token: Optional[str] = None,
     ontology: Optional[str] = None,
@@ -699,7 +699,8 @@ def run_benchmark(
     # ------------------------------------------------------------------
     # Resolve queries
     # ------------------------------------------------------------------
-    if queries is None:
+    def _load_queries_from_benchmark_info() -> Dict[str, Any]:
+        """Load and normalise the full questions dict from SYS_AGENTS_BENCHMARKS."""
         raw_questions = benchmark_info.get("benchmark")
         if not raw_questions:
             raise ValueError(
@@ -714,12 +715,33 @@ def run_benchmark(
             ) from exc
 
         if isinstance(loaded, list):
-            queries = {f"Q{i + 1}": {"question": q} for i, q in enumerate(loaded)}
-        elif isinstance(loaded, dict):
-            queries = loaded
-        else:
+            return {f"Q{i + 1}": {"question": q} for i, q in enumerate(loaded)}
+        if isinstance(loaded, dict):
+            return loaded
+        raise ValueError(
+            "Benchmark field 'benchmark' must be a JSON object (dict) or array (list)."
+        )
+
+    if queries is None:
+        queries = _load_queries_from_benchmark_info()
+
+    elif isinstance(queries, list):
+        # List of question ID strings — load full set from DB then filter to the requested IDs.
+        question_ids: List[str] = queries
+        full_queries = _load_queries_from_benchmark_info()
+        missing = [qid for qid in question_ids if qid not in full_queries]
+        if missing:
+            logger.warning(
+                "The following question IDs were not found in benchmark '%s' and will be "
+                "skipped: %s",
+                benchmark_name,
+                missing,
+            )
+        queries = {qid: full_queries[qid] for qid in question_ids if qid in full_queries}
+        if not queries:
             raise ValueError(
-                "Benchmark field 'benchmark' must be a JSON object (dict) or array (list)."
+                f"None of the provided question IDs exist in benchmark '{benchmark_name}'. "
+                f"Requested: {question_ids}. Available: {list(full_queries.keys())}"
             )
 
     if not queries:

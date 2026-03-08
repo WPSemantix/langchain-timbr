@@ -16,20 +16,20 @@ cache_timeout = to_integer(os.environ.get('CACHE_TIMEOUT', 120))
 ignore_tags = parse_list(os.environ.get('IGNORE_TAGS', 'icon'))
 ignore_tags_prefix = parse_list(os.environ.get('IGNORE_TAGS_PREFIX', 'mdx.,bli.'))
 
-llm_type = os.environ.get('LLM_TYPE')
-llm_model = os.environ.get('LLM_MODEL')
-llm_api_key = os.environ.get('LLM_API_KEY')
-llm_temperature = os.environ.get('LLM_TEMPERATURE', 0.0)
-llm_additional_params = os.environ.get('LLM_ADDITIONAL_PARAMS', '')
-llm_timeout = to_integer(os.environ.get('LLM_TIMEOUT', 120))  # Default 120 seconds timeout
+llm_type = os.environ.get('LLM_TYPE', os.environ.get('TIMBR_LLM_TYPE'))
+llm_model = os.environ.get('LLM_MODEL', os.environ.get('TIMBR_LLM_MODEL'))
+llm_api_key = os.environ.get('TIMBR_LLM_API_KEY', os.environ.get('TIMBR_LLM_APIKEY', os.environ.get('LLM_API_KEY')))
+llm_temperature = os.environ.get('LLM_TEMPERATURE', os.environ.get('TIMBR_LLM_TEMPERATURE', 0.0))
+llm_additional_params = os.environ.get('LLM_ADDITIONAL_PARAMS', os.environ.get('TIMBR_LLM_ADDITIONAL_PARAMS', ''))
+llm_timeout = to_integer(os.environ.get('LLM_TIMEOUT', os.environ.get('TIMBR_LLM_TIMEOUT', 120)))  # Default 120 seconds timeout
 
 # Optional for Azure OpenAI with Service Principal authentication
-llm_tenant_id = os.environ.get('LLM_TENANT_ID', None)
-llm_client_id = os.environ.get('LLM_CLIENT_ID', None)
-llm_client_secret = os.environ.get('LLM_CLIENT_SECRET', None)
-llm_endpoint = os.environ.get('LLM_ENDPOINT', None)
-llm_api_version = os.environ.get('LLM_API_VERSION', None)
-llm_scope = os.environ.get('LLM_SCOPE', "https://cognitiveservices.azure.com/.default")  # e.g. "api://<your-client-id>/.default"
+llm_tenant_id = os.environ.get('LLM_TENANT_ID', os.environ.get('TIMBR_LLM_TENANT_ID', None))
+llm_client_id = os.environ.get('LLM_CLIENT_ID', os.environ.get('TIMBR_LLM_CLIENT_ID', None))
+llm_client_secret = os.environ.get('LLM_CLIENT_SECRET', os.environ.get('TIMBR_LLM_CLIENT_SECRET', None))
+llm_endpoint = os.environ.get('LLM_ENDPOINT', os.environ.get('TIMBR_LLM_ENDPOINT', None))
+llm_api_version = os.environ.get('LLM_API_VERSION', os.environ.get('TIMBR_LLM_API_VERSION', None))
+llm_scope = os.environ.get('LLM_SCOPE', os.environ.get('TIMBR_LLM_SCOPE', "https://cognitiveservices.azure.com/.default"))  # e.g. "api://<your-client-id>/.default"
 
 # Whether to enable reasoning during SQL generation
 enable_reasoning = to_boolean(os.environ.get('ENABLE_REASONING', 'false'))
@@ -37,4 +37,4 @@ reasoning_steps = to_integer(os.environ.get('REASONING_STEPS', 2))
 
 should_validate_sql = to_boolean(os.environ.get('SHOULD_VALIDATE_SQL', os.environ.get('LLM_SHOULD_VALIDATE_SQL', 'true')))
 retry_if_no_results = to_boolean(os.environ.get('RETRY_IF_NO_RESULTS', os.environ.get('LLM_RETRY_IF_NO_RESULTS', 'true')))
-llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', 500))  # Default max tokens limit for LLM responses
+llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.get('TIMBR_LLM_DEFAULT_LIMIT', 500)))  # Default max tokens limit for LLM responses
