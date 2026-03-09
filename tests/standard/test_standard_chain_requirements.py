@@ -1,7 +1,7 @@
 """Standard tests required by LangChain for chain contributions."""
 import pytest
-from langchain.chains.base import Chain
 from langchain_core.runnables import Runnable
+from langchain_timbr.utils._base_chain import Chain
 
 from langchain_timbr import (
     IdentifyTimbrConceptChain,
