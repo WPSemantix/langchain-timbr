@@ -1,3 +1,4 @@
+from langchain.chains import SequentialChain
 from langchain_timbr import ExecuteTimbrQueryChain, GenerateAnswerChain
 
 
@@ -21,13 +22,14 @@ class TestChainPipeline:
             verify_ssl=config["verify_ssl"],
         )
 
-        result = execute_timbr_query_chain.invoke({ "prompt": config["test_prompt"] })
-        answer_result = generate_answer_chain.invoke({
-            "prompt": config["test_prompt"],
-            "rows": result.get("rows"),
-            "sql": result.get("sql"),
-        })
-        result.update(answer_result)
+        pipeline = SequentialChain(
+            chains=[execute_timbr_query_chain, generate_answer_chain],
+            input_variables=["prompt"],
+            output_variables=["answer", "sql", execute_timbr_query_chain.usage_metadata_key, generate_answer_chain.usage_metadata_key],
+            return_all=True,
+        )
+
+        result = pipeline.invoke({ "prompt": config["test_prompt"] })
         print("Pipeline result:", result)
         assert "sql" in result, "Pipeline should return an 'sql'"
         assert "answer" in result, "Pipeline should return an 'answer'"
