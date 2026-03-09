@@ -1,6 +1,6 @@
 from typing import Optional, Any, Literal
 from typing_extensions import TypedDict
-from langchain.llms.base import LLM
+from langchain_core.language_models.llms import LLM
 from langgraph.graph import StateGraph, END
 
 from .utils.general import to_boolean, to_integer

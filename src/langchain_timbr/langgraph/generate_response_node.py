@@ -1,5 +1,5 @@
 from typing import Optional
-from langchain.llms.base import LLM
+from langchain_core.language_models.llms import LLM
 
 from ..langchain import GenerateAnswerChain
 

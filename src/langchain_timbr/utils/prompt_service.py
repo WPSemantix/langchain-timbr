@@ -1,7 +1,7 @@
 import requests
 from typing import Dict, Any, Optional, List, Union
-from langchain.prompts.chat import ChatPromptTemplate
-from langchain.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import SystemMessagePromptTemplate, HumanMessagePromptTemplate
 import json
 import logging
 from ..config import url as default_url, token as default_token, is_jwt, jwt_tenant_id as default_jwt_tenant_id, llm_timeout
