@@ -1061,7 +1061,7 @@ def run_benchmark(
     # ------------------------------------------------------------------
     end_time = datetime.now()
     duration_ms = int((end_time - start_time).total_seconds() * 1000)
-    correct_rate = round((correct_count / total_questions) * 100, 2) if total_questions > 0 else 0.0
+    correct_rate = round((correct_count + partial_count) / total_questions * 100, 2) if total_questions > 0 else 0.0
 
     _log_benchmark_history(
         url=server_url,
@@ -1074,7 +1074,7 @@ def run_benchmark(
             "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration": duration_ms,
             "number_of_questions": total_questions,
-            "correct_count": correct_count,
+            "correct_count": correct_count + partial_count,  # Count partial as correct for the summary log
             "partial_count": partial_count,
             "incorrect_count": incorrect_count,
             "inconsistent_count": inconsistent_count,
@@ -1095,7 +1095,7 @@ def run_benchmark(
     # ------------------------------------------------------------------
     benchmark_results["_summary"] = {
         "total_questions": total_questions,
-        "correct_count": correct_count,
+        "correct_count": correct_count + partial_count,  # Count partial as correct for the summary log
         "partial_count": partial_count,
         "incorrect_count": incorrect_count,
         "inconsistent_count": inconsistent_count,
