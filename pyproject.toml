@@ -29,13 +29,13 @@ dependencies = [
   "uvicorn==0.34.0",
   "pytimbr-api>=2.1.0",
   "langchain-core>=0.3.81",
-  "langgraph-checkpoint==3.0.0",
+  "langgraph-checkpoint==4.0.0",
 
   # Python 3.11+ versions (same for 3.11 and 3.12+)
   "cryptography>=46.0.5; python_version>='3.11'",
   "langchain==0.3.27; python_version>='3.11'",
   "langchain-community==0.3.30; python_version>='3.11'",
-  "langgraph==1.0.1; python_version>='3.11'",
+  "langgraph==1.0.10rc1; python_version>='3.11'",
   "transformers==4.57.0; python_version>='3.11'",
 
   # Python 3.10 specific versions
