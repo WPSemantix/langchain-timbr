@@ -202,6 +202,16 @@ class PromptService:
             ChatPromptTemplate object
         """
         return self._fetch_template("llm_prompts/generate_answer")
+
+
+    def get_benchmark_judge_template(self) -> ChatPromptTemplate:
+        """
+        Get benchmark judge template from API service (cached)
+        
+        Returns:
+            ChatPromptTemplate object
+        """
+        return self._fetch_template("llm_prompts/benchmark_judge")
     
     
     def clear_cache(self):
@@ -304,6 +314,22 @@ def get_qa_prompt_template(
     """
     prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_generate_answer_template")
+
+
+def get_benchmark_judge_prompt_template(
+    conn_params: Optional[dict] = None
+) -> PromptTemplateWrapper:
+    """
+    Get benchmark judge prompt template wrapper
+    
+    Args:
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
+    Returns:
+        PromptTemplateWrapper for benchmark LLM judge scoring
+    """
+    prompt_service = PromptService(conn_params=conn_params)
+    return PromptTemplateWrapper(prompt_service, "get_benchmark_judge_template")
 
 
 # Global prompt service instance (updated signature)

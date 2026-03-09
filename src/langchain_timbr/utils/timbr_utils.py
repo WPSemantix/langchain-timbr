@@ -181,6 +181,29 @@ def get_timbr_agent_options(agent_name: str, conn_params: dict) -> dict:
     return options
 
 
+def get_timbr_benchmark_info(benchmark_name: str, conn_params: dict) -> dict:
+    """
+    Get benchmark info from timbr SYS_AGENTS_BENCHMARKS table.
+
+    Args:
+        benchmark_name: Name of the benchmark to retrieve
+        conn_params: Connection parameters for Timbr system engine
+
+    Returns:
+        Dictionary with benchmark fields: benchmark_name, agent_name, description,
+        number_of_questions, benchmark (questions JSON string), updated_at, changed_by_user
+
+    Raises:
+        Exception: If the benchmark is not found in SYS_AGENTS_BENCHMARKS.
+    """
+    query = f"SELECT * FROM timbr.SYS_AGENTS_BENCHMARKS WHERE LOWER(benchmark_name) = LOWER('{benchmark_name}')"
+    results = run_query(query, conn_params)
+    if not results:
+        raise Exception(f'Benchmark "{benchmark_name}" not found in SYS_AGENTS_BENCHMARKS.')
+    row = results[0]
+    return {k.lower(): v for k, v in row.items()}
+
+
 def _validate(sql: str, conn_params: dict) -> bool:
     explain_sql = f"EXPLAIN {sql}"
     explain_res = run_query(explain_sql, conn_params)

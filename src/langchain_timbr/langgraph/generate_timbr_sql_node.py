@@ -34,8 +34,8 @@ class GenerateTimbrSqlNode:
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        enable_reasoning: Optional[bool] = config.enable_reasoning,
-        reasoning_steps: Optional[int] = config.reasoning_steps,
+        enable_reasoning: Optional[bool] = None,
+        reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
         **kwargs,
     ):

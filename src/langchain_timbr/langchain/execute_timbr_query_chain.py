@@ -47,8 +47,8 @@ class ExecuteTimbrQueryChain(Chain):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        enable_reasoning: Optional[bool] = config.enable_reasoning,
-        reasoning_steps: Optional[int] = config.reasoning_steps,
+        enable_reasoning: Optional[bool] = None,
+        reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
         **kwargs,
     ):
@@ -178,8 +178,8 @@ class ExecuteTimbrQueryChain(Chain):
             self._db_is_case_sensitive = to_boolean(db_is_case_sensitive)
             self._graph_depth = to_integer(graph_depth)
             self._note = note
-            self._enable_reasoning = to_boolean(enable_reasoning)
-            self._reasoning_steps = to_integer(reasoning_steps)
+            self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
+            self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
 
 
     @property

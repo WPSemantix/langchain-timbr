@@ -35,8 +35,8 @@ class TimbrSqlAgent(Runnable):
         is_jwt: Optional[bool] = False,
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
-        enable_reasoning: Optional[bool] = config.enable_reasoning,
-        reasoning_steps: Optional[int] = config.reasoning_steps,
+        enable_reasoning: Optional[bool] = None,
+        reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False
     ):
         """
@@ -120,8 +120,8 @@ class TimbrSqlAgent(Runnable):
             is_jwt=to_boolean(is_jwt),
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
-            enable_reasoning=to_boolean(enable_reasoning),
-            reasoning_steps=to_integer(reasoning_steps),
+            enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
+            reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
             debug=to_boolean(debug),
         )
         self._generate_answer = to_boolean(generate_answer)
@@ -174,6 +174,7 @@ class TimbrSqlAgent(Runnable):
                 "answer": None,
                 "rows": None,
                 "sql": None,
+                "ontology": None,
                 "schema": None,
                 "concept": None,
                 "reasoning_status": None,
@@ -234,6 +235,7 @@ class TimbrSqlAgent(Runnable):
                 "answer": None,
                 "rows": None,
                 "sql": None,
+                "ontology": None,
                 "schema": None,
                 "concept": None,
                 "reasoning_status": None,
@@ -272,6 +274,7 @@ class TimbrSqlAgent(Runnable):
                 "answer": answer,
                 "rows": result.get("rows", []),
                 "sql": result.get("sql", ""),
+                "ontology": result.get("ontology", ""),
                 "schema": result.get("schema", ""),
                 "concept": result.get("concept", ""),
                 "error": result.get("error", None),
@@ -286,6 +289,7 @@ class TimbrSqlAgent(Runnable):
                 "answer": None,
                 "rows": None,
                 "sql": None,
+                "ontology": None,
                 "schema": None,
                 "concept": None,
                 "reasoning_status": None,
@@ -321,8 +325,8 @@ def create_timbr_sql_agent(
     is_jwt: Optional[bool] = False,
     jwt_tenant_id: Optional[str] = None,
     conn_params: Optional[dict] = None,
-    enable_reasoning: Optional[bool] = config.enable_reasoning,
-    reasoning_steps: Optional[int] = config.reasoning_steps,
+    enable_reasoning: Optional[bool] = None,
+    reasoning_steps: Optional[int] = None,
     debug: Optional[bool] = False
 ) -> TimbrSqlAgent:
     """
@@ -396,7 +400,7 @@ def create_timbr_sql_agent(
         error = result["error"]
         ```
     """
-    agent = TimbrSqlAgent(
+    timbr_agent = TimbrSqlAgent(
         llm=llm,
         url=url,
         token=token,
@@ -427,4 +431,4 @@ def create_timbr_sql_agent(
         debug=debug,
     )
     
-    return agent
+    return timbr_agent
