@@ -1,5 +1,5 @@
 from typing import Any, Optional
-from langchain_core.language_models.llms import LLM
+from langchain.llms.base import LLM
 from datetime import datetime
 import concurrent.futures
 import json
@@ -70,7 +70,7 @@ def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 120) -> Any:
         Exception: Any other exception from the LLM call
     """
     def _llm_call():
-        return llm.invoke(prompt)
+        return llm(prompt)
     
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future = executor.submit(_llm_call)
