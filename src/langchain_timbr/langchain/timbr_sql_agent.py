@@ -201,13 +201,14 @@ class TimbrSqlAgent(Runnable):
                 "answer": answer,
                 "rows": result.get("rows", []),
                 "sql": result.get("sql", ""),
+                "ontology": result.get("ontology", ""),
                 "schema": result.get("schema", ""),
                 "concept": result.get("concept", ""),
                 "error": result.get("error", None),
                 "reasoning_status": result.get("reasoning_status", None),
                 "usage_metadata": usage_metadata,
-                "identify_concept_reason": None,
-                "generate_sql_reason": None,
+                "identify_concept_reason": result.get("identify_concept_reason", None),
+                "generate_sql_reason": result.get("generate_sql_reason", None),
             }
         except Exception as e:
             return {
@@ -215,6 +216,7 @@ class TimbrSqlAgent(Runnable):
                 "answer": None,
                 "rows": None,
                 "sql": None,
+                "ontology": None,
                 "schema": None,
                 "concept": None,
                 "reasoning_status": None,
