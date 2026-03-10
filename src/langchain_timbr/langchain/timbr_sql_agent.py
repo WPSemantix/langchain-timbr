@@ -254,9 +254,9 @@ class TimbrSqlAgent(Runnable):
                 result = self._chain.invoke({ "prompt": user_input })
 
             answer = None
-            usage_metadata = result.get("usage_metadata", {})
+            usage_metadata = result.get(self._chain.usage_metadata_key, {})
 
-            if not self._should_skip_answer_generation(result) and self._answer_chain:
+            if self._answer_chain and not self._should_skip_answer_generation(result):
                 if hasattr(self._answer_chain, 'ainvoke'):
                     answer_res = await self._answer_chain.ainvoke({
                         "prompt": user_input,
