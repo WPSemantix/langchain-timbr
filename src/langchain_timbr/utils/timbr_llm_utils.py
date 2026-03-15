@@ -811,12 +811,13 @@ def handle_generate_sql_reasoning(
             
             evaluation = eval_result['evaluation']
             reasoning_status = evaluation.get("assessment", "partial").lower()
+            reasoned_sql_reason = evaluation.get("reasoning", "")
             
             if reasoning_status == "correct":
                 break
             
             # Step 2: Regenerate SQL with feedback
-            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {evaluation.get('reasoning', '*could not determine cause*')}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
+            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {reasoned_sql_reason or '*could not determine cause*'}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
             
             # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
             max_context_graph_depth = 3
