@@ -323,7 +323,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.return_value = self._make_agent_result()
+        mock_agent_executor.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -345,7 +345,7 @@ class TestRunBenchmark:
         assert "Q1" in results
         assert "Q2" in results
         assert "generated_sql" in results["Q1"]
-        assert "selected_concept" in results["Q1"]
+        assert "selected_entity" in results["Q1"]
         assert "selected_ontology" in results["Q1"]
         assert "identify_concept_reason" in results["Q1"]
         assert "generate_sql_reason" in results["Q1"]
@@ -370,7 +370,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.return_value = self._make_agent_result()
+        mock_agent_executor.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -393,7 +393,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = options
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.return_value = self._make_agent_result()
+        mock_agent_executor.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -415,7 +415,7 @@ class TestRunBenchmark:
         mock_agent_executor = MagicMock()
         agent_result = self._make_agent_result()
         agent_result["rows"] = [{"count": 42}]
-        mock_agent_executor.return_value = agent_result
+        mock_agent_executor.invoke.return_value = agent_result
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -452,7 +452,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.return_value = self._make_agent_result()
+        mock_agent_executor.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -485,7 +485,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.side_effect = Exception("Agent failure")
+        mock_agent_executor.invoke.side_effect = Exception("Agent failure")
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -504,7 +504,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.return_value = self._make_agent_result()  # 100 + 200 = 300 tokens
+        mock_agent_executor.invoke.return_value = self._make_agent_result()  # 100 + 200 = 300 tokens
         mock_create_agent.return_value = mock_agent_executor
 
         results = run_benchmark(
@@ -555,7 +555,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.side_effect = [
+        mock_agent_executor.invoke.side_effect = [
             self._make_agent_result(concept=" policy "),
             self._make_agent_result(concept="Customer"),
         ]
@@ -596,7 +596,7 @@ class TestRunBenchmark:
         mock_get_options.return_value = options
 
         mock_agent_executor = MagicMock()
-        mock_agent_executor.return_value = self._make_agent_result()
+        mock_agent_executor.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent_executor
 
         mock_llm = MagicMock()
@@ -742,8 +742,8 @@ class TestBenchmarkScorerSqlOnlyMode:
             expected_sql=None,
             execution_mode="generate_sql_only",
         )
-        assert result["assessment"] == "incorrect"
-        assert result["scoring_method"] == "error"
+        assert result["assessment"] == "skipped"
+        assert result["scoring_method"] == "skipped"
 
     def test_sql_similarity_stored_as_float(self):
         scorer = self._make_scorer(use_deterministic=True)
@@ -897,7 +897,7 @@ class TestRunBenchmarkExecutionMode:
 
         q = results["Q1"]
         assert q["generated_sql"] == "SELECT COUNT(*) FROM Policy"
-        assert q["selected_concept"] == "Policy"
+        assert q["selected_entity"] == "Policy"
         assert q["answer"] == ""  # no execution, no answer
         assert "status" in q
         assert "scoring_method" in q
@@ -1035,7 +1035,7 @@ class TestRunBenchmarkExecutionMode:
         """Default execution='full' creates agent_executor and does NOT instantiate GenerateTimbrSqlChain."""
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         mock_agent = MagicMock()
-        mock_agent.return_value = {
+        mock_agent.invoke.return_value = {
             "sql": "SELECT 1", "rows": [], "answer": "", "concept": "Policy",
             "ontology": MOCK_ONTOLOGY, "error": None, "usage_metadata": {},
             "reasoning_status": None, "identify_concept_reason": None, "generate_sql_reason": None,
@@ -1099,7 +1099,7 @@ class TestRunBenchmarkIterations:
         """With number_of_iterations=1 (default), no iterations_detail or consistent field is added."""
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         mock_agent = MagicMock()
-        mock_agent.return_value = self._make_agent_result()
+        mock_agent.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent
 
         results = run_benchmark(
@@ -1154,7 +1154,7 @@ class TestRunBenchmarkIterations:
         mock_connector.run_query.return_value = expected_rows
 
         mock_agent = MagicMock()
-        mock_agent.side_effect = [
+        mock_agent.invoke.side_effect = [
             {**self._make_agent_result(), "rows": [{"count": 42}]},  # iter 1 → rows match expected → correct
             {**self._make_agent_result(sql=""), "rows": []},         # iter 2 → no SQL → incorrect
             {**self._make_agent_result(), "rows": [{"count": 42}]},  # iter 3 → rows match expected → correct
@@ -1184,7 +1184,7 @@ class TestRunBenchmarkIterations:
         """Each entry in iterations_detail has the required fields."""
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         mock_agent = MagicMock()
-        mock_agent.return_value = self._make_agent_result()
+        mock_agent.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent
 
         results = run_benchmark(
@@ -1212,7 +1212,7 @@ class TestRunBenchmarkIterations:
         """Total tokens = per-iteration tokens × number_of_iterations for a single question."""
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         mock_agent = MagicMock()
-        mock_agent.return_value = self._make_agent_result()  # 100 tokens per call
+        mock_agent.invoke.return_value = self._make_agent_result()  # 100 tokens per call
         mock_create_agent.return_value = mock_agent
 
         results = run_benchmark(
@@ -1233,7 +1233,7 @@ class TestRunBenchmarkIterations:
         """Agent executor is called exactly number_of_iterations × number_of_questions times."""
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         mock_agent = MagicMock()
-        mock_agent.return_value = self._make_agent_result()
+        mock_agent.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent
 
         run_benchmark(
@@ -1245,7 +1245,7 @@ class TestRunBenchmarkIterations:
             number_of_iterations=3,
         )
 
-        assert mock_agent.call_count == 6  # 2 questions × 3 iterations
+        assert mock_agent.invoke.call_count == 6  # 2 questions × 3 iterations
 
     @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
     @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
@@ -1253,7 +1253,7 @@ class TestRunBenchmarkIterations:
         """number_of_iterations appears in _summary.config."""
         mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
         mock_agent = MagicMock()
-        mock_agent.return_value = self._make_agent_result()
+        mock_agent.invoke.return_value = self._make_agent_result()
         mock_create_agent.return_value = mock_agent
 
         results = run_benchmark(

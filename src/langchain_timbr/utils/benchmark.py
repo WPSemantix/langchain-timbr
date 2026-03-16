@@ -283,18 +283,29 @@ class BenchmarkScorer:
                 combined_reasoning.append(f"[LLM Judge] {llm_result['reasoning']}")
 
         if len(all_assessments) > 1:
-            # Deterministic takes priority when both are enabled
-            if "deterministic" in methods_to_use:
-                final_assessment = all_assessments[0]["assessment"]
+            # Filter out skipped/error assessments — they carry no signal
+            meaningful = [a for a in all_assessments if a["scoring_method"] not in ("skipped", "error")]
+            if not meaningful:
+                # Nothing produced a real result; fall back to incorrect
+                final_assessment = "incorrect"
+                scoring_method = "error"
+            elif len(meaningful) == 1:
+                final_assessment = meaningful[0]["assessment"]
+                scoring_method = meaningful[0]["scoring_method"]
             else:
-                assessments = [a["assessment"] for a in all_assessments]
-                if "incorrect" in assessments:
-                    final_assessment = "incorrect"
-                elif "partial" in assessments:
-                    final_assessment = "partial"
+                # Deterministic takes priority when it produced a meaningful result
+                det_results = [a for a in meaningful if a["scoring_method"] == "deterministic"]
+                if det_results:
+                    final_assessment = det_results[0]["assessment"]
                 else:
-                    final_assessment = "correct"
-            scoring_method = "full"
+                    assessments = [a["assessment"] for a in meaningful]
+                    if "incorrect" in assessments:
+                        final_assessment = "incorrect"
+                    elif "partial" in assessments:
+                        final_assessment = "partial"
+                    else:
+                        final_assessment = "correct"
+                scoring_method = "full"
         else:
             final_assessment = all_assessments[0]["assessment"]
             scoring_method = all_assessments[0]["scoring_method"]
@@ -331,10 +342,10 @@ class BenchmarkScorer:
         if execution_mode == "generate_sql_only":
             if not expected_sql:
                 return {
-                    "assessment": "incorrect",
+                    "assessment": "skipped",
                     "breakdown": {},
                     "reasoning": "No expected SQL provided for SQL comparison",
-                    "scoring_method": "error",
+                    "scoring_method": "skipped",
                 }
             norm_generated = _normalize_sql(generated_sql)
             norm_expected = _normalize_sql(expected_sql)
@@ -428,7 +439,7 @@ class BenchmarkScorer:
 
             response = self.llm(messages)
 
-            content = response.content.strip()
+            content = response if isinstance(response, str) else response.content.strip()
             # Strip markdown code fences if present
             for fence in ("```json", "```"):
                 if content.startswith(fence):
@@ -619,7 +630,7 @@ def run_benchmark(
         keys), each containing the original question data enriched with:
 
         * ``generated_sql`` – SQL produced by the agent
-        * ``selected_concept`` – Timbr concept chosen by the agent
+        * ``selected_entity`` – Timbr concept chosen by the agent
         * ``selected_ontology`` – Timbr ontology selected by the agent
         * ``answer`` – natural-language answer (if the agent generates one)
         * ``timbr_reasoning_status`` – Timbr's own SQL reasoning assessment
@@ -662,6 +673,8 @@ def run_benchmark(
         )
 
     server_url = f"{thrift_host}:{thrift_port}"
+    if not server_url.startswith("http"):
+        server_url = "http://" + server_url
     resolved_url = url or config.url
     resolved_token = token or config.token
 
@@ -945,7 +958,7 @@ def run_benchmark(
                         },
                     }
                 else:
-                    llm_result = agent_executor({"input": question_text})  # type: ignore[misc]
+                    llm_result = agent_executor.invoke({"input": question_text})  # type: ignore[misc]
             except Exception as exc:
                 llm_result = {"sql": None, "rows": [], "error": str(exc), "usage_metadata": {}}
 
@@ -1017,7 +1030,7 @@ def run_benchmark(
         selected_concept = last_llm_result.get("concept")
         selected_ontology = last_llm_result.get("ontology")
         benchmark_results[question_id]["generated_sql"] = last_llm_result.get("sql") or ""
-        benchmark_results[question_id]["selected_concept"] = selected_concept or ""
+        benchmark_results[question_id]["selected_entity"] = selected_concept or ""
         benchmark_results[question_id]["selected_ontology"] = selected_ontology or ""
         benchmark_results[question_id]["answer"] = last_llm_result.get("answer") or ""
         benchmark_results[question_id]["timbr_reasoning_status"] = last_llm_result.get("reasoning_status") or ""
