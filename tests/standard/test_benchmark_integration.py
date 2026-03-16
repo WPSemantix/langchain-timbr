@@ -106,7 +106,7 @@ class Skip_TestBenchmarkIntegration:
         # Each question key should have at minimum these fields
         for q_id, r in results.items():
             assert "generated_sql" in r, f"{q_id}: missing generated_sql"
-            assert "selected_concept" in r, f"{q_id}: missing selected_concept"
+            assert "selected_entity" in r, f"{q_id}: missing selected_entity"
             assert "selected_ontology" in r, f"{q_id}: missing selected_ontology"
             assert "identify_concept_reason" in r, f"{q_id}: missing identify_concept_reason"
             assert "generate_sql_reason" in r, f"{q_id}: missing generate_sql_reason"
@@ -287,8 +287,8 @@ class Skip_TestBenchmarkIntegration:
         _print_results(results)
 
         for q_id, r in results.items():
-            # When correct_sql is absent: scoring_method is 'error'; when present: 'deterministic'
-            assert r["scoring_method"] in ("deterministic", "error"), \
+            # When correct_sql is absent: scoring_method is 'skipped'; when present: 'deterministic'
+            assert r["scoring_method"] in ("deterministic", "skipped"), \
                 f"{q_id}: unexpected scoring_method '{r['scoring_method']}'"
             if r["scoring_method"] == "deterministic":
                 assert "det_sql_match" in r["score_breakdown"], \

@@ -13,6 +13,9 @@ class Chain(Runnable):
       - ``output_keys`` property
     """
 
+    def __init__(self, **kwargs):
+        pass
+
     @property
     def input_keys(self) -> List[str]:
         return []

@@ -630,7 +630,7 @@ def run_benchmark(
         keys), each containing the original question data enriched with:
 
         * ``generated_sql`` – SQL produced by the agent
-        * ``selected_concept`` – Timbr concept chosen by the agent
+        * ``selected_entity`` – Timbr concept chosen by the agent
         * ``selected_ontology`` – Timbr ontology selected by the agent
         * ``answer`` – natural-language answer (if the agent generates one)
         * ``timbr_reasoning_status`` – Timbr's own SQL reasoning assessment
@@ -1030,7 +1030,7 @@ def run_benchmark(
         selected_concept = last_llm_result.get("concept")
         selected_ontology = last_llm_result.get("ontology")
         benchmark_results[question_id]["generated_sql"] = last_llm_result.get("sql") or ""
-        benchmark_results[question_id]["selected_concept"] = selected_concept or ""
+        benchmark_results[question_id]["selected_entity"] = selected_concept or ""
         benchmark_results[question_id]["selected_ontology"] = selected_ontology or ""
         benchmark_results[question_id]["answer"] = last_llm_result.get("answer") or ""
         benchmark_results[question_id]["timbr_reasoning_status"] = last_llm_result.get("reasoning_status") or ""
