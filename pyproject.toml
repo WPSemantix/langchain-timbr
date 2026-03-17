@@ -66,6 +66,7 @@ snowflake = [
   "snowflake~=1.12.0",
   "snowflake-snowpark-python~=1.47.0",
   "snowflake-connector-python[pandas]~=4.3.0",
+  "pyopenssl~=26.0.0",
 ]
 databricks = [
   "databricks-langchain~=0.7.1",
@@ -102,6 +103,7 @@ all = [
   "snowflake~=1.12.0",
   "snowflake-snowpark-python~=1.47.0",
   "snowflake-connector-python[pandas]~=4.3.0",
+  "pyopenssl~=26.0.0",
 ]
 
 [project.urls]
