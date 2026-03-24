@@ -2,6 +2,12 @@ from typing import Optional, Any, Union
 from langchain_core.language_models.llms import LLM
 from langchain_core.runnables import Runnable
 
+try:
+    from langsmith import trace as ls_trace
+    _LANGSMITH_AVAILABLE = True
+except ImportError:
+    _LANGSMITH_AVAILABLE = False
+
 from ..utils.general import parse_list, to_boolean, to_integer
 from .execute_timbr_query_chain import ExecuteTimbrQueryChain
 from .generate_answer_chain import GenerateAnswerChain
@@ -165,6 +171,14 @@ class TimbrSqlAgent(Runnable):
         self, input: dict, config=None, **kwargs: Any
     ) -> dict:
         """Run the agent and return results."""
+        if _LANGSMITH_AVAILABLE:
+            with ls_trace(name="TimbrSqlAgent", run_type="chain", inputs={"input": input}) as rt:
+                result = self._invoke_impl(input)
+                rt.end(outputs=result)
+                return result
+        return self._invoke_impl(input)
+
+    def _invoke_impl(self, input: dict) -> dict:
         user_input = input.get("input", "") if isinstance(input, dict) else input
 
         # Enhanced input validation
@@ -229,6 +243,14 @@ class TimbrSqlAgent(Runnable):
         self, input: dict, config=None, **kwargs: Any
     ) -> dict:
         """Async version of invoke."""
+        if _LANGSMITH_AVAILABLE:
+            with ls_trace(name="TimbrSqlAgent", run_type="chain", inputs={"input": input}) as rt:
+                result = await self._ainvoke_impl(input)
+                rt.end(outputs=result)
+                return result
+        return await self._ainvoke_impl(input)
+
+    async def _ainvoke_impl(self, input: dict) -> dict:
         user_input = input.get("input", "") if isinstance(input, dict) else input
 
         if not user_input or not user_input.strip():

@@ -1,6 +1,12 @@
 from typing import Any, Dict, List
 from langchain_core.runnables import Runnable
 
+try:
+    from langsmith import trace as ls_trace
+    _LANGSMITH_AVAILABLE = True
+except ImportError:
+    _LANGSMITH_AVAILABLE = False
+
 
 class Chain(Runnable):
     """
@@ -28,7 +34,17 @@ class Chain(Runnable):
         raise NotImplementedError
 
     def invoke(self, input: Dict[str, Any], config=None, **kwargs) -> Dict[str, Any]:
+        if _LANGSMITH_AVAILABLE:
+            with ls_trace(name=self.__class__.__name__, run_type="chain", inputs={"input": input}) as rt:
+                result = self._call(input)
+                rt.end(outputs=result)
+                return result
         return self._call(input)
 
     async def ainvoke(self, input: Dict[str, Any], config=None, **kwargs) -> Dict[str, Any]:
+        if _LANGSMITH_AVAILABLE:
+            with ls_trace(name=self.__class__.__name__, run_type="chain", inputs={"input": input}) as rt:
+                result = self._call(input)
+                rt.end(outputs=result)
+                return result
         return self._call(input)
