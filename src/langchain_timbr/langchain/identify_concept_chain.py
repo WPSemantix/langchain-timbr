@@ -225,6 +225,7 @@ class IdentifyTimbrConceptChain(Chain):
                 chain_type="IdentifyTimbrConceptChain",
                 start_time=_step_start,
                 status="completed",
+                ontology=self._ontology,
                 concept=concept,
                 schema=res.get("schema"),
                 usage_metadata=usage_metadata,

@@ -240,14 +240,17 @@ class TimbrSqlAgent(Runnable):
         try:
             result = self._chain.invoke({"prompt": user_input}, log_ctx=_delegated_ctx)
             answer = None
+            _answer_chain_duration_ms = None
             usage_metadata = result.get(self._chain.usage_metadata_key, {})
 
             if self._answer_chain and not self._should_skip_answer_generation(result):
+                _answer_start = _dt.now()
                 answer_res = self._answer_chain.invoke({
                     "prompt": user_input,
                     "rows": result.get("rows"),
                     "sql": result.get("sql")
                 }, log_ctx=_delegated_ctx)
+                _answer_chain_duration_ms = int((_dt.now() - _answer_start).total_seconds() * 1000)
                 answer = answer_res.get("answer", "")
                 usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
 
@@ -276,6 +279,7 @@ class TimbrSqlAgent(Runnable):
                     llm_model=get_llm_model(self._chain._llm),
                     identify_concept_reason=result.get("identify_concept_reason"),
                     generate_sql_reason=result.get("generate_sql_reason"),
+                    answer_chain_duration=_answer_chain_duration_ms,
                 )
 
             return {
@@ -394,9 +398,11 @@ class TimbrSqlAgent(Runnable):
                 result = self._chain.invoke({"prompt": user_input}, log_ctx=_delegated_ctx)
 
             answer = None
+            _answer_chain_duration_ms = None
             usage_metadata = result.get(self._chain.usage_metadata_key, {})
 
             if self._answer_chain and not self._should_skip_answer_generation(result):
+                _answer_start = _dt.now()
                 if hasattr(self._answer_chain, 'ainvoke'):
                     answer_res = await self._answer_chain.ainvoke({
                         "prompt": user_input,
@@ -409,6 +415,7 @@ class TimbrSqlAgent(Runnable):
                         "rows": result.get("rows"),
                         "sql": result.get("sql")
                     }, log_ctx=_delegated_ctx)
+                _answer_chain_duration_ms = int((_dt.now() - _answer_start).total_seconds() * 1000)
                 answer = answer_res.get("answer", "")
                 usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
 
@@ -437,6 +444,7 @@ class TimbrSqlAgent(Runnable):
                     llm_model=get_llm_model(self._chain._llm),
                     identify_concept_reason=result.get("identify_concept_reason"),
                     generate_sql_reason=result.get("generate_sql_reason"),
+                    answer_chain_duration=_answer_chain_duration_ms,
                 )
 
             return {

@@ -287,6 +287,7 @@ class GenerateTimbrSqlChain(Chain):
                 chain_type="GenerateTimbrSqlChain",
                 start_time=_step_start,
                 status="failed" if (not is_sql_valid and error) else "completed",
+                ontology=ontology,
                 concept=concept,
                 schema=schema,
                 generated_sql=sql,

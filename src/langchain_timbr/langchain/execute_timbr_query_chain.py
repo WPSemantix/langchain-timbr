@@ -302,6 +302,7 @@ class ExecuteTimbrQueryChain(Chain):
         reasoning_status = None
         identify_concept_reason = None
         generate_sql_reason = None
+        _generate_sql_chain_duration_ms = 0
 
         # Resolve logging context: received from parent (delegated) or create standalone
         _log_ctx = self._received_log_ctx
@@ -354,6 +355,7 @@ class ExecuteTimbrQueryChain(Chain):
 
                     _gen_start = _dt.now()
                     generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params)
+                    _generate_sql_chain_duration_ms += int((_dt.now() - _gen_start).total_seconds() * 1000)
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
                     ontology_name = generate_res.get("ontology", ontology_name)
@@ -380,6 +382,7 @@ class ExecuteTimbrQueryChain(Chain):
                             chain_type="GenerateTimbrSqlChain",
                             start_time=_gen_start,
                             status="failed" if (not is_sql_valid and error) else "completed",
+                            ontology=ontology_name,
                             concept=concept_name,
                             schema=schema_name,
                             generated_sql=sql,
@@ -410,6 +413,7 @@ class ExecuteTimbrQueryChain(Chain):
                         chain_type="ExecuteQuery",
                         start_time=_exec_start,
                         status="completed",
+                        ontology=ontology_name,
                         concept=concept_name,
                         schema=schema_name,
                         rows_returned=len(rows) if rows else 0,
@@ -457,6 +461,7 @@ class ExecuteTimbrQueryChain(Chain):
                     llm_model=get_llm_model(self._llm),
                     identify_concept_reason=identify_concept_reason,
                     generate_sql_reason=generate_sql_reason,
+                    generate_sql_chain_duration=_generate_sql_chain_duration_ms or None,
                 )
 
             return {
@@ -491,6 +496,7 @@ class ExecuteTimbrQueryChain(Chain):
                     llm_model=get_llm_model(self._llm),
                     identify_concept_reason=identify_concept_reason,
                     generate_sql_reason=generate_sql_reason,
+                    generate_sql_chain_duration=_generate_sql_chain_duration_ms or None,
                 )
             raise RuntimeError(f"Error executing the chain: {str(e)}")
 

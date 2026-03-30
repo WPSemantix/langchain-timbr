@@ -27,4 +27,5 @@ snowflake-snowpark-python~=1.45.0
 snowflake-connector-python[pandas]~=4.3.0
 tiktoken~=0.8.0
 transformers~=4.57.0
+uuid6~=2025.0.1
 uvicorn~=0.34.0

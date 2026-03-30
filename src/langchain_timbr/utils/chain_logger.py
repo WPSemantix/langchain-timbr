@@ -1,8 +1,7 @@
-import base64
 import logging
-import uuid
+import uuid6
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import requests
@@ -36,23 +35,33 @@ class AgentLogContext:
 
 
 def new_query_id() -> str:
-    return str(uuid.uuid4())
+    return str(uuid6.uuid7())
 
 
-def _build_log_headers(token: str) -> Dict[str, str]:
-    encoded = base64.b64encode(f"token:{token}".encode()).decode()
-    return {
-        "Authorization": f"Basic {encoded}",
-        "Content-Type": "application/json",
-    }
+def new_trace_id() -> str:
+    return str(uuid6.uuid7())
+
+
+def _now() -> datetime:
+    """UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def _fmt(dt: datetime) -> str:
+    """Format datetime as MySQL DATETIME string."""
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _clean(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip None values so the server uses its column defaults."""
+    return {k: v for k, v in payload.items() if v is not None}
 
 
 def _safe_post(url: str, token: str, endpoint_path: str, payload: Dict[str, Any]) -> None:
     """Fire-and-forget HTTP POST. Never raises; logs failures at WARNING level."""
     try:
         endpoint = f"{url.rstrip('/')}{endpoint_path}"
-        headers = _build_log_headers(token)
-        response = requests.post(endpoint, json=payload, headers=headers, timeout=5)
+        response = requests.post(endpoint, json=payload, auth=("token", token), timeout=5)
         if not response.ok:
             logger.warning(
                 "Chain log request to %s returned %s: %s",
@@ -66,35 +75,35 @@ def log_agent_start(
     ctx: AgentLogContext,
     ontology: Optional[str] = None,
     schema: Optional[str] = None,
+    additional_options: Optional[str] = "{}",
 ) -> None:
     """POST to sys_agents_running — called when execution begins."""
-    payload = {
-        "query_id": ctx.query_id,
-        "agent_name": ctx.agent_name,
-        "chain_type": ctx.chain_type,
-        "ontology": ontology or "",
-        "schema": schema or "",
-        "prompt": ctx.prompt,
-        "start_time": ctx.start_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "current_step": ctx.current_step or "",
-        "retry_count": ctx.retry_count,
+    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running", _clean({
+        "query_id":               ctx.query_id,
+        "agent_name":             ctx.agent_name,
+        "chain_type":             ctx.chain_type,
+        "ontology":               ontology or "",
+        "schema":                 schema or "",
+        "prompt":                 ctx.prompt,
+        "start_time":             _fmt(ctx.start_time),
+        "current_step":           ctx.current_step or "",
+        "retry_count":            ctx.retry_count,
         "no_results_retry_count": ctx.no_results_retry_count,
-        "concept": ctx.concept,
-    }
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running", payload)
+        "concept":                ctx.concept,
+        "additional_options":     additional_options,
+    }))
 
 
 def log_agent_step(ctx: AgentLogContext) -> None:
     """POST step update to sys_agents_running — called at each step transition."""
-    payload = {
-        "query_id": ctx.query_id,
-        "agent_name": ctx.agent_name,
-        "current_step": ctx.current_step or "",
-        "retry_count": ctx.retry_count,
+    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running_update_step", _clean({
+        "query_id":               ctx.query_id,
+        "agent_name":             ctx.agent_name,
+        "current_step":           ctx.current_step or "",
+        "retry_count":            ctx.retry_count,
         "no_results_retry_count": ctx.no_results_retry_count,
-        "concept": ctx.concept,
-    }
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running_update_step", payload)
+        "concept":                ctx.concept,
+    }))
 
 
 def log_agent_history(
@@ -114,42 +123,51 @@ def log_agent_history(
     llm_model: Optional[str],
     identify_concept_reason: Optional[str] = None,
     generate_sql_reason: Optional[str] = None,
+    identify_concept_chain_duration: Optional[int] = None,
+    generate_sql_chain_duration: Optional[int] = None,
+    answer_chain_duration: Optional[int] = None,
+    reasoning_duration: Optional[int] = None,
+    additional_options: Optional[str] = "{}",
 ) -> None:
     """POST to sys_agents_history — triggers server-side deletion of the running row."""
-    end_time = datetime.now()
+    end_time = _now()
     duration_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
 
-    payload = {
-        "query_id": ctx.query_id,
-        "agent_name": ctx.agent_name,
-        "chain_type": ctx.chain_type,
-        "ontology": ontology or "",
-        "schema": schema or "",
-        "prompt": ctx.prompt,
-        "start_time": ctx.start_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "duration_ms": duration_ms,
-        "status": status,
-        "failed_at_step": failed_at_step,
-        "concept": concept,
-        "generated_sql": generated_sql,
-        "rows_returned": rows_returned,
-        "error": error,
-        "reasoning_status": reasoning_status,
-        "total_tokens": _sum_token_field(usage_metadata, "total_tokens"),
-        "input_tokens": _sum_token_field(usage_metadata, "input_tokens"),
-        "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
-        "retry_count": ctx.retry_count,
-        "no_results_retry_count": ctx.no_results_retry_count,
-        "answer_generated": answer_generated,
-        "chain_trace_enabled": ctx.chain_trace_enabled,
-        "langchain_timbr_version": _LANGCHAIN_TIMBR_VERSION,
-        "llm_type": llm_type or "",
-        "llm_model": llm_model or "",
-        "identify_concept_reason": identify_concept_reason,
-        "generate_sql_reason": generate_sql_reason,
-    }
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", payload)
+    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean({
+        "query_id":                        ctx.query_id,
+        "agent_name":                      ctx.agent_name,
+        "chain_type":                      ctx.chain_type,
+        "ontology":                        ontology or "",
+        "schema":                          schema or "",
+        "prompt":                          ctx.prompt,
+        "start_time":                      _fmt(ctx.start_time),
+        "end_time":                        _fmt(end_time),
+        "duration":                        duration_ms,
+        "identify_concept_chain_duration": identify_concept_chain_duration,
+        "generate_sql_chain_duration":     generate_sql_chain_duration,
+        "answer_chain_duration":           answer_chain_duration,
+        "reasoning_duration":              reasoning_duration,
+        "status":                          status,
+        "failed_at_step":                  failed_at_step,
+        "concept":                         concept,
+        "generated_sql":                   generated_sql,
+        "rows_returned":                   rows_returned,
+        "error":                           error,
+        "reasoning_status":                reasoning_status,
+        "total_tokens":                    _sum_token_field(usage_metadata, "total_tokens"),
+        "input_tokens":                    _sum_token_field(usage_metadata, "input_tokens"),
+        "output_tokens":                   _sum_token_field(usage_metadata, "output_tokens"),
+        "retry_count":                     ctx.retry_count,
+        "no_results_retry_count":          ctx.no_results_retry_count,
+        "answer_generated":                answer_generated,
+        "chain_trace_enabled":             ctx.chain_trace_enabled,
+        "langchain_timbr_version":         _LANGCHAIN_TIMBR_VERSION,
+        "llm_type":                        llm_type or "",
+        "llm_model":                       llm_model or "",
+        "identify_concept_reason":         identify_concept_reason,
+        "generate_sql_reason":             generate_sql_reason,
+        "additional_options":              additional_options,
+    }))
 
 
 def log_chain_trace(
@@ -157,6 +175,7 @@ def log_chain_trace(
     chain_type: str,
     start_time: datetime,
     status: str,
+    ontology: Optional[str] = None,
     concept: Optional[str] = None,
     schema: Optional[str] = None,
     generated_sql: Optional[str] = None,
@@ -166,39 +185,41 @@ def log_chain_trace(
     reasoning_status: Optional[str] = None,
     usage_metadata: Optional[dict] = None,
     retry_attempt: int = 0,
+    additional_options: Optional[str] = "{}",
 ) -> None:
     """POST a single chain step row to sys_agents_chain_trace_log. No-op when trace is disabled."""
     if not ctx.chain_trace_enabled:
         return
 
     ctx.trace_sequence += 1
-    end_time = datetime.now()
+    end_time = _now()
     duration_ms = int((end_time - start_time).total_seconds() * 1000)
     meta = usage_metadata or {}
 
-    payload = {
-        "trace_id": new_query_id(),
-        "query_id": ctx.query_id,
-        "agent_name": ctx.agent_name,
-        "chain_type": chain_type,
-        "sequence": ctx.trace_sequence,
-        "retry_attempt": retry_attempt,
-        "start_time": start_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "end_time": end_time.strftime("%Y-%m-%d %H:%M:%S"),
-        "duration_ms": duration_ms,
-        "status": status,
-        "concept": concept,
-        "schema": schema,
-        "generated_sql": generated_sql,
-        "is_sql_valid": is_sql_valid,
-        "rows_returned": rows_returned,
-        "error": error,
-        "reasoning_status": reasoning_status,
-        "input_tokens": _sum_token_field(meta, "input_tokens"),
-        "output_tokens": _sum_token_field(meta, "output_tokens"),
-        "total_tokens": _sum_token_field(meta, "total_tokens"),
-    }
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/trace", payload)
+    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/trace", _clean({
+        "trace_id":           new_trace_id(),
+        "query_id":           ctx.query_id,
+        "agent_name":         ctx.agent_name,
+        "chain_type":         chain_type,
+        "ontology":           ontology,
+        "sequence":           ctx.trace_sequence,
+        "retry_attempt":      retry_attempt,
+        "start_time":         _fmt(start_time),
+        "end_time":           _fmt(end_time),
+        "duration":           duration_ms,
+        "status":             status,
+        "concept":            concept,
+        "schema":             schema,
+        "generated_sql":      generated_sql,
+        "is_sql_valid":       is_sql_valid,
+        "rows_returned":      rows_returned,
+        "error":              error,
+        "reasoning_status":   reasoning_status,
+        "input_tokens":       _sum_token_field(meta, "input_tokens"),
+        "output_tokens":      _sum_token_field(meta, "output_tokens"),
+        "total_tokens":       _sum_token_field(meta, "total_tokens"),
+        "additional_options": additional_options,
+    }))
 
 
 def determine_status(rows: Optional[list], error: Optional[str]) -> str:
