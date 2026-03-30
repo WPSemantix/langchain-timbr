@@ -4,7 +4,7 @@ from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
-from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
+from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import determine_concept
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -146,7 +146,13 @@ class IdentifyTimbrConceptChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        base = ["schema", "concept", "concept_metadata", self.usage_metadata_key]
+        base = [
+            "ontology",
+            "schema",
+            "concept",
+            "concept_metadata",
+            "identify_concept_reason",
+            self.usage_metadata_key]
         return list(dict.fromkeys(self.input_keys + base))
 
 
@@ -179,8 +185,9 @@ class IdentifyTimbrConceptChain(Chain):
         )
 
         usage_metadata = res.pop("usage_metadata", {})
-        return {
+        result = {
             **inputs,
             **res,
             self.usage_metadata_key: usage_metadata,
         }
+        return sanitize_results(self.output_keys, result)

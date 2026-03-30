@@ -4,7 +4,7 @@ from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
-from ..utils.general import to_boolean, validate_timbr_connection_params
+from ..utils.general import to_boolean, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import answer_question
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -138,8 +138,9 @@ class GenerateAnswerChain(Chain):
             debug=self._debug,
         )
 
-        return {
+        result = {
             **inputs,
             "answer": res.get("answer", ""),
             self.usage_metadata_key: res.get("usage_metadata", {}),
         }
+        return sanitize_results(self.output_keys, result)

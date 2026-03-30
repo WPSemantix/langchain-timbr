@@ -4,7 +4,7 @@ from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
-from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
+from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import generate_sql
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -186,10 +186,14 @@ class GenerateTimbrSqlChain(Chain):
     def output_keys(self) -> list:
         base = [
             "sql",
+            "ontology",
             "schema",
             "concept",
             "is_sql_valid",
             "error",
+            "identify_concept_reason",
+            "generate_sql_reason",
+            "reasoning_status",
             self.usage_metadata_key,
         ]
         return list(dict.fromkeys(self.input_keys + base))
@@ -237,7 +241,7 @@ class GenerateTimbrSqlChain(Chain):
         schema = generate_res.get("schema", self._schema)
         concept = generate_res.get("concept", self._concept)
         
-        return {
+        result = {
             **inputs,
             "sql": sql,
             "ontology": ontology,
@@ -250,3 +254,4 @@ class GenerateTimbrSqlChain(Chain):
             "reasoning_status": generate_res.get("reasoning_status"),
             self.usage_metadata_key: generate_res.get("usage_metadata"),
         }
+        return sanitize_results(self.output_keys, result)

@@ -279,19 +279,27 @@ def pop_param_value(
 ):
     """
     Retrieve the value for the first matching key from params_dict.
-    
+
     Args:
         params_dict (dict): Dictionary to search for keys
         opt_keys (str or list[str]): Key or list of keys to look for
         default: Default value to return if no keys are found
-        
+
     Returns:
         The value corresponding to the first found key, or default if none found.
     """
     if isinstance(opt_keys, str):
         opt_keys = [opt_keys]
-    
+
     for key in opt_keys:
         if key in params_dict:
             return params_dict.pop(key)
     return default
+
+
+def sanitize_results(output_keys: list, result: dict) -> dict:
+    """Return a dict containing exactly the keys in output_keys.
+    Keys present in result but not in output_keys are dropped.
+    Keys in output_keys but absent from result default to None.
+    """
+    return {key: result.get(key) for key in output_keys}
