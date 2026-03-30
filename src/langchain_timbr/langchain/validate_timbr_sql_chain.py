@@ -183,7 +183,7 @@ class ValidateTimbrSqlChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        return [
+        base = [
             "sql",
             "schema",
             "concept",
@@ -191,6 +191,7 @@ class ValidateTimbrSqlChain(Chain):
             "error",
             self.usage_metadata_key,
         ]
+        return list(dict.fromkeys(self.input_keys + base))
 
 
     def _get_conn_params(self) -> dict:
@@ -251,6 +252,7 @@ class ValidateTimbrSqlChain(Chain):
             generate_sql_reason = generate_res.get("generate_sql_reason")
 
         return {
+            **inputs,
             "sql": sql,
             "schema": schema,
             "concept": concept,

@@ -108,7 +108,8 @@ class GenerateAnswerChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        return ["answer", self.usage_metadata_key]
+        base = ["answer", self.usage_metadata_key]
+        return list(dict.fromkeys(self.input_keys + base))
 
     def _get_conn_params(self) -> dict:
         return {
@@ -138,6 +139,7 @@ class GenerateAnswerChain(Chain):
         )
 
         return {
+            **inputs,
             "answer": res.get("answer", ""),
             self.usage_metadata_key: res.get("usage_metadata", {}),
         }
