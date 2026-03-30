@@ -31,7 +31,7 @@ dependencies = [
   "langchain-core~=1.2.22",
   "langchain-community~=0.3.30",
   "langgraph~=1.0.10",
-  "langgraph-checkpoint~=3.0.0",
+  "langgraph-checkpoint~=4.0.0",
   "cryptography~=46.0.6",
   "transformers~=4.57.0",
 ]
