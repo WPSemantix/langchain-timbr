@@ -185,10 +185,14 @@ class ValidateTimbrSqlChain(Chain):
     def output_keys(self) -> list:
         base = [
             "sql",
+            "ontology",
             "schema",
             "concept",
             "is_sql_valid",
             "error",
+            "reasoning_status",
+            "identify_concept_reason",
+            "generate_sql_reason",
             self.usage_metadata_key,
         ]
         return list(dict.fromkeys(self.input_keys + base))
@@ -254,6 +258,7 @@ class ValidateTimbrSqlChain(Chain):
         return {
             **inputs,
             "sql": sql,
+            "ontology": self._ontology,
             "schema": schema,
             "concept": concept,
             "is_sql_valid": is_sql_valid,

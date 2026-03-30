@@ -197,9 +197,14 @@ class ExecuteTimbrQueryChain(Chain):
         base = [
             "rows",
             "sql",
+            "ontology",
             "schema",
             "concept",
             "error",
+            "reasoning_status",
+            "identify_concept_reason",
+            "generate_sql_reason",
+
             self.usage_metadata_key,
         ]
         return list(dict.fromkeys(self.input_keys + base))

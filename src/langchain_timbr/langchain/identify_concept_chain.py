@@ -146,7 +146,13 @@ class IdentifyTimbrConceptChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        base = ["schema", "concept", "concept_metadata", self.usage_metadata_key]
+        base = [
+            "ontology",
+            "schema",
+            "concept",
+            "concept_metadata",
+            "identify_concept_reason",
+            self.usage_metadata_key]
         return list(dict.fromkeys(self.input_keys + base))
 
 

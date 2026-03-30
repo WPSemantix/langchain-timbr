@@ -186,10 +186,14 @@ class GenerateTimbrSqlChain(Chain):
     def output_keys(self) -> list:
         base = [
             "sql",
+            "ontology",
             "schema",
             "concept",
             "is_sql_valid",
             "error",
+            "identify_concept_reason",
+            "generate_sql_reason",
+            "reasoning_status",
             self.usage_metadata_key,
         ]
         return list(dict.fromkeys(self.input_keys + base))
