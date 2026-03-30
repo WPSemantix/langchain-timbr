@@ -4,7 +4,7 @@ from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
-from ..utils.general import parse_list, to_integer, to_boolean, validate_timbr_connection_params
+from ..utils.general import parse_list, to_integer, to_boolean, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import generate_sql
 from ..utils.timbr_utils import validate_sql
 from ..llm_wrapper.llm_wrapper import LlmWrapper
@@ -255,7 +255,7 @@ class ValidateTimbrSqlChain(Chain):
             identify_concept_reason = generate_res.get("identify_concept_reason")
             generate_sql_reason = generate_res.get("generate_sql_reason")
 
-        return {
+        result = {
             **inputs,
             "sql": sql,
             "ontology": self._ontology,
@@ -268,3 +268,4 @@ class ValidateTimbrSqlChain(Chain):
             "generate_sql_reason": generate_sql_reason,
             self.usage_metadata_key: usage_metadata,
         }
+        return sanitize_results(self.output_keys, result)
