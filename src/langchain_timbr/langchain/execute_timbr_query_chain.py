@@ -194,7 +194,7 @@ class ExecuteTimbrQueryChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        return [
+        base = [
             "rows",
             "sql",
             "schema",
@@ -202,6 +202,7 @@ class ExecuteTimbrQueryChain(Chain):
             "error",
             self.usage_metadata_key,
         ]
+        return list(dict.fromkeys(self.input_keys + base))
 
 
     def _get_conn_params(self) -> dict:
@@ -345,6 +346,7 @@ class ExecuteTimbrQueryChain(Chain):
                 iteration += 1
 
             return {
+                **inputs,
                 "rows": rows,
                 "sql": sql,
                 "ontology": ontology_name,

@@ -6,7 +6,9 @@ import json
 from langchain_timbr import (
     IdentifyTimbrConceptChain,
     GenerateTimbrSqlChain,
-    ExecuteTimbrQueryChain
+    ValidateTimbrSqlChain,
+    ExecuteTimbrQueryChain,
+    GenerateAnswerChain,
 )
 from langchain_timbr.utils.timbr_llm_utils import _calculate_token_count
 
@@ -33,6 +35,7 @@ class TestChainUnitTests:
             
             result = chain.invoke({"prompt": "What are the customers?"})
             assert 'concept' in result
+            assert 'prompt' in result, "invoke result must include input key 'prompt'"
             mock_determine.assert_called_once()
     
     def test_generate_sql_chain_unit(self, mock_llm):
@@ -53,6 +56,7 @@ class TestChainUnitTests:
 
             result = chain.invoke({"prompt": "Get all customers"})
             assert 'sql' in result
+            assert 'prompt' in result, "invoke result must include input key 'prompt'"
             mock_generate.assert_called_once()
     
     def test_execute_query_chain_unit(self):
@@ -73,20 +77,22 @@ class TestChainUnitTests:
         
         # Mock the _call method to return expected output format with all required keys
         expected_result = {
+            "prompt": "Get all customers",
             "rows": [{"id": 1, "name": "Customer 1"}],
-            "sql": "SELECT * FROM customers", 
+            "sql": "SELECT * FROM customers",
             "schema": "dtimbr",
             "concept": None,
             "error": None,
             "execute_timbr_usage_metadata": {}
         }
         chain._call = Mock(return_value=expected_result)
-        
+
         # Test invocation
         result = chain.invoke({"prompt": "Get all customers"})
-        
+
         # Verify result structure contains all expected keys
         assert isinstance(result, dict)
+        assert "prompt" in result, "invoke result must include input key 'prompt'"
         assert "rows" in result
         assert "sql" in result
         assert "schema" in result
@@ -175,6 +181,38 @@ class TestChainUnitTests:
         assert chain._url != chain2._url
         assert chain._token != chain2._token
         assert chain._ontology != chain2._ontology
+
+    def test_chain_output_includes_input_keys(self, mock_llm):
+        """All input_keys must appear in the invoke() result (langchain 1.x compatibility)."""
+        base_params = dict(llm=mock_llm, url="http://test", token="test", ontology="test")
+
+        with patch('langchain_timbr.langchain.identify_concept_chain.determine_concept') as mock_determine:
+            mock_determine.return_value = {'concept': 'customer', 'schema': 'dtimbr', 'concept_metadata': {}, 'usage_metadata': {}}
+            chain = IdentifyTimbrConceptChain(**base_params)
+            result = chain.invoke({"prompt": "test"})
+            for key in chain.input_keys:
+                assert key in result, f"IdentifyTimbrConceptChain: '{key}' missing from result"
+
+        with patch('langchain_timbr.langchain.generate_timbr_sql_chain.generate_sql') as mock_gen:
+            mock_gen.return_value = {'sql': 'SELECT 1', 'usage_metadata': {}}
+            chain = GenerateTimbrSqlChain(**base_params)
+            result = chain.invoke({"prompt": "test"})
+            for key in chain.input_keys:
+                assert key in result, f"GenerateTimbrSqlChain: '{key}' missing from result"
+
+        with patch('langchain_timbr.langchain.validate_timbr_sql_chain.validate_sql') as mock_val:
+            mock_val.return_value = (True, None, 'SELECT 1')
+            chain = ValidateTimbrSqlChain(**base_params)
+            result = chain.invoke({"prompt": "test", "sql": "SELECT 1"})
+            for key in chain.input_keys:
+                assert key in result, f"ValidateTimbrSqlChain: '{key}' missing from result"
+
+        with patch('langchain_timbr.langchain.generate_answer_chain.answer_question') as mock_ans:
+            mock_ans.return_value = {'answer': 'yes', 'usage_metadata': {}}
+            chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test")
+            result = chain.invoke({"prompt": "test", "rows": []})
+            for key in chain.input_keys:
+                assert key in result, f"GenerateAnswerChain: '{key}' missing from result"
 
 
 class TestTokenCountFunctionality:

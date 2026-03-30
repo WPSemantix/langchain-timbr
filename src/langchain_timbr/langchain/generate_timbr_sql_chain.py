@@ -184,7 +184,7 @@ class GenerateTimbrSqlChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        return [
+        base = [
             "sql",
             "schema",
             "concept",
@@ -192,6 +192,7 @@ class GenerateTimbrSqlChain(Chain):
             "error",
             self.usage_metadata_key,
         ]
+        return list(dict.fromkeys(self.input_keys + base))
 
 
     def _get_conn_params(self) -> dict:
@@ -237,6 +238,7 @@ class GenerateTimbrSqlChain(Chain):
         concept = generate_res.get("concept", self._concept)
         
         return {
+            **inputs,
             "sql": sql,
             "ontology": ontology,
             "schema": schema,
