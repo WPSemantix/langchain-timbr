@@ -28,6 +28,8 @@ class GenerateAnswerChain(Chain):
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
         debug: Optional[bool] = False,
+        enable_logging: Optional[bool] = False,
+        chain_trace: Optional[bool] = False,
         **kwargs,
     ):
         """
@@ -91,9 +93,13 @@ class GenerateAnswerChain(Chain):
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
-        
+            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
+            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
+
         else:
             self._note = note
+            self._enable_logging = to_boolean(enable_logging)
+            self._chain_trace = to_boolean(chain_trace)
 
 
     @property
@@ -123,10 +129,40 @@ class GenerateAnswerChain(Chain):
     
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, str]:
+        from datetime import datetime as _dt
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id,
+            log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
+            get_llm_type, get_llm_model,
+        )
+
         prompt = inputs["prompt"]
         rows = inputs["rows"]
-        sql = inputs['sql'] if 'sql' in inputs else None
+        sql = inputs.get("sql")
 
+        _log_ctx = self._received_log_ctx
+        _owns_log = False
+
+        if _log_ctx is None and self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=new_query_id(),
+                agent_name=self._agent or "",
+                url=self._url,
+                token=self._token,
+                chain_type="GenerateAnswerChain",
+                start_time=_dt.now(),
+                prompt=prompt,
+                chain_trace_enabled=self._chain_trace,
+                is_delegated=False,
+            )
+            log_agent_start(_log_ctx, None, None)
+            _owns_log = True
+
+        if _log_ctx:
+            _log_ctx.current_step = "generating_answer"
+            log_agent_step(_log_ctx)
+
+        _step_start = _dt.now()
         res = answer_question(
             question=prompt,
             llm=self._llm,
@@ -137,7 +173,37 @@ class GenerateAnswerChain(Chain):
             debug=self._debug,
         )
 
+        answer = res.get("answer", "")
+        usage_metadata = res.get("usage_metadata", {})
+
+        if _log_ctx:
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type="GenerateAnswerChain",
+                start_time=_step_start,
+                status="completed",
+                usage_metadata=usage_metadata,
+            )
+
+        if _owns_log and _log_ctx:
+            log_agent_history(
+                ctx=_log_ctx,
+                ontology=None,
+                schema=None,
+                concept=None,
+                generated_sql=None,
+                rows_returned=None,
+                status="completed",
+                failed_at_step=None,
+                error=None,
+                reasoning_status=None,
+                usage_metadata=usage_metadata,
+                answer_generated=bool(answer),
+                llm_type=get_llm_type(self._llm),
+                llm_model=get_llm_model(self._llm),
+            )
+
         return {
-            "answer": res.get("answer", ""),
-            self.usage_metadata_key: res.get("usage_metadata", {}),
+            "answer": answer,
+            self.usage_metadata_key: usage_metadata,
         }

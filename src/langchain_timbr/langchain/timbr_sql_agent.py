@@ -43,7 +43,9 @@ class TimbrSqlAgent(Runnable):
         conn_params: Optional[dict] = None,
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
-        debug: Optional[bool] = False
+        debug: Optional[bool] = False,
+        enable_logging: Optional[bool] = False,
+        chain_trace: Optional[bool] = False,
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
@@ -101,6 +103,7 @@ class TimbrSqlAgent(Runnable):
         ```
         """
         super().__init__()
+        self._enable_logging = to_boolean(enable_logging)
         self._chain = ExecuteTimbrQueryChain(
             llm=llm,
             url=url,
@@ -129,6 +132,8 @@ class TimbrSqlAgent(Runnable):
             enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
             reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
             debug=to_boolean(debug),
+            enable_logging=to_boolean(enable_logging),
+            chain_trace=to_boolean(chain_trace),
         )
         self._generate_answer = to_boolean(generate_answer)
         
@@ -179,6 +184,13 @@ class TimbrSqlAgent(Runnable):
         return self._invoke_impl(input)
 
     def _invoke_impl(self, input: dict) -> dict:
+        from datetime import datetime as _dt
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id,
+            log_agent_start, log_agent_history, determine_status,
+            get_llm_type, get_llm_model,
+        )
+
         user_input = input.get("input", "") if isinstance(input, dict) else input
 
         # Enhanced input validation
@@ -197,8 +209,36 @@ class TimbrSqlAgent(Runnable):
                 "usage_metadata": {},
             }
 
+        # Build log context when logging is enabled
+        _log_ctx = None
+        _delegated_ctx = None
+        if self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=new_query_id(),
+                agent_name=self._chain._agent or "",
+                url=self._chain._url,
+                token=self._chain._token,
+                chain_type="TimbrSqlAgent",
+                start_time=_dt.now(),
+                prompt=user_input,
+                chain_trace_enabled=self._chain._chain_trace,
+                is_delegated=False,
+            )
+            log_agent_start(_log_ctx, self._chain._ontology, self._chain._schema)
+            _delegated_ctx = AgentLogContext(
+                query_id=_log_ctx.query_id,
+                agent_name=_log_ctx.agent_name,
+                url=_log_ctx.url,
+                token=_log_ctx.token,
+                chain_type=_log_ctx.chain_type,
+                start_time=_log_ctx.start_time,
+                prompt=_log_ctx.prompt,
+                chain_trace_enabled=_log_ctx.chain_trace_enabled,
+                is_delegated=True,
+            )
+
         try:
-            result = self._chain.invoke({ "prompt": user_input })
+            result = self._chain.invoke({"prompt": user_input}, log_ctx=_delegated_ctx)
             answer = None
             usage_metadata = result.get(self._chain.usage_metadata_key, {})
 
@@ -207,24 +247,68 @@ class TimbrSqlAgent(Runnable):
                     "prompt": user_input,
                     "rows": result.get("rows"),
                     "sql": result.get("sql")
-                })
+                }, log_ctx=_delegated_ctx)
                 answer = answer_res.get("answer", "")
                 usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
 
+            rows = result.get("rows", [])
+            error = result.get("error", None)
+
+            if _log_ctx:
+                if _delegated_ctx:
+                    _log_ctx.concept = _delegated_ctx.concept
+                    _log_ctx.retry_count = _delegated_ctx.retry_count
+                    _log_ctx.no_results_retry_count = _delegated_ctx.no_results_retry_count
+                log_agent_history(
+                    ctx=_log_ctx,
+                    ontology=result.get("ontology"),
+                    schema=result.get("schema"),
+                    concept=result.get("concept"),
+                    generated_sql=result.get("sql"),
+                    rows_returned=len(rows) if rows else 0,
+                    status=determine_status(rows, error),
+                    failed_at_step=_delegated_ctx.current_step if (error and _delegated_ctx) else None,
+                    error=error,
+                    reasoning_status=result.get("reasoning_status"),
+                    usage_metadata=usage_metadata,
+                    answer_generated=bool(answer),
+                    llm_type=get_llm_type(self._chain._llm),
+                    llm_model=get_llm_model(self._chain._llm),
+                    identify_concept_reason=result.get("identify_concept_reason"),
+                    generate_sql_reason=result.get("generate_sql_reason"),
+                )
+
             return {
                 "answer": answer,
-                "rows": result.get("rows", []),
+                "rows": rows,
                 "sql": result.get("sql", ""),
                 "ontology": result.get("ontology", ""),
                 "schema": result.get("schema", ""),
                 "concept": result.get("concept", ""),
-                "error": result.get("error", None),
+                "error": error,
                 "reasoning_status": result.get("reasoning_status", None),
                 "usage_metadata": usage_metadata,
                 "identify_concept_reason": result.get("identify_concept_reason", None),
                 "generate_sql_reason": result.get("generate_sql_reason", None),
             }
         except Exception as e:
+            if _log_ctx:
+                log_agent_history(
+                    ctx=_log_ctx,
+                    ontology=None,
+                    schema=None,
+                    concept=None,
+                    generated_sql=None,
+                    rows_returned=None,
+                    status="timeout" if "timed out" in str(e).lower() else "failed",
+                    failed_at_step=_delegated_ctx.current_step if _delegated_ctx else None,
+                    error=str(e),
+                    reasoning_status=None,
+                    usage_metadata={},
+                    answer_generated=False,
+                    llm_type=get_llm_type(self._chain._llm),
+                    llm_model=get_llm_model(self._chain._llm),
+                )
             return {
                 "error": str(e),
                 "answer": None,
@@ -251,6 +335,13 @@ class TimbrSqlAgent(Runnable):
         return await self._ainvoke_impl(input)
 
     async def _ainvoke_impl(self, input: dict) -> dict:
+        from datetime import datetime as _dt
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id,
+            log_agent_start, log_agent_history, determine_status,
+            get_llm_type, get_llm_model,
+        )
+
         user_input = input.get("input", "") if isinstance(input, dict) else input
 
         if not user_input or not user_input.strip():
@@ -268,12 +359,39 @@ class TimbrSqlAgent(Runnable):
                 "usage_metadata": {},
             }
 
+        _log_ctx = None
+        _delegated_ctx = None
+        if self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=new_query_id(),
+                agent_name=self._chain._agent or "",
+                url=self._chain._url,
+                token=self._chain._token,
+                chain_type="TimbrSqlAgent",
+                start_time=_dt.now(),
+                prompt=user_input,
+                chain_trace_enabled=self._chain._chain_trace,
+                is_delegated=False,
+            )
+            log_agent_start(_log_ctx, self._chain._ontology, self._chain._schema)
+            _delegated_ctx = AgentLogContext(
+                query_id=_log_ctx.query_id,
+                agent_name=_log_ctx.agent_name,
+                url=_log_ctx.url,
+                token=_log_ctx.token,
+                chain_type=_log_ctx.chain_type,
+                start_time=_log_ctx.start_time,
+                prompt=_log_ctx.prompt,
+                chain_trace_enabled=_log_ctx.chain_trace_enabled,
+                is_delegated=True,
+            )
+
         try:
             # Use async invoke if available, fallback to sync
             if hasattr(self._chain, 'ainvoke'):
-                result = await self._chain.ainvoke({ "prompt": user_input })
+                result = await self._chain.ainvoke({"prompt": user_input}, log_ctx=_delegated_ctx)
             else:
-                result = self._chain.invoke({ "prompt": user_input })
+                result = self._chain.invoke({"prompt": user_input}, log_ctx=_delegated_ctx)
 
             answer = None
             usage_metadata = result.get(self._chain.usage_metadata_key, {})
@@ -284,30 +402,74 @@ class TimbrSqlAgent(Runnable):
                         "prompt": user_input,
                         "rows": result.get("rows"),
                         "sql": result.get("sql")
-                    })
+                    }, log_ctx=_delegated_ctx)
                 else:
                     answer_res = self._answer_chain.invoke({
                         "prompt": user_input,
                         "rows": result.get("rows"),
                         "sql": result.get("sql")
-                    })
+                    }, log_ctx=_delegated_ctx)
                 answer = answer_res.get("answer", "")
                 usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
 
+            rows = result.get("rows", [])
+            error = result.get("error", None)
+
+            if _log_ctx:
+                if _delegated_ctx:
+                    _log_ctx.concept = _delegated_ctx.concept
+                    _log_ctx.retry_count = _delegated_ctx.retry_count
+                    _log_ctx.no_results_retry_count = _delegated_ctx.no_results_retry_count
+                log_agent_history(
+                    ctx=_log_ctx,
+                    ontology=result.get("ontology"),
+                    schema=result.get("schema"),
+                    concept=result.get("concept"),
+                    generated_sql=result.get("sql"),
+                    rows_returned=len(rows) if rows else 0,
+                    status=determine_status(rows, error),
+                    failed_at_step=_delegated_ctx.current_step if (error and _delegated_ctx) else None,
+                    error=error,
+                    reasoning_status=result.get("reasoning_status"),
+                    usage_metadata=usage_metadata,
+                    answer_generated=bool(answer),
+                    llm_type=get_llm_type(self._chain._llm),
+                    llm_model=get_llm_model(self._chain._llm),
+                    identify_concept_reason=result.get("identify_concept_reason"),
+                    generate_sql_reason=result.get("generate_sql_reason"),
+                )
+
             return {
                 "answer": answer,
-                "rows": result.get("rows", []),
+                "rows": rows,
                 "sql": result.get("sql", ""),
                 "ontology": result.get("ontology", ""),
                 "schema": result.get("schema", ""),
                 "concept": result.get("concept", ""),
-                "error": result.get("error", None),
+                "error": error,
                 "reasoning_status": result.get("reasoning_status", None),
                 "identify_concept_reason": result.get("identify_concept_reason", None),
                 "generate_sql_reason": result.get("generate_sql_reason", None),
                 "usage_metadata": usage_metadata,
             }
         except Exception as e:
+            if _log_ctx:
+                log_agent_history(
+                    ctx=_log_ctx,
+                    ontology=None,
+                    schema=None,
+                    concept=None,
+                    generated_sql=None,
+                    rows_returned=None,
+                    status="timeout" if "timed out" in str(e).lower() else "failed",
+                    failed_at_step=_delegated_ctx.current_step if _delegated_ctx else None,
+                    error=str(e),
+                    reasoning_status=None,
+                    usage_metadata={},
+                    answer_generated=False,
+                    llm_type=get_llm_type(self._chain._llm),
+                    llm_model=get_llm_model(self._chain._llm),
+                )
             return {
                 "error": str(e),
                 "answer": None,
@@ -351,7 +513,9 @@ def create_timbr_sql_agent(
     conn_params: Optional[dict] = None,
     enable_reasoning: Optional[bool] = None,
     reasoning_steps: Optional[int] = None,
-    debug: Optional[bool] = False
+    debug: Optional[bool] = False,
+    enable_logging: Optional[bool] = False,
+    chain_trace: Optional[bool] = False,
 ) -> TimbrSqlAgent:
     """
     Create and configure a Timbr agent with its executor.
@@ -453,6 +617,8 @@ def create_timbr_sql_agent(
         enable_reasoning=enable_reasoning,
         reasoning_steps=reasoning_steps,
         debug=debug,
+        enable_logging=enable_logging,
+        chain_trace=chain_trace,
     )
-    
+
     return timbr_agent

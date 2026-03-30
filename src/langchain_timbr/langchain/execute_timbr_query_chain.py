@@ -50,6 +50,8 @@ class ExecuteTimbrQueryChain(Chain):
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
+        enable_logging: Optional[bool] = False,
+        chain_trace: Optional[bool] = False,
         **kwargs,
     ):
         """
@@ -161,6 +163,8 @@ class ExecuteTimbrQueryChain(Chain):
             self._reasoning_steps = to_integer(agent_options.get("reasoning_steps")) if "reasoning_steps" in agent_options else config.reasoning_steps
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
+            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
+            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -180,6 +184,8 @@ class ExecuteTimbrQueryChain(Chain):
             self._note = note
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
+            self._enable_logging = to_boolean(enable_logging)
+            self._chain_trace = to_boolean(chain_trace)
 
 
     @property
@@ -278,21 +284,57 @@ class ExecuteTimbrQueryChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
+        from datetime import datetime as _dt
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id,
+            log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
+            determine_status, get_llm_type, get_llm_model,
+        )
+
+        # Variables declared before try so exception handler can reference them
+        prompt = inputs.get("prompt")
+        sql = inputs.get("sql", None)
+        schema_name = inputs.get("schema", self._schema)
+        ontology_name = inputs.get("ontology", self._ontology)
+        concept_name = inputs.get("concept", self._concept)
+        usage_metadata = {}
+        rows = []
+        reasoning_status = None
+        identify_concept_reason = None
+        generate_sql_reason = None
+
+        # Resolve logging context: received from parent (delegated) or create standalone
+        _log_ctx = self._received_log_ctx
+        _owns_log = False
+
+        if _log_ctx is None and self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=new_query_id(),
+                agent_name=self._agent or "",
+                url=self._url,
+                token=self._token,
+                chain_type="ExecuteTimbrQueryChain",
+                start_time=_dt.now(),
+                prompt=prompt or "",
+                chain_trace_enabled=self._chain_trace,
+                is_delegated=False,
+            )
+            log_agent_start(_log_ctx, ontology_name, schema_name)
+            _owns_log = True
+        elif _log_ctx is not None:
+            _log_ctx.retry_count = 0
+            _log_ctx.no_results_retry_count = 0
+
         try:
-            prompt = inputs.get("prompt")
-            sql = inputs.get("sql", None)
-            schema_name = inputs.get("schema", self._schema)
-            ontology_name = inputs.get("ontology", self._ontology)
-            concept_name = inputs.get("concept", self._concept)
             is_sql_valid = True
             error = None
             identify_concept_reason = None
             generate_sql_reason = None
-            reasoning_status = None
-            rows = []
-            usage_metadata = {}
 
             if sql and self._should_validate_sql:
+                if _log_ctx:
+                    _log_ctx.current_step = "validating_sql"
+                    log_agent_step(_log_ctx)
                 is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
 
             is_infered = False
@@ -302,6 +344,15 @@ class ExecuteTimbrQueryChain(Chain):
             while not is_infered and iteration <= self._no_results_max_retries:
                 conn_params = self._get_conn_params()
                 if prompt is not None and not sql or not is_sql_valid:
+                    # Show identifying_concept step on first iteration when concept is unknown
+                    if _log_ctx:
+                        if concept_name is None and iteration == 0:
+                            _log_ctx.current_step = "identifying_concept"
+                        else:
+                            _log_ctx.current_step = "generating_sql"
+                        log_agent_step(_log_ctx)
+
+                    _gen_start = _dt.now()
                     generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params)
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
@@ -316,17 +367,55 @@ class ExecuteTimbrQueryChain(Chain):
                     error = generate_res.get("error")
                     identify_concept_reason = generate_res.get("identify_concept_reason")
                     generate_sql_reason = generate_res.get("generate_sql_reason")
-                    usage_metadata = self._summarize_usage_metadata(usage_metadata, generate_res.get("usage_metadata", {}))
-                
+                    _gen_meta = generate_res.get("usage_metadata", {})
+                    usage_metadata = self._summarize_usage_metadata(usage_metadata, _gen_meta)
+
+                    if _log_ctx:
+                        if concept_name:
+                            _log_ctx.concept = concept_name
+                        _log_ctx.current_step = "generating_sql"
+                        log_agent_step(_log_ctx)
+                        log_chain_trace(
+                            ctx=_log_ctx,
+                            chain_type="GenerateTimbrSqlChain",
+                            start_time=_gen_start,
+                            status="failed" if (not is_sql_valid and error) else "completed",
+                            concept=concept_name,
+                            schema=schema_name,
+                            generated_sql=sql,
+                            is_sql_valid=is_sql_valid,
+                            error=error if not is_sql_valid else None,
+                            reasoning_status=reasoning_status,
+                            usage_metadata=_gen_meta,
+                            retry_attempt=iteration,
+                        )
+
                 is_sql_not_tried = not any(sql.lower().strip() == gen.lower().strip() for gen in generated)
 
+                if _log_ctx:
+                    _log_ctx.current_step = "executing_query"
+                    log_agent_step(_log_ctx)
+
+                _exec_start = _dt.now()
                 rows = run_query(
                     sql,
                     conn_params,
                     llm_prompt=prompt,
                     use_query_limit=True,
                 ) if is_sql_valid and is_sql_not_tried else []
-                
+
+                if _log_ctx:
+                    log_chain_trace(
+                        ctx=_log_ctx,
+                        chain_type="ExecuteQuery",
+                        start_time=_exec_start,
+                        status="completed",
+                        concept=concept_name,
+                        schema=schema_name,
+                        rows_returned=len(rows) if rows else 0,
+                        retry_attempt=iteration,
+                    )
+
                 if iteration < self._no_results_max_retries:
                     # If no rows are returned and we should infer the result, we will try to re-generate the SQL query
                     if prompt is not None and self._retry_if_no_results and self._has_no_meaningful_results(rows):
@@ -337,6 +426,10 @@ class ExecuteTimbrQueryChain(Chain):
                                 error = "No rows returned. Please revise the SQL considering if the question was ambiguous (e.g., which ID or name to use), try use alternative columns in the WHERE clause part in a way that could match the user's intent, without adding new columns with new filters."
                                 error += "\nConsider that this queries already generated and returned 0 rows:\n" + "\n".join(generated)
                                 is_sql_valid = False
+                            if _log_ctx:
+                                _log_ctx.no_results_retry_count += 1
+                                _log_ctx.current_step = "retrying"
+                                log_agent_step(_log_ctx)
                         else:
                             # Generated twice the same SQL, so we will stop the loop
                             is_infered = True
@@ -344,13 +437,35 @@ class ExecuteTimbrQueryChain(Chain):
                         is_infered = True
                 iteration += 1
 
+            final_error = error if not is_sql_valid else None
+
+            if _owns_log and _log_ctx:
+                log_agent_history(
+                    ctx=_log_ctx,
+                    ontology=ontology_name,
+                    schema=schema_name,
+                    concept=concept_name,
+                    generated_sql=sql,
+                    rows_returned=len(rows) if rows else 0,
+                    status=determine_status(rows, final_error),
+                    failed_at_step=None,
+                    error=final_error,
+                    reasoning_status=reasoning_status,
+                    usage_metadata=usage_metadata,
+                    answer_generated=False,
+                    llm_type=get_llm_type(self._llm),
+                    llm_model=get_llm_model(self._llm),
+                    identify_concept_reason=identify_concept_reason,
+                    generate_sql_reason=generate_sql_reason,
+                )
+
             return {
                 "rows": rows,
                 "sql": sql,
                 "ontology": ontology_name,
                 "schema": schema_name,
                 "concept": concept_name,
-                "error": error if not is_sql_valid else None,
+                "error": final_error,
                 "reasoning_status": reasoning_status,
                 "identify_concept_reason": identify_concept_reason,
                 "generate_sql_reason": generate_sql_reason,
@@ -358,6 +473,25 @@ class ExecuteTimbrQueryChain(Chain):
             }
 
         except Exception as e:
+            if _owns_log and _log_ctx:
+                log_agent_history(
+                    ctx=_log_ctx,
+                    ontology=ontology_name,
+                    schema=schema_name,
+                    concept=concept_name,
+                    generated_sql=sql,
+                    rows_returned=None,
+                    status="timeout" if "timed out" in str(e).lower() else "failed",
+                    failed_at_step=_log_ctx.current_step,
+                    error=str(e),
+                    reasoning_status=reasoning_status,
+                    usage_metadata=usage_metadata,
+                    answer_generated=False,
+                    llm_type=get_llm_type(self._llm),
+                    llm_model=get_llm_model(self._llm),
+                    identify_concept_reason=identify_concept_reason,
+                    generate_sql_reason=generate_sql_reason,
+                )
             raise RuntimeError(f"Error executing the chain: {str(e)}")
 
     def _summarize_usage_metadata(self, current_metadata: dict, new_metadata: dict) -> dict:

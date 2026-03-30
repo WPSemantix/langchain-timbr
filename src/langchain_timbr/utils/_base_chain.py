@@ -20,7 +20,7 @@ class Chain(Runnable):
     """
 
     def __init__(self, **kwargs):
-        pass
+        self._received_log_ctx = None
 
     @property
     def input_keys(self) -> List[str]:
@@ -33,7 +33,8 @@ class Chain(Runnable):
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
         raise NotImplementedError
 
-    def invoke(self, input: Dict[str, Any], config=None, **kwargs) -> Dict[str, Any]:
+    def invoke(self, input: Dict[str, Any], config=None, log_ctx=None, **kwargs) -> Dict[str, Any]:
+        self._received_log_ctx = log_ctx
         if _LANGSMITH_AVAILABLE:
             with ls_trace(name=self.__class__.__name__, run_type="chain", inputs={"input": input}) as rt:
                 result = self._call(input)
@@ -41,7 +42,8 @@ class Chain(Runnable):
                 return result
         return self._call(input)
 
-    async def ainvoke(self, input: Dict[str, Any], config=None, **kwargs) -> Dict[str, Any]:
+    async def ainvoke(self, input: Dict[str, Any], config=None, log_ctx=None, **kwargs) -> Dict[str, Any]:
+        self._received_log_ctx = log_ctx
         if _LANGSMITH_AVAILABLE:
             with ls_trace(name=self.__class__.__name__, run_type="chain", inputs={"input": input}) as rt:
                 result = self._call(input)

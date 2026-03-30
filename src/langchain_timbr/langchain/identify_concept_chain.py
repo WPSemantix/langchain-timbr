@@ -40,6 +40,8 @@ class IdentifyTimbrConceptChain(Chain):
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
         debug: Optional[bool] = False,
+        enable_logging: Optional[bool] = False,
+        chain_trace: Optional[bool] = False,
         **kwargs,
     ):
         """
@@ -123,6 +125,8 @@ class IdentifyTimbrConceptChain(Chain):
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
+            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
+            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._concepts_list = parse_list(concepts_list)
@@ -132,6 +136,8 @@ class IdentifyTimbrConceptChain(Chain):
             self._should_validate = to_boolean(should_validate)
             self._retries = to_integer(retries)
             self._note = note
+            self._enable_logging = to_boolean(enable_logging)
+            self._chain_trace = to_boolean(chain_trace)
         
 
     @property
@@ -162,7 +168,38 @@ class IdentifyTimbrConceptChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, str]:
+        from datetime import datetime as _dt
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id,
+            log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
+            get_llm_type, get_llm_model,
+        )
+
         prompt = inputs["prompt"]
+
+        _log_ctx = self._received_log_ctx
+        _owns_log = False
+
+        if _log_ctx is None and self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=new_query_id(),
+                agent_name=self._agent or "",
+                url=self._url,
+                token=self._token,
+                chain_type="IdentifyTimbrConceptChain",
+                start_time=_dt.now(),
+                prompt=prompt,
+                chain_trace_enabled=self._chain_trace,
+                is_delegated=False,
+            )
+            log_agent_start(_log_ctx, self._ontology, None)
+            _owns_log = True
+
+        if _log_ctx:
+            _log_ctx.current_step = "identifying_concept"
+            log_agent_step(_log_ctx)
+
+        _step_start = _dt.now()
         res = determine_concept(
             question=prompt,
             llm=self._llm,
@@ -178,6 +215,40 @@ class IdentifyTimbrConceptChain(Chain):
         )
 
         usage_metadata = res.pop("usage_metadata", {})
+        concept = res.get("concept")
+
+        if _log_ctx:
+            if concept:
+                _log_ctx.concept = concept
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type="IdentifyTimbrConceptChain",
+                start_time=_step_start,
+                status="completed",
+                concept=concept,
+                schema=res.get("schema"),
+                usage_metadata=usage_metadata,
+            )
+
+        if _owns_log and _log_ctx:
+            log_agent_history(
+                ctx=_log_ctx,
+                ontology=self._ontology,
+                schema=res.get("schema"),
+                concept=concept,
+                generated_sql=None,
+                rows_returned=None,
+                status="completed",
+                failed_at_step=None,
+                error=None,
+                reasoning_status=None,
+                usage_metadata=usage_metadata,
+                answer_generated=False,
+                llm_type=get_llm_type(self._llm),
+                llm_model=get_llm_model(self._llm),
+                identify_concept_reason=res.get("identify_concept_reason"),
+            )
+
         return {
             **res,
             self.usage_metadata_key: usage_metadata,

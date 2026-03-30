@@ -47,6 +47,8 @@ class GenerateTimbrSqlChain(Chain):
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
+        enable_logging: Optional[bool] = False,
+        chain_trace: Optional[bool] = False,
         **kwargs,
     ):
         """
@@ -154,6 +156,8 @@ class GenerateTimbrSqlChain(Chain):
             self._reasoning_steps = to_integer(agent_options.get("reasoning_steps")) if "reasoning_steps" in agent_options else config.reasoning_steps
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
+            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
+            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -171,6 +175,8 @@ class GenerateTimbrSqlChain(Chain):
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
             self._note = note
+            self._enable_logging = to_boolean(enable_logging)
+            self._chain_trace = to_boolean(chain_trace)
 
 
     @property
@@ -208,7 +214,38 @@ class GenerateTimbrSqlChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, str]:
+        from datetime import datetime as _dt
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id,
+            log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
+            get_llm_type, get_llm_model,
+        )
+
         prompt = inputs["prompt"]
+
+        _log_ctx = self._received_log_ctx
+        _owns_log = False
+
+        if _log_ctx is None and self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=new_query_id(),
+                agent_name=self._agent or "",
+                url=self._url,
+                token=self._token,
+                chain_type="GenerateTimbrSqlChain",
+                start_time=_dt.now(),
+                prompt=prompt,
+                chain_trace_enabled=self._chain_trace,
+                is_delegated=False,
+            )
+            log_agent_start(_log_ctx, self._ontology, self._schema)
+            _owns_log = True
+
+        if _log_ctx:
+            _log_ctx.current_step = "identifying_concept" if self._concept is None else "generating_sql"
+            log_agent_step(_log_ctx)
+
+        _step_start = _dt.now()
         generate_res = generate_sql(
             question=prompt,
             llm=self._llm,
@@ -230,21 +267,64 @@ class GenerateTimbrSqlChain(Chain):
             reasoning_steps=self._reasoning_steps,
             debug=self._debug,
         )
-        
+
         sql = generate_res.get("sql", "")
         ontology = generate_res.get("ontology", self._ontology)
         schema = generate_res.get("schema", self._schema)
         concept = generate_res.get("concept", self._concept)
-        
+        is_sql_valid = generate_res.get("is_sql_valid")
+        error = generate_res.get("error")
+        reasoning_status = generate_res.get("reasoning_status")
+        usage_metadata = generate_res.get("usage_metadata") or {}
+
+        if _log_ctx:
+            if concept:
+                _log_ctx.concept = concept
+            _log_ctx.current_step = "generating_sql"
+            log_agent_step(_log_ctx)
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type="GenerateTimbrSqlChain",
+                start_time=_step_start,
+                status="failed" if (not is_sql_valid and error) else "completed",
+                concept=concept,
+                schema=schema,
+                generated_sql=sql,
+                is_sql_valid=is_sql_valid,
+                error=error if not is_sql_valid else None,
+                reasoning_status=reasoning_status,
+                usage_metadata=usage_metadata,
+            )
+
+        if _owns_log and _log_ctx:
+            log_agent_history(
+                ctx=_log_ctx,
+                ontology=ontology,
+                schema=schema,
+                concept=concept,
+                generated_sql=sql,
+                rows_returned=None,
+                status="failed" if (not is_sql_valid and error) else "completed",
+                failed_at_step="generating_sql" if (not is_sql_valid and error) else None,
+                error=error if not is_sql_valid else None,
+                reasoning_status=reasoning_status,
+                usage_metadata=usage_metadata,
+                answer_generated=False,
+                llm_type=get_llm_type(self._llm),
+                llm_model=get_llm_model(self._llm),
+                identify_concept_reason=generate_res.get("identify_concept_reason"),
+                generate_sql_reason=generate_res.get("generate_sql_reason"),
+            )
+
         return {
             "sql": sql,
             "ontology": ontology,
             "schema": schema,
             "concept": concept,
-            "is_sql_valid": generate_res.get("is_sql_valid"),
-            "error": generate_res.get("error"),
+            "is_sql_valid": is_sql_valid,
+            "error": error,
             "identify_concept_reason": generate_res.get("identify_concept_reason"),
             "generate_sql_reason": generate_res.get("generate_sql_reason"),
-            "reasoning_status": generate_res.get("reasoning_status"),
-            self.usage_metadata_key: generate_res.get("usage_metadata"),
+            "reasoning_status": reasoning_status,
+            self.usage_metadata_key: usage_metadata,
         }
