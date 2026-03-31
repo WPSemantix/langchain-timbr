@@ -8,7 +8,7 @@ try:
 except ImportError:
     _LANGSMITH_AVAILABLE = False
 
-from ..utils.general import parse_list, to_boolean, to_integer
+from ..utils.general import parse_list, to_boolean, to_integer, sanitize_results
 from .execute_timbr_query_chain import ExecuteTimbrQueryChain
 from .generate_answer_chain import GenerateAnswerChain
 from .. import config
@@ -152,6 +152,14 @@ class TimbrSqlAgent(Runnable):
         ) if self._generate_answer else None
 
 
+    @property
+    def output_keys(self) -> list:
+        return [
+            "answer", "rows", "sql", "ontology", "schema", "concept",
+            "error", "reasoning_status", "usage_metadata",
+            "identify_concept_reason", "generate_sql_reason",
+        ]
+
     def _should_skip_answer_generation(self, result: dict) -> bool:
         """
         Determine if answer generation should be skipped based on result content.
@@ -282,7 +290,7 @@ class TimbrSqlAgent(Runnable):
                     answer_chain_duration=_answer_chain_duration_ms,
                 )
 
-            return {
+            return sanitize_results(self.output_keys, {
                 "answer": answer,
                 "rows": rows,
                 "sql": result.get("sql", ""),
@@ -294,7 +302,7 @@ class TimbrSqlAgent(Runnable):
                 "usage_metadata": usage_metadata,
                 "identify_concept_reason": result.get("identify_concept_reason", None),
                 "generate_sql_reason": result.get("generate_sql_reason", None),
-            }
+            })
         except Exception as e:
             if _log_ctx:
                 log_agent_history(
@@ -313,7 +321,7 @@ class TimbrSqlAgent(Runnable):
                     llm_type=get_llm_type(self._chain._llm),
                     llm_model=get_llm_model(self._chain._llm),
                 )
-            return {
+            return sanitize_results(self.output_keys, {
                 "error": str(e),
                 "answer": None,
                 "rows": None,
@@ -325,7 +333,7 @@ class TimbrSqlAgent(Runnable):
                 "identify_concept_reason": None,
                 "generate_sql_reason": None,
                 "usage_metadata": {},
-            }
+            })
 
     async def ainvoke(
         self, input: dict, config=None, **kwargs: Any
@@ -447,7 +455,7 @@ class TimbrSqlAgent(Runnable):
                     answer_chain_duration=_answer_chain_duration_ms,
                 )
 
-            return {
+            return sanitize_results(self.output_keys, {
                 "answer": answer,
                 "rows": rows,
                 "sql": result.get("sql", ""),
@@ -459,7 +467,7 @@ class TimbrSqlAgent(Runnable):
                 "identify_concept_reason": result.get("identify_concept_reason", None),
                 "generate_sql_reason": result.get("generate_sql_reason", None),
                 "usage_metadata": usage_metadata,
-            }
+            })
         except Exception as e:
             if _log_ctx:
                 log_agent_history(
@@ -478,7 +486,7 @@ class TimbrSqlAgent(Runnable):
                     llm_type=get_llm_type(self._chain._llm),
                     llm_model=get_llm_model(self._chain._llm),
                 )
-            return {
+            return sanitize_results(self.output_keys, {
                 "error": str(e),
                 "answer": None,
                 "rows": None,
@@ -490,7 +498,7 @@ class TimbrSqlAgent(Runnable):
                 "identify_concept_reason": None,
                 "generate_sql_reason": None,
                 "usage_metadata": {},
-            }
+            })
 
 
 def create_timbr_sql_agent(

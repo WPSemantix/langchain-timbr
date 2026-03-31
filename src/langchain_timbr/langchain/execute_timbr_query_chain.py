@@ -4,7 +4,7 @@ from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
-from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
+from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_utils import run_query, validate_sql
 from ..utils.timbr_llm_utils import generate_sql
 from ..llm_wrapper.llm_wrapper import LlmWrapper
@@ -200,14 +200,20 @@ class ExecuteTimbrQueryChain(Chain):
 
     @property
     def output_keys(self) -> list:
-        return [
+        base = [
             "rows",
             "sql",
+            "ontology",
             "schema",
             "concept",
             "error",
+            "reasoning_status",
+            "identify_concept_reason",
+            "generate_sql_reason",
+
             self.usage_metadata_key,
         ]
+        return list(dict.fromkeys(self.input_keys + base))
 
 
     def _get_conn_params(self) -> dict:
@@ -464,7 +470,8 @@ class ExecuteTimbrQueryChain(Chain):
                     generate_sql_chain_duration=_generate_sql_chain_duration_ms or None,
                 )
 
-            return {
+            result = {
+                **inputs,
                 "rows": rows,
                 "sql": sql,
                 "ontology": ontology_name,
@@ -476,6 +483,7 @@ class ExecuteTimbrQueryChain(Chain):
                 "generate_sql_reason": generate_sql_reason,
                 self.usage_metadata_key: usage_metadata,
             }
+            return sanitize_results(self.output_keys, result)
 
         except Exception as e:
             if _owns_log and _log_ctx:
