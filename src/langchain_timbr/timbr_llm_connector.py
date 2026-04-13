@@ -21,6 +21,7 @@ class TimbrLanggraphState(TypedDict):
     error: str
     is_sql_valid: bool
     usage_metadata: dict[str, Any]
+    conversation_id: Optional[str]
 
 
 class TimbrLlmConnector:
@@ -305,6 +306,7 @@ class TimbrLlmConnector:
         should_validate_sql: Optional[bool] = config.should_validate_sql,
         retries: Optional[int] = 3,
         note: Optional[str] = '',
+        conversation_id: Optional[str] = None,
         **nodes_kwargs: Any,
     ) -> dict[str, Any]:
         generate_sql_node = GenerateTimbrSqlNode(
@@ -384,7 +386,8 @@ class TimbrLlmConnector:
             "response": "",
             "error": "",
             "is_sql_valid": False,
-            "usage_metadata": {}
+            "usage_metadata": {},
+            "conversation_id": conversation_id,
         }
         
         result = compiled_graph.invoke(initial_state)

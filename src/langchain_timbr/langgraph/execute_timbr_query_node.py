@@ -40,6 +40,8 @@ class ExecuteSemanticQueryNode:
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -57,7 +59,7 @@ class ExecuteSemanticQueryNode:
         :param should_validate_sql: Whether to validate the SQL before executing it
         :param retries: Number of retry attempts if the generated SQL is invalid
         :param max_limit: Maximum number of rows to return
-        :retry_if_no_results: Whether to infer the result value from the SQL query. If the query won't return any rows, it will try to re-generate the SQL query then re-run it.
+        :param retry_if_no_results: Whether to infer the result value from the SQL query. If the query won't return any rows, it will try to re-generate the SQL query then re-run it.
         :param no_results_max_retries: Number of retry attempts to infer the result value from the SQL query
         :param note: Optional additional note to extend our llm prompt
         :param db_is_case_sensitive: Whether the database is case sensitive (default is False).
@@ -69,7 +71,8 @@ class ExecuteSemanticQueryNode:
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
-        :return: A list of rows from the Timbr query
+        :param enable_trace: Whether to enable trace logging for this node's operations.
+        :param conversation_id: Optional conversation ID for tracking across multi-turn conversations.
         """
         self.chain = ExecuteTimbrQueryChain(
             llm=llm,
@@ -99,6 +102,8 @@ class ExecuteSemanticQueryNode:
             enable_reasoning=enable_reasoning,
             reasoning_steps=reasoning_steps,
             debug=debug,
+            enable_trace=enable_trace,
+            conversation_id=conversation_id,
             **kwargs,
         )
 
@@ -109,7 +114,8 @@ class ExecuteSemanticQueryNode:
         except Exception:
             prompt = state.get('prompt', None)
 
-        return self.chain.invoke({ "prompt": prompt })
+        conversation_id = state.get('conversation_id', None)
+        return self.chain.invoke({"prompt": prompt, "conversation_id": conversation_id})
 
 
     def __call__(self, state: dict) -> dict:

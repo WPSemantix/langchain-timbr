@@ -49,6 +49,7 @@ class ValidateTimbrSqlChain(Chain):
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
         enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -61,7 +62,7 @@ class ValidateTimbrSqlChain(Chain):
         :param retries: The maximum number of retries to attempt
         :param concepts_list: Optional specific concept options to query
         :param views_list: Optional specific view options to query
-        :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query. 
+        :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query.
         :param include_tags: Optional specific concepts & properties tag options to use in the query (Disabled by default. Use '*' to enable all tags or a string represents a list of tags divided by commas (e.g. 'tag1,tag2')
         :param exclude_properties: Optional specific properties to exclude from the query (entity_id, entity_type & entity_label by default).
         :param max_limit: Maximum number of rows to query
@@ -76,6 +77,7 @@ class ValidateTimbrSqlChain(Chain):
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         :param enable_trace: Whether to enable trace logging for this chain's operations (default is False).
+        :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
         :param kwargs: Additional arguments to pass to the base
         
         ## Example
@@ -175,6 +177,7 @@ class ValidateTimbrSqlChain(Chain):
             self._enable_trace = to_boolean(enable_trace)
 
         self._enable_logging = self._enable_trace
+        self._conversation_id = conversation_id
 
 
     @property
@@ -184,7 +187,7 @@ class ValidateTimbrSqlChain(Chain):
 
     @property
     def input_keys(self) -> list:
-        return ["prompt", "sql"]
+        return ["prompt", "sql", "conversation_id"]
 
 
     @property
@@ -200,6 +203,7 @@ class ValidateTimbrSqlChain(Chain):
             "identify_concept_reason",
             "generate_sql_reason",
             self.usage_metadata_key,
+            "conversation_id",
         ]
         return list(dict.fromkeys(self.input_keys + base))
 
@@ -225,6 +229,7 @@ class ValidateTimbrSqlChain(Chain):
 
         sql = inputs["sql"]
         prompt = inputs["prompt"]
+        conversation_id = inputs.get("conversation_id") or self._conversation_id
         schema = self._schema
         concept = self._concept
         reasoning_status = None
@@ -235,8 +240,9 @@ class ValidateTimbrSqlChain(Chain):
         _log_ctx = self._received_log_ctx
 
         if _log_ctx is None and self._enable_logging:
+            _query_id = new_query_id()
             _log_ctx = AgentLogContext(
-                query_id=new_query_id(),
+                query_id=_query_id,
                 agent_name=self._agent or "",
                 url=build_server_url(config.thrift_host, config.thrift_port),
                 token=self._token,
@@ -245,6 +251,7 @@ class ValidateTimbrSqlChain(Chain):
                 prompt=prompt,
                 enable_trace=self._enable_trace,
                 is_delegated=False,
+                conversation_id=conversation_id or _query_id,
             )
             log_agent_start(_log_ctx, self._ontology, self._schema)
 
@@ -309,6 +316,7 @@ class ValidateTimbrSqlChain(Chain):
             "identify_concept_reason": identify_concept_reason,
             "generate_sql_reason": generate_sql_reason,
             self.usage_metadata_key: usage_metadata,
+            "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
         }
         
         if _log_ctx:
