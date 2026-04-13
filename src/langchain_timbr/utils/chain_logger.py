@@ -1,4 +1,5 @@
 import logging
+import threading
 import uuid6
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -214,7 +215,7 @@ def log_chain_trace(
     duration_ms = int((end_time - start_time).total_seconds() * 1000)
     meta = usage_metadata or {}
 
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/trace", _clean({
+    payload = _clean({
         "trace_id":           new_trace_id(),
         "query_id":           ctx.query_id,
         "agent_name":         ctx.agent_name,
@@ -239,7 +240,12 @@ def log_chain_trace(
         "output_tokens":      _sum_token_field(meta, "output_tokens"),
         "total_tokens":       _sum_token_field(meta, "total_tokens", "approximate"),
         "additional_options": additional_options,
-    }))
+    })
+    threading.Thread(
+        target=_safe_post,
+        args=(ctx.url, ctx.token, "/timbr-server/log_agent/trace", payload),
+        daemon=True,
+    ).start()
 
 
 def determine_status(rows: Optional[list], error: Optional[str]) -> str:
