@@ -111,56 +111,74 @@ class TimbrSqlAgent(Runnable):
         super().__init__()
         self._enable_logging = to_boolean(enable_trace)
         self._conversation_id = conversation_id
-        self._chain = ExecuteTimbrQueryChain(
-            llm=llm,
-            url=url,
-            token=token,
-            ontology=ontology,
-            schema=schema,
-            concept=concept,
-            concepts_list=parse_list(concepts_list),
-            views_list=parse_list(views_list),
-            include_logic_concepts=to_boolean(include_logic_concepts),
-            include_tags=parse_list(include_tags),
-            exclude_properties=parse_list(exclude_properties),
-            should_validate_sql=to_boolean(should_validate_sql),
-            retries=to_integer(retries),
-            max_limit=to_integer(max_limit),
-            retry_if_no_results=to_boolean(retry_if_no_results),
-            no_results_max_retries=to_integer(no_results_max_retries),
-            note=note,
-            db_is_case_sensitive=to_boolean(db_is_case_sensitive),
-            graph_depth=to_integer(graph_depth),
-            agent=agent,
-            verify_ssl=to_boolean(verify_ssl),
-            is_jwt=to_boolean(is_jwt),
-            jwt_tenant_id=jwt_tenant_id,
-            conn_params=conn_params,
-            enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
-            reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
-            debug=to_boolean(debug),
-            enable_trace=to_boolean(enable_trace),
-            conversation_id=conversation_id,
-        )
         self._generate_answer = to_boolean(generate_answer)
 
-        # Pre-initialize the answer chain to avoid creating it on every request
-        self._answer_chain = GenerateAnswerChain(
-            llm=llm,
-            url=url,
-            token=token,
-            note=note,
-            agent=agent,
-            verify_ssl=to_boolean(verify_ssl),
-            is_jwt=to_boolean(is_jwt),
-            jwt_tenant_id=jwt_tenant_id,
-            conn_params=conn_params,
-            debug=to_boolean(debug),
-            enable_trace=to_boolean(enable_trace),
-            enable_history=to_boolean(enable_history),
-            save_results=to_boolean(save_results),
-            conversation_id=conversation_id,
-        ) if self._generate_answer else None
+        if self._generate_answer:
+            self._chain = GenerateAnswerChain(
+                llm=llm,
+                url=url,
+                token=token,
+                ontology=ontology,
+                schema=schema,
+                concept=concept,
+                concepts_list=parse_list(concepts_list),
+                views_list=parse_list(views_list),
+                include_logic_concepts=to_boolean(include_logic_concepts),
+                include_tags=parse_list(include_tags),
+                exclude_properties=parse_list(exclude_properties),
+                should_validate_sql=to_boolean(should_validate_sql),
+                retries=to_integer(retries),
+                max_limit=to_integer(max_limit),
+                retry_if_no_results=to_boolean(retry_if_no_results),
+                no_results_max_retries=to_integer(no_results_max_retries),
+                db_is_case_sensitive=to_boolean(db_is_case_sensitive),
+                graph_depth=to_integer(graph_depth),
+                enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
+                reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
+                note=note,
+                agent=agent,
+                verify_ssl=to_boolean(verify_ssl),
+                is_jwt=to_boolean(is_jwt),
+                jwt_tenant_id=jwt_tenant_id,
+                conn_params=conn_params,
+                debug=to_boolean(debug),
+                enable_trace=to_boolean(enable_trace),
+                enable_history=to_boolean(enable_history),
+                save_results=to_boolean(save_results),
+                conversation_id=conversation_id,
+            )
+        else:
+            self._chain = ExecuteTimbrQueryChain(
+                llm=llm,
+                url=url,
+                token=token,
+                ontology=ontology,
+                schema=schema,
+                concept=concept,
+                concepts_list=parse_list(concepts_list),
+                views_list=parse_list(views_list),
+                include_logic_concepts=to_boolean(include_logic_concepts),
+                include_tags=parse_list(include_tags),
+                exclude_properties=parse_list(exclude_properties),
+                should_validate_sql=to_boolean(should_validate_sql),
+                retries=to_integer(retries),
+                max_limit=to_integer(max_limit),
+                retry_if_no_results=to_boolean(retry_if_no_results),
+                no_results_max_retries=to_integer(no_results_max_retries),
+                note=note,
+                db_is_case_sensitive=to_boolean(db_is_case_sensitive),
+                graph_depth=to_integer(graph_depth),
+                agent=agent,
+                verify_ssl=to_boolean(verify_ssl),
+                is_jwt=to_boolean(is_jwt),
+                jwt_tenant_id=jwt_tenant_id,
+                conn_params=conn_params,
+                enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
+                reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
+                debug=to_boolean(debug),
+                enable_trace=to_boolean(enable_trace),
+                conversation_id=conversation_id,
+            )
 
 
     @property
@@ -171,25 +189,6 @@ class TimbrSqlAgent(Runnable):
             "identify_concept_reason", "generate_sql_reason",
             "conversation_id",
         ]
-
-    def _should_skip_answer_generation(self, result: dict) -> bool:
-        """
-        Determine if answer generation should be skipped based on result content.
-        This can save LLM calls when there's an error or no meaningful data.
-        """
-        if not self._generate_answer:
-            return True
-
-        # Skip if there's an error
-        if result.get("error"):
-            return True
-
-        # Skip if no rows returned
-        rows = result.get("rows", [])
-        if not rows or len(rows) == 0:
-            return True
-
-        return False
 
     def _get_empty_input_response(self, conversation_id: Optional[str] = None) -> dict:
         """Return error response for empty/missing input."""
@@ -251,75 +250,29 @@ class TimbrSqlAgent(Runnable):
 
         return _log_ctx, _delegated_ctx
 
-    async def _invoke_chain_impl(self, chain, chain_input: dict, log_ctx, is_async: bool = False):
-        """Invoke a chain, handling both sync and async calls."""
-        if is_async and hasattr(chain, 'ainvoke'):
-            return await chain.ainvoke(chain_input, log_ctx=log_ctx)
-        return chain.invoke(chain_input, log_ctx=log_ctx)
-
-    def _process_answer_sync(self, user_input: str, result: dict, conversation_id: str, log_ctx):
-        """Sync processing of answer chain invocation."""
-        answer = None
-        usage_metadata = result.get(self._chain.usage_metadata_key, {})
-
-        if self._answer_chain and not self._should_skip_answer_generation(result):
-            answer_res = self._answer_chain.invoke({
-                "prompt": user_input,
-                "rows": result.get("rows"),
-                "sql": result.get("sql"),
-                "conversation_id": conversation_id,
-            }, log_ctx=log_ctx)
-            answer = answer_res.get("answer", "")
-            usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
-
-        return answer, usage_metadata
-
-    async def _process_answer_async(self, user_input: str, result: dict, conversation_id: str, log_ctx):
-        """Async processing of answer chain invocation."""
-        answer = None
-        usage_metadata = result.get(self._chain.usage_metadata_key, {})
-
-        if self._answer_chain and not self._should_skip_answer_generation(result):
-            answer_res = await self._invoke_chain_impl(
-                self._answer_chain,
-                {
-                    "prompt": user_input,
-                    "rows": result.get("rows"),
-                    "sql": result.get("sql"),
-                    "conversation_id": conversation_id,
-                },
-                log_ctx,
-                is_async=True
-            )
-            answer = answer_res.get("answer", "")
-            usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
-
-        return answer, usage_metadata
-
-    def _build_result(self, result: dict, answer: str, conversation_id: str, log_ctx, delegated_ctx) -> dict:
+    def _build_result(self, result: dict, conversation_id: str, log_ctx, delegated_ctx) -> dict:
         """Build the final result dictionary."""
-        usage_metadata = result.get(self._chain.usage_metadata_key, {})
+        exec_meta = result.get("execute_timbr_usage_metadata", {})
+        gen_meta = result.get("generate_answer_usage_metadata", {})
+        usage_metadata = {**exec_meta, **gen_meta}
 
         if log_ctx and delegated_ctx:
             log_ctx.concept = delegated_ctx.concept
             log_ctx.retry_count = delegated_ctx.retry_count
             log_ctx.no_results_retry_count = delegated_ctx.no_results_retry_count
 
-        rows = result.get("rows", [])
-        error = result.get("error", None)
-
         return sanitize_results(self.output_keys, {
-            "answer": answer,
-            "rows": rows,
+            "answer": result.get("answer"),
+            "rows": result.get("rows", []),
             "sql": result.get("sql", ""),
             "ontology": result.get("ontology", ""),
             "schema": result.get("schema", ""),
             "concept": result.get("concept", ""),
-            "error": error,
-            "reasoning_status": result.get("reasoning_status", None),
+            "error": result.get("error"),
+            "reasoning_status": result.get("reasoning_status"),
             "usage_metadata": usage_metadata,
-            "identify_concept_reason": result.get("identify_concept_reason", None),
-            "generate_sql_reason": result.get("generate_sql_reason", None),
+            "identify_concept_reason": result.get("identify_concept_reason"),
+            "generate_sql_reason": result.get("generate_sql_reason"),
             "conversation_id": conversation_id,
         })
 
@@ -347,12 +300,9 @@ class TimbrSqlAgent(Runnable):
         try:
             result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
             if result.get('conversation_id') != _conversation_id:
-                _conversation_id = result.get('conversation_id')  # Update conversation_id if it was changed/updated by the chain
+                _conversation_id = result.get('conversation_id')
 
-            answer, usage_metadata = self._process_answer_sync(user_input, result, _conversation_id, _delegated_ctx)
-            result[self._chain.usage_metadata_key] = usage_metadata
-
-            return self._build_result(result, answer, _conversation_id, _log_ctx, _delegated_ctx)
+            return self._build_result(result, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
             return self._get_error_response(str(e), _conversation_id)
 
@@ -377,19 +327,15 @@ class TimbrSqlAgent(Runnable):
         _log_ctx, _delegated_ctx = self._setup_log_contexts(user_input, _conversation_id)
 
         try:
-            # Use async invoke if available, fallback to sync
             if hasattr(self._chain, 'ainvoke'):
                 result = await self._chain.ainvoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
             else:
                 result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
 
             if result.get('conversation_id') != _conversation_id:
-                _conversation_id = result.get('conversation_id')  # Update conversation_id if it was changed/updated by the chain
+                _conversation_id = result.get('conversation_id')
 
-            answer, usage_metadata = await self._process_answer_async(user_input, result, _conversation_id, _delegated_ctx)
-            result[self._chain.usage_metadata_key] = usage_metadata
-
-            return self._build_result(result, answer, _conversation_id, _log_ctx, _delegated_ctx)
+            return self._build_result(result, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
             return self._get_error_response(str(e), _conversation_id)
 

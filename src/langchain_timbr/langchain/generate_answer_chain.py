@@ -1,10 +1,10 @@
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
 
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
-from ..utils.general import to_boolean, validate_timbr_connection_params, sanitize_results
+from ..utils.general import to_boolean, to_integer, parse_list, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import answer_question
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -21,6 +21,23 @@ class GenerateAnswerChain(Chain):
         llm: Optional[LLM] = None,
         url: Optional[str] = None,
         token: Optional[str] = None,
+        ontology: Optional[str] = None,
+        schema: Optional[str] = 'dtimbr',
+        concept: Optional[str] = None,
+        concepts_list: Optional[Union[list, str]] = None,
+        views_list: Optional[Union[list, str]] = None,
+        include_logic_concepts: Optional[bool] = False,
+        include_tags: Optional[Union[list, str]] = None,
+        exclude_properties: Optional[Union[list, str]] = None,
+        should_validate_sql: Optional[bool] = config.should_validate_sql,
+        retries: Optional[int] = 3,
+        max_limit: Optional[int] = config.llm_default_limit,
+        retry_if_no_results: Optional[bool] = config.retry_if_no_results,
+        no_results_max_retries: Optional[int] = 2,
+        db_is_case_sensitive: Optional[bool] = False,
+        graph_depth: Optional[int] = 1,
+        enable_reasoning: Optional[bool] = None,
+        reasoning_steps: Optional[int] = None,
         note: Optional[str] = '',
         agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
@@ -38,14 +55,33 @@ class GenerateAnswerChain(Chain):
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response (optional, will use LlmWrapper with env variables if not provided)
         :param url: Timbr server url (optional, defaults to TIMBR_URL environment variable)
         :param token: Timbr password or token value (optional, defaults to TIMBR_TOKEN environment variable)
+        :param ontology: Name of the ontology/knowledge graph (optional). Required when rows are not provided so the chain can fall back to executing a query.
+        :param schema: Optional specific schema name to query (default is ‘dtimbr’).
+        :param concept: Optional specific concept name to query.
+        :param concepts_list: Optional specific concept options to query.
+        :param views_list: Optional specific view options to query.
+        :param include_logic_concepts: Optional boolean to include logic concepts in the query.
+        :param include_tags: Optional specific concepts & properties tag options to use in the query.
+        :param exclude_properties: Optional specific properties to exclude from the query.
+        :param should_validate_sql: Whether to validate the SQL before executing it.
+        :param retries: Number of retry attempts if the generated SQL is invalid.
+        :param max_limit: Maximum number of rows to return.
+        :param retry_if_no_results: Whether to retry if the query returns no rows.
+        :param no_results_max_retries: Number of retry attempts when query returns no rows.
+        :param db_is_case_sensitive: Whether the database is case sensitive (default is False).
+        :param graph_depth: Maximum number of relationship hops to traverse from the source concept (default is 1).
+        :param enable_reasoning: Whether to enable reasoning during SQL generation.
+        :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled.
         :param note: Optional additional note to extend our llm prompt
         :param agent: Optional Timbr agent name for options setup.
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
-        :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
-        :param enable_logging: Whether to enable logging (default is False).
+        :param conn_params: Extra Timbr connection parameters sent with every request (e.g., ‘x-api-impersonate-user’).
         :param enable_trace: Whether to enable trace (default is False).
+        :param enable_history: Whether to enable history (default is True).
+        :param save_results: Whether to save results in history when enable_history is True (default is False).
+        :param conversation_id: Optional conversation ID to associate with this chain's execution for
         
 
         ## Example
@@ -111,6 +147,43 @@ class GenerateAnswerChain(Chain):
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
 
+        self._ontology = ontology
+        self._schema = schema
+
+        from .execute_timbr_query_chain import ExecuteTimbrQueryChain
+        _exclude_properties = parse_list(exclude_properties) if exclude_properties is not None else ['entity_id', 'entity_type', 'entity_label']
+        self._execute_chain = ExecuteTimbrQueryChain(
+            llm=self._llm,
+            url=self._url,
+            token=self._token,
+            ontology=ontology,
+            schema=schema,
+            concept=concept,
+            concepts_list=parse_list(concepts_list),
+            views_list=parse_list(views_list),
+            include_logic_concepts=to_boolean(include_logic_concepts),
+            include_tags=parse_list(include_tags),
+            exclude_properties=_exclude_properties,
+            should_validate_sql=to_boolean(should_validate_sql),
+            retries=to_integer(retries),
+            max_limit=to_integer(max_limit),
+            retry_if_no_results=to_boolean(retry_if_no_results),
+            no_results_max_retries=to_integer(no_results_max_retries),
+            note=self._note,
+            db_is_case_sensitive=to_boolean(db_is_case_sensitive),
+            graph_depth=to_integer(graph_depth),
+            agent=agent,
+            verify_ssl=self._verify_ssl,
+            is_jwt=self._is_jwt,
+            jwt_tenant_id=self._jwt_tenant_id,
+            conn_params=conn_params,
+            enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
+            reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
+            debug=self._debug,
+            enable_trace=enable_trace,
+            conversation_id=conversation_id,
+        )
+
 
     @property
     def usage_metadata_key(self) -> str:
@@ -119,12 +192,17 @@ class GenerateAnswerChain(Chain):
 
     @property
     def input_keys(self) -> list:
-        return ["prompt", "rows", "conversation_id"]
+        return ["prompt", "conversation_id"]
 
 
     @property
     def output_keys(self) -> list:
-        base = ["answer", self.usage_metadata_key, "conversation_id"]
+        base = [
+            "answer", self.usage_metadata_key, "conversation_id",
+            "rows", "sql", "ontology", "schema", "concept", "error",
+            "reasoning_status", "identify_concept_reason", "generate_sql_reason",
+            "execute_timbr_usage_metadata",
+        ]
         return list(dict.fromkeys(self.input_keys + base))
 
     def _get_conn_params(self) -> dict:
@@ -166,9 +244,19 @@ class GenerateAnswerChain(Chain):
         )
 
         prompt = inputs["prompt"]
-        rows = inputs["rows"]
+        rows = inputs.get("rows")
         sql = inputs.get("sql")
         conversation_id = inputs.get("conversation_id") or self._conversation_id
+
+        execute_result = {}
+        if rows is None:
+            execute_result = self._execute_chain.invoke(
+                {"prompt": prompt, "conversation_id": conversation_id},
+                log_ctx=self._received_log_ctx,
+            )
+            rows = execute_result.get("rows")
+            sql = execute_result.get("sql") or sql
+            conversation_id = execute_result.get("conversation_id") or conversation_id
 
         _log_ctx = self._received_log_ctx
 
@@ -215,30 +303,34 @@ class GenerateAnswerChain(Chain):
                     _all_usage = self._merge_usage_metadata(_all_usage, v)
             _all_usage = self._merge_usage_metadata(_all_usage, usage_metadata)
 
+            _error = inputs.get("error") or execute_result.get("error")
             log_agent_history(
                 ctx=_log_ctx,
-                ontology=inputs.get("ontology"),
-                schema=inputs.get("schema"),
-                concept=inputs.get("concept") or (_log_ctx.concept if _log_ctx else None),
+                ontology=inputs.get("ontology") or execute_result.get("ontology"),
+                schema=inputs.get("schema") or execute_result.get("schema"),
+                concept=inputs.get("concept") or execute_result.get("concept") or (_log_ctx.concept if _log_ctx else None),
                 generated_sql=inputs.get("sql") or sql,
                 rows_returned=len(rows) if rows is not None else None,
-                status=determine_status(rows, inputs.get("error")),
+                status=determine_status(rows, _error),
                 failed_at_step=None,
-                error=inputs.get("error"),
-                reasoning_status=inputs.get("reasoning_status"),
+                error=_error,
+                reasoning_status=inputs.get("reasoning_status") or execute_result.get("reasoning_status"),
                 usage_metadata=_all_usage,
                 answer_generated=bool(answer),
                 llm_type=get_llm_type(self._llm),
                 llm_model=get_llm_model(self._llm),
-                identify_concept_reason=inputs.get("identify_concept_reason"),
-                generate_sql_reason=inputs.get("generate_sql_reason"),
+                identify_concept_reason=inputs.get("identify_concept_reason") or execute_result.get("identify_concept_reason"),
+                generate_sql_reason=inputs.get("generate_sql_reason") or execute_result.get("generate_sql_reason"),
                 answer=answer or None,
                 has_results=_has_results,
                 results=rows,
             )
 
         result = {
+            **execute_result,
             **inputs,
+            "rows": rows,
+            "sql": sql,
             "answer": answer,
             self.usage_metadata_key: res.get("usage_metadata", {}),
             "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
