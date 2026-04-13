@@ -81,7 +81,7 @@ class GenerateAnswerChain(Chain):
         :param enable_trace: Whether to enable trace (default is False).
         :param enable_history: Whether to enable history (default is True).
         :param save_results: Whether to save results in history when enable_history is True (default is False).
-        :param conversation_id: Optional conversation ID to associate with this chain's execution for
+        :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
         
 
         ## Example

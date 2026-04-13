@@ -69,7 +69,7 @@ class ExecuteTimbrQueryChain(Chain):
         :param should_validate_sql: Whether to validate the SQL before executing it
         :param retries: Number of retry attempts if the generated SQL is invalid
         :param max_limit: Maximum number of rows to return
-        :retry_if_no_results: Whether to infer the result value from the SQL query. If the query won't return any rows, it will try to re-generate the SQL query then re-run it.
+        :param retry_if_no_results: Whether to infer the result value from the SQL query. If the query won't return any rows, it will try to re-generate the SQL query then re-run it.
         :param no_results_max_retries: Number of retry attempts to infer the result value from the SQL query
         :param note: Optional additional note to extend our llm prompt
         :param db_is_case_sensitive: Whether the database is case sensitive (default is False).
@@ -81,6 +81,8 @@ class ExecuteTimbrQueryChain(Chain):
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
+        :param enable_trace: Whether to enable trace logging for this chain's operations (default is False).
+        :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
         :param kwargs: Additional arguments to pass to the base
         :return: A list of rows from the Timbr query
 
