@@ -216,7 +216,7 @@ def log_chain_trace(
     meta = usage_metadata or {}
 
     payload = _clean({
-        "trace_id":           new_trace_id(),
+        "trace_id":           ctx.conversation_id or ctx.query_id,
         "query_id":           ctx.query_id,
         "agent_name":         ctx.agent_name,
         "chain_type":         chain_type,
