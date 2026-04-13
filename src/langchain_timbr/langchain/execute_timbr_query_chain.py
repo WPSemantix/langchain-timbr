@@ -5,7 +5,7 @@ from langchain_core.language_models.llms import LLM
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
-from ..utils.timbr_utils import run_query, validate_sql
+from ..utils.timbr_utils import run_query, validate_sql, build_server_url
 from ..utils.timbr_llm_utils import generate_sql
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -50,8 +50,8 @@ class ExecuteTimbrQueryChain(Chain):
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
-        enable_logging: Optional[bool] = False,
-        chain_trace: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -163,8 +163,7 @@ class ExecuteTimbrQueryChain(Chain):
             self._reasoning_steps = to_integer(agent_options.get("reasoning_steps")) if "reasoning_steps" in agent_options else config.reasoning_steps
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
-            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
-            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
+            self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -184,8 +183,10 @@ class ExecuteTimbrQueryChain(Chain):
             self._note = note
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
-            self._enable_logging = to_boolean(enable_logging)
-            self._chain_trace = to_boolean(chain_trace)
+            self._enable_trace = to_boolean(enable_trace)
+
+        self._enable_logging = self._enable_trace
+        self._conversation_id = conversation_id
 
 
     @property
@@ -195,7 +196,7 @@ class ExecuteTimbrQueryChain(Chain):
 
     @property
     def input_keys(self) -> list:
-        return ["prompt"]
+        return ["prompt", "conversation_id"]
 
 
     @property
@@ -210,8 +211,8 @@ class ExecuteTimbrQueryChain(Chain):
             "reasoning_status",
             "identify_concept_reason",
             "generate_sql_reason",
-
             self.usage_metadata_key,
+            "conversation_id",
         ]
         return list(dict.fromkeys(self.input_keys + base))
 
@@ -290,11 +291,9 @@ class ExecuteTimbrQueryChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
-        from datetime import datetime as _dt
         from ..utils.chain_logger import (
             AgentLogContext, new_query_id,
-            log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
-            determine_status, get_llm_type, get_llm_model,
+            log_agent_start, log_agent_step, log_chain_trace, _now
         )
 
         # Variables declared before try so exception handler can reference them
@@ -303,6 +302,7 @@ class ExecuteTimbrQueryChain(Chain):
         schema_name = inputs.get("schema", self._schema)
         ontology_name = inputs.get("ontology", self._ontology)
         concept_name = inputs.get("concept", self._concept)
+        conversation_id = inputs.get("conversation_id") or self._conversation_id
         usage_metadata = {}
         rows = []
         reasoning_status = None
@@ -312,26 +312,27 @@ class ExecuteTimbrQueryChain(Chain):
 
         # Resolve logging context: received from parent (delegated) or create standalone
         _log_ctx = self._received_log_ctx
-        _owns_log = False
 
         if _log_ctx is None and self._enable_logging:
+            _query_id = new_query_id()
             _log_ctx = AgentLogContext(
-                query_id=new_query_id(),
+                query_id=_query_id,
                 agent_name=self._agent or "",
-                url=self._url,
+                url=build_server_url(config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="ExecuteTimbrQueryChain",
-                start_time=_dt.now(),
+                start_time=_now(),
                 prompt=prompt or "",
-                chain_trace_enabled=self._chain_trace,
+                enable_trace=self._enable_trace,
                 is_delegated=False,
+                conversation_id=conversation_id or _query_id,
             )
             log_agent_start(_log_ctx, ontology_name, schema_name)
-            _owns_log = True
         elif _log_ctx is not None:
             _log_ctx.retry_count = 0
             _log_ctx.no_results_retry_count = 0
 
+        _chain_start = _now()
         try:
             is_sql_valid = True
             error = None
@@ -359,9 +360,9 @@ class ExecuteTimbrQueryChain(Chain):
                             _log_ctx.current_step = "generating_sql"
                         log_agent_step(_log_ctx)
 
-                    _gen_start = _dt.now()
+                    _gen_start = _now()
                     generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params)
-                    _generate_sql_chain_duration_ms += int((_dt.now() - _gen_start).total_seconds() * 1000)
+                    _generate_sql_chain_duration_ms += int((_now() - _gen_start).total_seconds() * 1000)
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
                     ontology_name = generate_res.get("ontology", ontology_name)
@@ -383,21 +384,6 @@ class ExecuteTimbrQueryChain(Chain):
                             _log_ctx.concept = concept_name
                         _log_ctx.current_step = "generating_sql"
                         log_agent_step(_log_ctx)
-                        log_chain_trace(
-                            ctx=_log_ctx,
-                            chain_type="GenerateTimbrSqlChain",
-                            start_time=_gen_start,
-                            status="failed" if (not is_sql_valid and error) else "completed",
-                            ontology=ontology_name,
-                            concept=concept_name,
-                            schema=schema_name,
-                            generated_sql=sql,
-                            is_sql_valid=is_sql_valid,
-                            error=error if not is_sql_valid else None,
-                            reasoning_status=reasoning_status,
-                            usage_metadata=_gen_meta,
-                            retry_attempt=iteration,
-                        )
 
                 is_sql_not_tried = not any(sql.lower().strip() == gen.lower().strip() for gen in generated)
 
@@ -405,26 +391,12 @@ class ExecuteTimbrQueryChain(Chain):
                     _log_ctx.current_step = "executing_query"
                     log_agent_step(_log_ctx)
 
-                _exec_start = _dt.now()
                 rows = run_query(
                     sql,
                     conn_params,
                     llm_prompt=prompt,
                     use_query_limit=True,
                 ) if is_sql_valid and is_sql_not_tried else []
-
-                if _log_ctx:
-                    log_chain_trace(
-                        ctx=_log_ctx,
-                        chain_type="ExecuteQuery",
-                        start_time=_exec_start,
-                        status="completed",
-                        ontology=ontology_name,
-                        concept=concept_name,
-                        schema=schema_name,
-                        rows_returned=len(rows) if rows else 0,
-                        retry_attempt=iteration,
-                    )
 
                 if iteration < self._no_results_max_retries:
                     # If no rows are returned and we should infer the result, we will try to re-generate the SQL query
@@ -449,27 +421,6 @@ class ExecuteTimbrQueryChain(Chain):
 
             final_error = error if not is_sql_valid else None
 
-            if _owns_log and _log_ctx:
-                log_agent_history(
-                    ctx=_log_ctx,
-                    ontology=ontology_name,
-                    schema=schema_name,
-                    concept=concept_name,
-                    generated_sql=sql,
-                    rows_returned=len(rows) if rows else 0,
-                    status=determine_status(rows, final_error),
-                    failed_at_step=None,
-                    error=final_error,
-                    reasoning_status=reasoning_status,
-                    usage_metadata=usage_metadata,
-                    answer_generated=False,
-                    llm_type=get_llm_type(self._llm),
-                    llm_model=get_llm_model(self._llm),
-                    identify_concept_reason=identify_concept_reason,
-                    generate_sql_reason=generate_sql_reason,
-                    generate_sql_chain_duration=_generate_sql_chain_duration_ms or None,
-                )
-
             result = {
                 **inputs,
                 "rows": rows,
@@ -482,30 +433,30 @@ class ExecuteTimbrQueryChain(Chain):
                 "identify_concept_reason": identify_concept_reason,
                 "generate_sql_reason": generate_sql_reason,
                 self.usage_metadata_key: usage_metadata,
+                "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
             }
+
+            if _log_ctx:
+                log_chain_trace(
+                    ctx=_log_ctx,
+                    chain_type=_log_ctx.chain_type,
+                    start_time=_chain_start,
+                    status="failed" if final_error else "completed",
+                    question=prompt,
+                    ontology=ontology_name,
+                    concept=concept_name,
+                    schema=schema_name,
+                    generated_sql=sql,
+                    chain_output={"row_count": len(rows) if rows else 0},
+                    rows_returned=len(rows) if rows else 0,
+                    error=final_error,
+                    reasoning_status=reasoning_status,
+                    usage_metadata=usage_metadata,
+                )
+                
             return sanitize_results(self.output_keys, result)
 
         except Exception as e:
-            if _owns_log and _log_ctx:
-                log_agent_history(
-                    ctx=_log_ctx,
-                    ontology=ontology_name,
-                    schema=schema_name,
-                    concept=concept_name,
-                    generated_sql=sql,
-                    rows_returned=None,
-                    status="timeout" if "timed out" in str(e).lower() else "failed",
-                    failed_at_step=_log_ctx.current_step,
-                    error=str(e),
-                    reasoning_status=reasoning_status,
-                    usage_metadata=usage_metadata,
-                    answer_generated=False,
-                    llm_type=get_llm_type(self._llm),
-                    llm_model=get_llm_model(self._llm),
-                    identify_concept_reason=identify_concept_reason,
-                    generate_sql_reason=generate_sql_reason,
-                    generate_sql_chain_duration=_generate_sql_chain_duration_ms or None,
-                )
             raise RuntimeError(f"Error executing the chain: {str(e)}")
 
     def _summarize_usage_metadata(self, current_metadata: dict, new_metadata: dict) -> dict:

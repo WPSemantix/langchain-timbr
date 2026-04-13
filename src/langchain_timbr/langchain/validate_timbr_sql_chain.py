@@ -2,7 +2,7 @@ from typing import Optional, Union, Dict, Any
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
 
-from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
+from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
 from ..utils.general import parse_list, to_integer, to_boolean, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import generate_sql
@@ -48,8 +48,7 @@ class ValidateTimbrSqlChain(Chain):
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
-        enable_logging: Optional[bool] = False,
-        chain_trace: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
         **kwargs,
     ):
         """
@@ -155,8 +154,7 @@ class ValidateTimbrSqlChain(Chain):
             self._reasoning_steps = to_integer(agent_options.get("reasoning_steps")) if "reasoning_steps" in agent_options else config.reasoning_steps
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
-            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
-            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
+            self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -173,8 +171,9 @@ class ValidateTimbrSqlChain(Chain):
             self._note = note
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
-            self._enable_logging = to_boolean(enable_logging)
-            self._chain_trace = to_boolean(chain_trace)
+            self._enable_trace = to_boolean(enable_trace)
+
+        self._enable_logging = self._enable_trace
 
 
     @property
@@ -218,11 +217,9 @@ class ValidateTimbrSqlChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
-        from datetime import datetime as _dt
         from ..utils.chain_logger import (
-            AgentLogContext, new_query_id,
-            log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
-            get_llm_type, get_llm_model,
+            AgentLogContext, new_query_id, _now,
+            log_agent_start, log_agent_step, log_chain_trace,
         )
 
         sql = inputs["sql"]
@@ -235,42 +232,27 @@ class ValidateTimbrSqlChain(Chain):
         usage_metadata = {}
 
         _log_ctx = self._received_log_ctx
-        _owns_log = False
 
         if _log_ctx is None and self._enable_logging:
             _log_ctx = AgentLogContext(
                 query_id=new_query_id(),
                 agent_name=self._agent or "",
-                url=self._url,
+                url=build_server_url(config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="ValidateTimbrSqlChain",
-                start_time=_dt.now(),
+                start_time=_now(),
                 prompt=prompt,
-                chain_trace_enabled=self._chain_trace,
+                enable_trace=self._enable_trace,
                 is_delegated=False,
             )
             log_agent_start(_log_ctx, self._ontology, self._schema)
-            _owns_log = True
 
         if _log_ctx:
             _log_ctx.current_step = "validating_sql"
             log_agent_step(_log_ctx)
 
-        _val_start = _dt.now()
+        _chain_start = _now()
         is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
-
-        if _log_ctx:
-            log_chain_trace(
-                ctx=_log_ctx,
-                chain_type="ValidateTimbrSqlChain",
-                start_time=_val_start,
-                status="completed" if is_sql_valid else "failed",
-                ontology=self._ontology,
-                schema=schema,
-                generated_sql=sql,
-                is_sql_valid=is_sql_valid,
-                error=error if not is_sql_valid else None,
-            )
 
         if not is_sql_valid:
             if _log_ctx:
@@ -278,7 +260,6 @@ class ValidateTimbrSqlChain(Chain):
                 log_agent_step(_log_ctx)
 
             prompt_extension = self._note + '\n' if self._note else ""
-            _gen_start = _dt.now()
             generate_res = generate_sql(
                 question=prompt,
                 llm=self._llm,
@@ -314,40 +295,6 @@ class ValidateTimbrSqlChain(Chain):
             if _log_ctx:
                 if concept:
                     _log_ctx.concept = concept
-                log_chain_trace(
-                    ctx=_log_ctx,
-                    chain_type="GenerateTimbrSqlChain",
-                    start_time=_gen_start,
-                    status="failed" if (not is_sql_valid and error) else "completed",
-                    ontology=self._ontology,
-                    concept=concept,
-                    schema=schema,
-                    generated_sql=sql,
-                    is_sql_valid=is_sql_valid,
-                    error=error if not is_sql_valid else None,
-                    reasoning_status=reasoning_status,
-                    usage_metadata=_gen_meta,
-                )
-
-        if _owns_log and _log_ctx:
-            log_agent_history(
-                ctx=_log_ctx,
-                ontology=self._ontology,
-                schema=schema,
-                concept=concept,
-                generated_sql=sql,
-                rows_returned=None,
-                status="failed" if (not is_sql_valid and error) else "completed",
-                failed_at_step=_log_ctx.current_step if (not is_sql_valid and error) else None,
-                error=error if not is_sql_valid else None,
-                reasoning_status=reasoning_status,
-                usage_metadata=usage_metadata,
-                answer_generated=False,
-                llm_type=get_llm_type(self._llm),
-                llm_model=get_llm_model(self._llm),
-                identify_concept_reason=identify_concept_reason,
-                generate_sql_reason=generate_sql_reason,
-            )
 
         result = {
             **inputs,
@@ -362,4 +309,23 @@ class ValidateTimbrSqlChain(Chain):
             "generate_sql_reason": generate_sql_reason,
             self.usage_metadata_key: usage_metadata,
         }
+        
+        if _log_ctx:
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type=_log_ctx.chain_type,
+                start_time=_chain_start,
+                status="failed" if (not is_sql_valid and error) else "completed",
+                question=prompt,
+                ontology=self._ontology,
+                concept=concept,
+                schema=schema,
+                generated_sql=sql,
+                chain_output={"is_sql_valid": is_sql_valid, "error": error},
+                is_sql_valid=is_sql_valid,
+                error=error if not is_sql_valid else None,
+                reasoning_status=reasoning_status,
+                usage_metadata=usage_metadata,
+            )
+
         return sanitize_results(self.output_keys, result)

@@ -14,6 +14,15 @@ _cache = {}
 _ontology_version = None
 _last_version_check = 0
 
+
+def build_server_url(thrift_host: str, thrift_port: int) -> str:
+    """Build the timbr server URL from thrift host and port for API logging calls."""
+    url = f"{thrift_host}:{thrift_port}"
+    if not url.startswith("http"):
+        url = "http://" + url
+    return url
+
+
 def clear_cache():
     """Clear the cache and reset the ontology version."""
     global _cache, _ontology_version

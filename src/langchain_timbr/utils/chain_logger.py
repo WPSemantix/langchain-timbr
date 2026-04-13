@@ -25,13 +25,14 @@ class AgentLogContext:
     chain_type: str
     start_time: datetime
     prompt: str
-    chain_trace_enabled: bool
+    enable_trace: bool
     current_step: Optional[str] = None
     retry_count: int = 0
     no_results_retry_count: int = 0
     concept: Optional[str] = None
     is_delegated: bool = False
     trace_sequence: int = 0
+    conversation_id: Optional[str] = None
 
 
 def new_query_id() -> str:
@@ -84,12 +85,13 @@ def log_agent_start(
         "chain_type":             ctx.chain_type,
         "ontology":               ontology or "",
         "schema":                 schema or "",
-        "prompt":                 ctx.prompt,
+        "question":               ctx.prompt,
         "start_time":             _fmt(ctx.start_time),
         "current_step":           ctx.current_step or "",
         "retry_count":            ctx.retry_count,
         "no_results_retry_count": ctx.no_results_retry_count,
         "concept":                ctx.concept,
+        "conversation_id":        ctx.conversation_id,
         "additional_options":     additional_options,
     }))
 
@@ -127,19 +129,21 @@ def log_agent_history(
     generate_sql_chain_duration: Optional[int] = None,
     answer_chain_duration: Optional[int] = None,
     reasoning_duration: Optional[int] = None,
+    answer: Optional[str] = None,
+    has_results: Optional[bool] = None,
+    results: Optional[Any] = None,
     additional_options: Optional[str] = "{}",
 ) -> None:
     """POST to sys_agents_history — triggers server-side deletion of the running row."""
     end_time = _now()
     duration_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
 
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean({
+    post_params = {
         "query_id":                        ctx.query_id,
         "agent_name":                      ctx.agent_name,
-        "chain_type":                      ctx.chain_type,
         "ontology":                        ontology or "",
         "schema":                          schema or "",
-        "prompt":                          ctx.prompt,
+        "question":                        ctx.prompt,
         "start_time":                      _fmt(ctx.start_time),
         "end_time":                        _fmt(end_time),
         "duration":                        duration_ms,
@@ -154,20 +158,32 @@ def log_agent_history(
         "rows_returned":                   rows_returned,
         "error":                           error,
         "reasoning_status":                reasoning_status,
-        "total_tokens":                    _sum_token_field(usage_metadata, "total_tokens"),
+        "total_tokens":                    _sum_token_field(usage_metadata, "total_tokens", "approximate"),
         "input_tokens":                    _sum_token_field(usage_metadata, "input_tokens"),
         "output_tokens":                   _sum_token_field(usage_metadata, "output_tokens"),
         "retry_count":                     ctx.retry_count,
         "no_results_retry_count":          ctx.no_results_retry_count,
         "answer_generated":                answer_generated,
-        "chain_trace_enabled":             ctx.chain_trace_enabled,
+        "chain_trace_enabled":             ctx.enable_trace,
+        "has_results":                     has_results,
+        # "is_follow_up":                  None,   # future
+        # "summarized_question":           None,   # future
+        # "summarized_answer":             None,   # future
+        # "parent_query_id":               None,   # future
         "langchain_timbr_version":         _LANGCHAIN_TIMBR_VERSION,
         "llm_type":                        llm_type or "",
         "llm_model":                       llm_model or "",
         "identify_concept_reason":         identify_concept_reason,
         "generate_sql_reason":             generate_sql_reason,
+        "answer":                          answer,
+        "conversation_id":                 ctx.conversation_id,
         "additional_options":              additional_options,
-    }))
+    }
+
+    if has_results and results is not None:
+        post_params["results"] = results
+
+    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean(post_params))
 
 
 def log_chain_trace(
@@ -178,6 +194,8 @@ def log_chain_trace(
     ontology: Optional[str] = None,
     concept: Optional[str] = None,
     schema: Optional[str] = None,
+    question: Optional[str] = None,
+    chain_output: Optional[dict] = None,
     generated_sql: Optional[str] = None,
     is_sql_valid: Optional[bool] = None,
     rows_returned: Optional[int] = None,
@@ -188,7 +206,7 @@ def log_chain_trace(
     additional_options: Optional[str] = "{}",
 ) -> None:
     """POST a single chain step row to sys_agents_chain_trace_log. No-op when trace is disabled."""
-    if not ctx.chain_trace_enabled:
+    if not ctx.enable_trace:
         return
 
     ctx.trace_sequence += 1
@@ -210,6 +228,8 @@ def log_chain_trace(
         "status":             status,
         "concept":            concept,
         "schema":             schema,
+        "question":           question,
+        "chain_output":       chain_output,
         "generated_sql":      generated_sql,
         "is_sql_valid":       is_sql_valid,
         "rows_returned":      rows_returned,
@@ -217,7 +237,7 @@ def log_chain_trace(
         "reasoning_status":   reasoning_status,
         "input_tokens":       _sum_token_field(meta, "input_tokens"),
         "output_tokens":      _sum_token_field(meta, "output_tokens"),
-        "total_tokens":       _sum_token_field(meta, "total_tokens"),
+        "total_tokens":       _sum_token_field(meta, "total_tokens", "approximate"),
         "additional_options": additional_options,
     }))
 
@@ -254,17 +274,21 @@ def get_llm_model(llm) -> Optional[str]:
             val = getattr(llm, attr, None)
             if val:
                 return str(val)
+            elif hasattr(llm, "client") and llm.client and hasattr(llm.client, attr):
+                val = getattr(llm.client, attr, None)
+                if val:
+                    return str(val)
         except Exception:
             continue
     return None
 
 
-def _sum_token_field(usage_metadata: dict, field: str) -> int:
+def _sum_token_field(usage_metadata: dict, field: str, fallback_field: Optional[str] = None) -> int:
     """Sum a token count field across all nested usage metadata dicts."""
     total = 0
     for value in usage_metadata.values():
         if isinstance(value, dict):
-            val = value.get(field, 0)
+            val = value.get(field, value.get(fallback_field, 0) if fallback_field else 0)
             if isinstance(val, (int, float)):
                 total += int(val)
     return total

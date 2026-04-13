@@ -318,3 +318,223 @@ class TestTokenCountFunctionality:
             
             assert token_count >= 0, f"Token count should work for {llm_type}"
             assert isinstance(token_count, int), f"Token count should be integer for {llm_type}"
+
+
+class TestConversationIdAndAnswer:
+    """Unit tests for conversation_id and answer fields in chain logging."""
+
+    def test_conversation_id_stored_on_chain(self, mock_llm):
+        """Chain constructors accept and store conversation_id."""
+        from langchain_timbr import GenerateTimbrSqlChain, ExecuteTimbrQueryChain, GenerateAnswerChain
+        from langchain_timbr.langchain.identify_concept_chain import IdentifyTimbrConceptChain
+
+        base = dict(llm=mock_llm, url="http://test", token="test", ontology="test")
+
+        for ChainCls in (GenerateTimbrSqlChain, ExecuteTimbrQueryChain, IdentifyTimbrConceptChain):
+            chain = ChainCls(**base, conversation_id="conv-123")
+            assert chain._conversation_id == "conv-123", f"{ChainCls.__name__} should store conversation_id"
+            chain_no_conv = ChainCls(**base)
+            assert chain_no_conv._conversation_id is None, f"{ChainCls.__name__} should default conversation_id to None"
+
+        answer_chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test", conversation_id="conv-456")
+        assert answer_chain._conversation_id == "conv-456"
+        answer_chain_none = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test")
+        assert answer_chain_none._conversation_id is None
+
+    def test_agentlogcontext_conversation_id_field(self):
+        """AgentLogContext accepts and stores conversation_id; defaults to None."""
+        from langchain_timbr.utils.chain_logger import AgentLogContext
+        from datetime import datetime, timezone
+
+        ctx = AgentLogContext(
+            query_id="qid-1",
+            agent_name="agent",
+            url="http://test",
+            token="tok",
+            chain_type="GenerateTimbrSqlChain",
+            start_time=datetime.now(timezone.utc),
+            prompt="test",
+            enable_trace=False,
+        )
+        assert ctx.conversation_id is None
+
+        ctx_with_conv = AgentLogContext(
+            query_id="qid-2",
+            agent_name="agent",
+            url="http://test",
+            token="tok",
+            chain_type="GenerateTimbrSqlChain",
+            start_time=datetime.now(timezone.utc),
+            prompt="test",
+            enable_trace=False,
+            conversation_id="cid-99",
+        )
+        assert ctx_with_conv.conversation_id == "cid-99"
+
+    def test_conversation_id_propagates_to_log_context(self, mock_llm):
+        """conversation_id is passed to AgentLogContext when chain creates its own log context."""
+        from unittest.mock import patch, call
+        from langchain_timbr import GenerateTimbrSqlChain
+
+        chain = GenerateTimbrSqlChain(
+            llm=mock_llm,
+            url="http://test",
+            token="test",
+            ontology="test",
+            conversation_id="conv-abc",
+        )
+
+        captured_ctx = {}
+
+        def fake_log_start(ctx, ontology=None, schema=None, additional_options="{}"):
+            captured_ctx['ctx'] = ctx
+
+        with patch('langchain_timbr.utils.chain_logger.log_agent_start', side_effect=fake_log_start), \
+             patch('langchain_timbr.utils.chain_logger.log_agent_step'), \
+             patch('langchain_timbr.utils.chain_logger.log_chain_trace'), \
+             patch('langchain_timbr.langchain.generate_timbr_sql_chain.generate_sql') as mock_gen:
+            mock_gen.return_value = {'sql': 'SELECT 1', 'is_sql_valid': True, 'usage_metadata': {}}
+            chain.invoke({"prompt": "test"})
+
+        assert 'ctx' in captured_ctx, "log_agent_start should have been called"
+        assert captured_ctx['ctx'].conversation_id == "conv-abc"
+
+    def test_conversation_id_defaults_to_query_id(self, mock_llm):
+        """When no conversation_id provided, AgentLogContext.conversation_id equals query_id."""
+        from unittest.mock import patch
+        from langchain_timbr import GenerateTimbrSqlChain
+
+        chain = GenerateTimbrSqlChain(
+            llm=mock_llm,
+            url="http://test",
+            token="test",
+            ontology="test",
+        )
+
+        captured_ctx = {}
+
+        def fake_log_start(ctx, ontology=None, schema=None, additional_options="{}"):
+            captured_ctx['ctx'] = ctx
+
+        with patch('langchain_timbr.utils.chain_logger.log_agent_start', side_effect=fake_log_start), \
+             patch('langchain_timbr.utils.chain_logger.log_agent_step'), \
+             patch('langchain_timbr.utils.chain_logger.log_chain_trace'), \
+             patch('langchain_timbr.langchain.generate_timbr_sql_chain.generate_sql') as mock_gen:
+            mock_gen.return_value = {'sql': 'SELECT 1', 'is_sql_valid': True, 'usage_metadata': {}}
+            chain.invoke({"prompt": "test"})
+
+        ctx = captured_ctx['ctx']
+        assert ctx.conversation_id == ctx.query_id, "conversation_id should default to query_id"
+
+    def test_answer_passed_to_log_agent_history(self, mock_llm):
+        """GenerateAnswerChain passes its answer to log_agent_history."""
+        from unittest.mock import patch, MagicMock
+        from langchain_timbr import GenerateAnswerChain
+
+        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test", enable_logging=True)
+
+        captured_kwargs = {}
+
+        def fake_log_history(*args, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        with patch('langchain_timbr.utils.chain_logger.log_agent_start'), \
+             patch('langchain_timbr.utils.chain_logger.log_agent_step'), \
+             patch('langchain_timbr.utils.chain_logger.log_chain_trace'), \
+             patch('langchain_timbr.utils.chain_logger.log_agent_history', side_effect=fake_log_history), \
+             patch('langchain_timbr.langchain.generate_answer_chain.answer_question') as mock_ans:
+            mock_ans.return_value = {'answer': 'There are 42 customers.', 'usage_metadata': {}}
+            chain.invoke({"prompt": "How many customers?", "rows": [{"count": 42}]})
+
+        assert 'answer' in captured_kwargs, "answer should be passed to log_agent_history"
+        assert captured_kwargs['answer'] == 'There are 42 customers.'
+
+    def test_log_agent_history_payload_has_answer_and_conversation_id(self):
+        """log_agent_history sends answer and conversation_id in the POST payload."""
+        from unittest.mock import patch
+        from datetime import datetime, timezone
+        from langchain_timbr.utils.chain_logger import AgentLogContext, log_agent_history
+
+        ctx = AgentLogContext(
+            query_id="qid-test",
+            agent_name="agent",
+            url="http://test",
+            token="tok",
+            chain_type="TestChain",
+            start_time=datetime.now(timezone.utc),
+            prompt="test",
+            enable_trace=False,
+            conversation_id="cid-test",
+        )
+
+        captured_payload = {}
+
+        def fake_safe_post(url, token, endpoint_path, payload):
+            captured_payload.update(payload)
+
+        with patch('langchain_timbr.utils.chain_logger._safe_post', side_effect=fake_safe_post):
+            log_agent_history(
+                ctx=ctx,
+                ontology="ont",
+                schema="sch",
+                concept="concept",
+                generated_sql=None,
+                rows_returned=0,
+                status="completed",
+                failed_at_step=None,
+                error=None,
+                reasoning_status=None,
+                usage_metadata={},
+                answer_generated=True,
+                llm_type="openai",
+                llm_model="gpt-4o",
+                answer="Test answer text.",
+            )
+
+        assert captured_payload.get('answer') == 'Test answer text.'
+        assert captured_payload.get('conversation_id') == 'cid-test'
+        assert 'parent_query_id' not in captured_payload
+        assert 'is_follow_up' not in captured_payload
+
+    def test_log_agent_history_none_answer_stripped(self):
+        """log_agent_history omits 'answer' key when answer is None (_clean strips it)."""
+        from unittest.mock import patch
+        from datetime import datetime, timezone
+        from langchain_timbr.utils.chain_logger import AgentLogContext, log_agent_history
+
+        ctx = AgentLogContext(
+            query_id="qid-nil",
+            agent_name="agent",
+            url="http://test",
+            token="tok",
+            chain_type="TestChain",
+            start_time=datetime.now(timezone.utc),
+            prompt="test",
+            enable_trace=False,
+        )
+
+        captured_payload = {}
+
+        def fake_safe_post(url, token, endpoint_path, payload):
+            captured_payload.update(payload)
+
+        with patch('langchain_timbr.utils.chain_logger._safe_post', side_effect=fake_safe_post):
+            log_agent_history(
+                ctx=ctx,
+                ontology="ont",
+                schema="sch",
+                concept="concept",
+                generated_sql=None,
+                rows_returned=0,
+                status="completed",
+                failed_at_step=None,
+                error=None,
+                reasoning_status=None,
+                usage_metadata={},
+                answer_generated=False,
+                llm_type="openai",
+                llm_model="gpt-4o",
+                answer=None,
+            )
+
+        assert 'answer' not in captured_payload, "None answer should be stripped by _clean()"

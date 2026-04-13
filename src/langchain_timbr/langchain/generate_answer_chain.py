@@ -2,7 +2,7 @@ from typing import Optional, Dict, Any
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
 
-from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
+from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
 from ..utils.general import to_boolean, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import answer_question
@@ -28,8 +28,10 @@ class GenerateAnswerChain(Chain):
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
         debug: Optional[bool] = False,
-        enable_logging: Optional[bool] = False,
-        chain_trace: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        enable_history: Optional[bool] = config.enable_history,
+        save_results: Optional[bool] = config.history_save_results,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -42,7 +44,10 @@ class GenerateAnswerChain(Chain):
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param enable_logging: Whether to enable logging (default is False).
+        :param enable_trace: Whether to enable trace (default is False).
         
+
         ## Example
         ```
         # Using explicit parameters
@@ -93,13 +98,18 @@ class GenerateAnswerChain(Chain):
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
-            self._enable_logging = to_boolean(agent_options.get("enable_logging")) if "enable_logging" in agent_options else to_boolean(enable_logging)
-            self._chain_trace = to_boolean(agent_options.get("chain_trace_enabled")) if "chain_trace_enabled" in agent_options else to_boolean(chain_trace)
+            self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
+            self._enable_history = to_boolean(agent_options.get("enable_history")) if "enable_history" in agent_options else to_boolean(enable_history)
+            self._save_results = to_boolean(agent_options.get("history_save_results")) if "history_save_results" in agent_options else to_boolean(save_results)
 
         else:
             self._note = note
-            self._enable_logging = to_boolean(enable_logging)
-            self._chain_trace = to_boolean(chain_trace)
+            self._enable_trace = to_boolean(enable_trace)
+            self._enable_history = to_boolean(enable_history)
+            self._save_results = to_boolean(save_results)
+
+        self._enable_logging = self._enable_trace or self._enable_history
+        self._conversation_id = conversation_id
 
 
     @property
@@ -109,12 +119,12 @@ class GenerateAnswerChain(Chain):
 
     @property
     def input_keys(self) -> list:
-        return ["prompt", "rows"]
+        return ["prompt", "rows", "conversation_id"]
 
 
     @property
     def output_keys(self) -> list:
-        base = ["answer", self.usage_metadata_key]
+        base = ["answer", self.usage_metadata_key, "conversation_id"]
         return list(dict.fromkeys(self.input_keys + base))
 
     def _get_conn_params(self) -> dict:
@@ -129,41 +139,60 @@ class GenerateAnswerChain(Chain):
         }
     
 
+    def _merge_usage_metadata(self, current: dict, new: dict) -> dict:
+        keys_to_sum = ['approximate', 'input_tokens', 'output_tokens', 'total_tokens']
+        for outer_key, outer_value in new.items():
+            if isinstance(outer_value, dict):
+                if outer_key not in current:
+                    current[outer_key] = {}
+                for inner_key, inner_value in outer_value.items():
+                    if inner_key in keys_to_sum:
+                        current_val = current[outer_key].get(inner_key, 0)
+                        if isinstance(inner_value, (int, float)) and isinstance(current_val, (int, float)):
+                            current[outer_key][inner_key] = current_val + inner_value
+                        else:
+                            current[outer_key][inner_key] = inner_value
+                    else:
+                        current[outer_key][inner_key] = inner_value
+            else:
+                current[outer_key] = outer_value
+        return current
+
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, str]:
-        from datetime import datetime as _dt
         from ..utils.chain_logger import (
-            AgentLogContext, new_query_id,
+            AgentLogContext, new_query_id, _now,
             log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
-            get_llm_type, get_llm_model,
+            determine_status, get_llm_type, get_llm_model,
         )
 
         prompt = inputs["prompt"]
         rows = inputs["rows"]
         sql = inputs.get("sql")
+        conversation_id = inputs.get("conversation_id") or self._conversation_id
 
         _log_ctx = self._received_log_ctx
-        _owns_log = False
 
         if _log_ctx is None and self._enable_logging:
+            _query_id = new_query_id()
             _log_ctx = AgentLogContext(
-                query_id=new_query_id(),
+                query_id=_query_id,
                 agent_name=self._agent or "",
-                url=self._url,
+                url=build_server_url(config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="GenerateAnswerChain",
-                start_time=_dt.now(),
+                start_time=_now(),
                 prompt=prompt,
-                chain_trace_enabled=self._chain_trace,
+                enable_trace=self._enable_trace,
                 is_delegated=False,
+                conversation_id=conversation_id or _query_id,
             )
             log_agent_start(_log_ctx, None, None)
-            _owns_log = True
 
         if _log_ctx:
             _log_ctx.current_step = "generating_answer"
             log_agent_step(_log_ctx)
 
-        _step_start = _dt.now()
+        _chain_start = _now()
         res = answer_question(
             question=prompt,
             llm=self._llm,
@@ -177,36 +206,53 @@ class GenerateAnswerChain(Chain):
         answer = res.get("answer", "")
         usage_metadata = res.get("usage_metadata", {})
 
-        if _log_ctx:
-            log_chain_trace(
-                ctx=_log_ctx,
-                chain_type="GenerateAnswerChain",
-                start_time=_step_start,
-                status="completed",
-                usage_metadata=usage_metadata,
-            )
+        if self._enable_history and _log_ctx:
+            _has_results = bool(rows and any(any(v is not None for v in r.values()) for r in rows))
 
-        if _owns_log and _log_ctx:
+            _all_usage = {}
+            for k, v in inputs.items():
+                if k.endswith("_usage_metadata") and isinstance(v, dict):
+                    _all_usage = self._merge_usage_metadata(_all_usage, v)
+            _all_usage = self._merge_usage_metadata(_all_usage, usage_metadata)
+
             log_agent_history(
                 ctx=_log_ctx,
-                ontology=None,
-                schema=None,
-                concept=None,
-                generated_sql=None,
-                rows_returned=None,
-                status="completed",
+                ontology=inputs.get("ontology"),
+                schema=inputs.get("schema"),
+                concept=inputs.get("concept") or (_log_ctx.concept if _log_ctx else None),
+                generated_sql=inputs.get("sql") or sql,
+                rows_returned=len(rows) if rows is not None else None,
+                status=determine_status(rows, inputs.get("error")),
                 failed_at_step=None,
-                error=None,
-                reasoning_status=None,
-                usage_metadata=usage_metadata,
+                error=inputs.get("error"),
+                reasoning_status=inputs.get("reasoning_status"),
+                usage_metadata=_all_usage,
                 answer_generated=bool(answer),
                 llm_type=get_llm_type(self._llm),
                 llm_model=get_llm_model(self._llm),
+                identify_concept_reason=inputs.get("identify_concept_reason"),
+                generate_sql_reason=inputs.get("generate_sql_reason"),
+                answer=answer or None,
+                has_results=_has_results,
+                results=rows,
             )
 
         result = {
             **inputs,
-            "answer": res.get("answer", ""),
+            "answer": answer,
             self.usage_metadata_key: res.get("usage_metadata", {}),
+            "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
         }
+
+        if _log_ctx:
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type=_log_ctx.chain_type,
+                start_time=_chain_start,
+                status="completed",
+                question=prompt,
+                chain_output={"answer": answer},
+                usage_metadata=usage_metadata,
+            )
+            
         return sanitize_results(self.output_keys, result)

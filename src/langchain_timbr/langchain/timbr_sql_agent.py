@@ -12,6 +12,7 @@ from ..utils.general import parse_list, to_boolean, to_integer, sanitize_results
 from .execute_timbr_query_chain import ExecuteTimbrQueryChain
 from .generate_answer_chain import GenerateAnswerChain
 from .. import config
+from ..utils.timbr_utils import build_server_url
 
 class TimbrSqlAgent(Runnable):
     def __init__(
@@ -44,8 +45,10 @@ class TimbrSqlAgent(Runnable):
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
-        enable_logging: Optional[bool] = False,
-        chain_trace: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        enable_history: Optional[bool] = config.enable_history,
+        save_results: Optional[bool] = config.history_save_results,
+        conversation_id: Optional[str] = None,
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
@@ -75,7 +78,10 @@ class TimbrSqlAgent(Runnable):
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
-
+        :param enable_trace: Whether to enable detailed trace logging for the agent's operations (default is False).
+        :param enable_history: Whether to enable query history tracking (default is False).
+        :param save_results: Whether to save query results in history (default is False).
+        :param conversation_id: Optional conversation ID to associate with all interactions of this agent instance (useful for tracking and logging in multi-turn conversations).
         ## Example
         ```
         # Using explicit parameters
@@ -103,7 +109,8 @@ class TimbrSqlAgent(Runnable):
         ```
         """
         super().__init__()
-        self._enable_logging = to_boolean(enable_logging)
+        self._enable_logging = to_boolean(enable_trace)
+        self._conversation_id = conversation_id
         self._chain = ExecuteTimbrQueryChain(
             llm=llm,
             url=url,
@@ -132,11 +139,11 @@ class TimbrSqlAgent(Runnable):
             enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
             reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
             debug=to_boolean(debug),
-            enable_logging=to_boolean(enable_logging),
-            chain_trace=to_boolean(chain_trace),
+            enable_trace=to_boolean(enable_trace),
+            conversation_id=conversation_id,
         )
         self._generate_answer = to_boolean(generate_answer)
-        
+
         # Pre-initialize the answer chain to avoid creating it on every request
         self._answer_chain = GenerateAnswerChain(
             llm=llm,
@@ -149,6 +156,10 @@ class TimbrSqlAgent(Runnable):
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
             debug=to_boolean(debug),
+            enable_trace=to_boolean(enable_trace),
+            enable_history=to_boolean(enable_history),
+            save_results=to_boolean(save_results),
+            conversation_id=conversation_id,
         ) if self._generate_answer else None
 
 
@@ -158,6 +169,7 @@ class TimbrSqlAgent(Runnable):
             "answer", "rows", "sql", "ontology", "schema", "concept",
             "error", "reasoning_status", "usage_metadata",
             "identify_concept_reason", "generate_sql_reason",
+            "conversation_id",
         ]
 
     def _should_skip_answer_generation(self, result: dict) -> bool:
@@ -167,17 +179,149 @@ class TimbrSqlAgent(Runnable):
         """
         if not self._generate_answer:
             return True
-            
+
         # Skip if there's an error
         if result.get("error"):
             return True
-            
+
         # Skip if no rows returned
         rows = result.get("rows", [])
         if not rows or len(rows) == 0:
             return True
-            
+
         return False
+
+    def _get_empty_input_response(self, conversation_id: Optional[str] = None) -> dict:
+        """Return error response for empty/missing input."""
+        return {
+            "error": "No input provided or input is empty",
+            "answer": None,
+            "rows": None,
+            "sql": None,
+            "ontology": None,
+            "schema": None,
+            "concept": None,
+            "reasoning_status": None,
+            "identify_concept_reason": None,
+            "generate_sql_reason": None,
+            "usage_metadata": {},
+            "conversation_id": conversation_id,
+        }
+
+    def _get_error_response(self, error_msg: str, conversation_id: Optional[str] = None) -> dict:
+        """Return error response with exception message."""
+        response = self._get_empty_input_response(conversation_id)
+        response["error"] = error_msg
+        return response
+
+    def _setup_log_contexts(self, user_input: str, conversation_id: str) -> tuple:
+        """Setup logging contexts if logging is enabled. Returns (_log_ctx, _delegated_ctx)."""
+        from ..utils.chain_logger import AgentLogContext, new_query_id, _now, log_agent_start
+
+        _log_ctx = None
+        _delegated_ctx = None
+        _query_id = new_query_id()
+
+        if self._enable_logging:
+            _log_ctx = AgentLogContext(
+                query_id=_query_id,
+                agent_name=self._chain._agent or "",
+                url=build_server_url(config.thrift_host, config.thrift_port),
+                token=self._chain._token,
+                chain_type="TimbrSqlAgent",
+                start_time=_now(),
+                prompt=user_input,
+                enable_trace=self._chain._enable_trace,
+                is_delegated=False,
+                conversation_id=conversation_id,
+            )
+            log_agent_start(_log_ctx, self._chain._ontology, self._chain._schema)
+            _delegated_ctx = AgentLogContext(
+                query_id=_log_ctx.query_id,
+                agent_name=_log_ctx.agent_name,
+                url=_log_ctx.url,
+                token=_log_ctx.token,
+                chain_type=_log_ctx.chain_type,
+                start_time=_log_ctx.start_time,
+                prompt=_log_ctx.prompt,
+                enable_trace=_log_ctx.enable_trace,
+                is_delegated=True,
+                conversation_id=conversation_id,
+            )
+
+        return _log_ctx, _delegated_ctx
+
+    async def _invoke_chain_impl(self, chain, chain_input: dict, log_ctx, is_async: bool = False):
+        """Invoke a chain, handling both sync and async calls."""
+        if is_async and hasattr(chain, 'ainvoke'):
+            return await chain.ainvoke(chain_input, log_ctx=log_ctx)
+        return chain.invoke(chain_input, log_ctx=log_ctx)
+
+    def _process_answer_sync(self, user_input: str, result: dict, conversation_id: str, log_ctx):
+        """Sync processing of answer chain invocation."""
+        answer = None
+        usage_metadata = result.get(self._chain.usage_metadata_key, {})
+
+        if self._answer_chain and not self._should_skip_answer_generation(result):
+            answer_res = self._answer_chain.invoke({
+                "prompt": user_input,
+                "rows": result.get("rows"),
+                "sql": result.get("sql"),
+                "conversation_id": conversation_id,
+            }, log_ctx=log_ctx)
+            answer = answer_res.get("answer", "")
+            usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
+
+        return answer, usage_metadata
+
+    async def _process_answer_async(self, user_input: str, result: dict, conversation_id: str, log_ctx):
+        """Async processing of answer chain invocation."""
+        answer = None
+        usage_metadata = result.get(self._chain.usage_metadata_key, {})
+
+        if self._answer_chain and not self._should_skip_answer_generation(result):
+            answer_res = await self._invoke_chain_impl(
+                self._answer_chain,
+                {
+                    "prompt": user_input,
+                    "rows": result.get("rows"),
+                    "sql": result.get("sql"),
+                    "conversation_id": conversation_id,
+                },
+                log_ctx,
+                is_async=True
+            )
+            answer = answer_res.get("answer", "")
+            usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
+
+        return answer, usage_metadata
+
+    def _build_result(self, result: dict, answer: str, conversation_id: str, log_ctx, delegated_ctx) -> dict:
+        """Build the final result dictionary."""
+        usage_metadata = result.get(self._chain.usage_metadata_key, {})
+
+        if log_ctx and delegated_ctx:
+            log_ctx.concept = delegated_ctx.concept
+            log_ctx.retry_count = delegated_ctx.retry_count
+            log_ctx.no_results_retry_count = delegated_ctx.no_results_retry_count
+
+        rows = result.get("rows", [])
+        error = result.get("error", None)
+
+        return sanitize_results(self.output_keys, {
+            "answer": answer,
+            "rows": rows,
+            "sql": result.get("sql", ""),
+            "ontology": result.get("ontology", ""),
+            "schema": result.get("schema", ""),
+            "concept": result.get("concept", ""),
+            "error": error,
+            "reasoning_status": result.get("reasoning_status", None),
+            "usage_metadata": usage_metadata,
+            "identify_concept_reason": result.get("identify_concept_reason", None),
+            "generate_sql_reason": result.get("generate_sql_reason", None),
+            "conversation_id": conversation_id,
+        })
 
 
     def invoke(
@@ -192,148 +336,25 @@ class TimbrSqlAgent(Runnable):
         return self._invoke_impl(input)
 
     def _invoke_impl(self, input: dict) -> dict:
-        from datetime import datetime as _dt
-        from ..utils.chain_logger import (
-            AgentLogContext, new_query_id,
-            log_agent_start, log_agent_history, determine_status,
-            get_llm_type, get_llm_model,
-        )
-
         user_input = input.get("input", "") if isinstance(input, dict) else input
 
-        # Enhanced input validation
         if not user_input or not user_input.strip():
-            return {
-                "error": "No input provided or input is empty",
-                "answer": None,
-                "rows": None,
-                "sql": None,
-                "ontology": None,
-                "schema": None,
-                "concept": None,
-                "reasoning_status": None,
-                "identify_concept_reason": None,
-                "generate_sql_reason": None,
-                "usage_metadata": {},
-            }
+            return self._get_empty_input_response()
 
-        # Build log context when logging is enabled
-        _log_ctx = None
-        _delegated_ctx = None
-        if self._enable_logging:
-            _log_ctx = AgentLogContext(
-                query_id=new_query_id(),
-                agent_name=self._chain._agent or "",
-                url=self._chain._url,
-                token=self._chain._token,
-                chain_type="TimbrSqlAgent",
-                start_time=_dt.now(),
-                prompt=user_input,
-                chain_trace_enabled=self._chain._chain_trace,
-                is_delegated=False,
-            )
-            log_agent_start(_log_ctx, self._chain._ontology, self._chain._schema)
-            _delegated_ctx = AgentLogContext(
-                query_id=_log_ctx.query_id,
-                agent_name=_log_ctx.agent_name,
-                url=_log_ctx.url,
-                token=_log_ctx.token,
-                chain_type=_log_ctx.chain_type,
-                start_time=_log_ctx.start_time,
-                prompt=_log_ctx.prompt,
-                chain_trace_enabled=_log_ctx.chain_trace_enabled,
-                is_delegated=True,
-            )
+        _conversation_id = (input.get("conversation_id") if isinstance(input, dict) else None) or self._conversation_id
+        _log_ctx, _delegated_ctx = self._setup_log_contexts(user_input, _conversation_id)
 
         try:
-            result = self._chain.invoke({"prompt": user_input}, log_ctx=_delegated_ctx)
-            answer = None
-            _answer_chain_duration_ms = None
-            usage_metadata = result.get(self._chain.usage_metadata_key, {})
+            result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
+            if result.get('conversation_id') != _conversation_id:
+                _conversation_id = result.get('conversation_id')  # Update conversation_id if it was changed/updated by the chain
 
-            if self._answer_chain and not self._should_skip_answer_generation(result):
-                _answer_start = _dt.now()
-                answer_res = self._answer_chain.invoke({
-                    "prompt": user_input,
-                    "rows": result.get("rows"),
-                    "sql": result.get("sql")
-                }, log_ctx=_delegated_ctx)
-                _answer_chain_duration_ms = int((_dt.now() - _answer_start).total_seconds() * 1000)
-                answer = answer_res.get("answer", "")
-                usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
+            answer, usage_metadata = self._process_answer_sync(user_input, result, _conversation_id, _delegated_ctx)
+            result[self._chain.usage_metadata_key] = usage_metadata
 
-            rows = result.get("rows", [])
-            error = result.get("error", None)
-
-            if _log_ctx:
-                if _delegated_ctx:
-                    _log_ctx.concept = _delegated_ctx.concept
-                    _log_ctx.retry_count = _delegated_ctx.retry_count
-                    _log_ctx.no_results_retry_count = _delegated_ctx.no_results_retry_count
-                log_agent_history(
-                    ctx=_log_ctx,
-                    ontology=result.get("ontology"),
-                    schema=result.get("schema"),
-                    concept=result.get("concept"),
-                    generated_sql=result.get("sql"),
-                    rows_returned=len(rows) if rows else 0,
-                    status=determine_status(rows, error),
-                    failed_at_step=_delegated_ctx.current_step if (error and _delegated_ctx) else None,
-                    error=error,
-                    reasoning_status=result.get("reasoning_status"),
-                    usage_metadata=usage_metadata,
-                    answer_generated=bool(answer),
-                    llm_type=get_llm_type(self._chain._llm),
-                    llm_model=get_llm_model(self._chain._llm),
-                    identify_concept_reason=result.get("identify_concept_reason"),
-                    generate_sql_reason=result.get("generate_sql_reason"),
-                    answer_chain_duration=_answer_chain_duration_ms,
-                )
-
-            return sanitize_results(self.output_keys, {
-                "answer": answer,
-                "rows": rows,
-                "sql": result.get("sql", ""),
-                "ontology": result.get("ontology", ""),
-                "schema": result.get("schema", ""),
-                "concept": result.get("concept", ""),
-                "error": error,
-                "reasoning_status": result.get("reasoning_status", None),
-                "usage_metadata": usage_metadata,
-                "identify_concept_reason": result.get("identify_concept_reason", None),
-                "generate_sql_reason": result.get("generate_sql_reason", None),
-            })
+            return self._build_result(result, answer, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
-            if _log_ctx:
-                log_agent_history(
-                    ctx=_log_ctx,
-                    ontology=None,
-                    schema=None,
-                    concept=None,
-                    generated_sql=None,
-                    rows_returned=None,
-                    status="timeout" if "timed out" in str(e).lower() else "failed",
-                    failed_at_step=_delegated_ctx.current_step if _delegated_ctx else None,
-                    error=str(e),
-                    reasoning_status=None,
-                    usage_metadata={},
-                    answer_generated=False,
-                    llm_type=get_llm_type(self._chain._llm),
-                    llm_model=get_llm_model(self._chain._llm),
-                )
-            return sanitize_results(self.output_keys, {
-                "error": str(e),
-                "answer": None,
-                "rows": None,
-                "sql": None,
-                "ontology": None,
-                "schema": None,
-                "concept": None,
-                "reasoning_status": None,
-                "identify_concept_reason": None,
-                "generate_sql_reason": None,
-                "usage_metadata": {},
-            })
+            return self._get_error_response(str(e), _conversation_id)
 
     async def ainvoke(
         self, input: dict, config=None, **kwargs: Any
@@ -347,158 +368,30 @@ class TimbrSqlAgent(Runnable):
         return await self._ainvoke_impl(input)
 
     async def _ainvoke_impl(self, input: dict) -> dict:
-        from datetime import datetime as _dt
-        from ..utils.chain_logger import (
-            AgentLogContext, new_query_id,
-            log_agent_start, log_agent_history, determine_status,
-            get_llm_type, get_llm_model,
-        )
-
         user_input = input.get("input", "") if isinstance(input, dict) else input
 
         if not user_input or not user_input.strip():
-            return {
-                "error": "No input provided or input is empty",
-                "answer": None,
-                "rows": None,
-                "sql": None,
-                "ontology": None,
-                "schema": None,
-                "concept": None,
-                "reasoning_status": None,
-                "identify_concept_reason": None,
-                "generate_sql_reason": None,
-                "usage_metadata": {},
-            }
+            return self._get_empty_input_response()
 
-        _log_ctx = None
-        _delegated_ctx = None
-        if self._enable_logging:
-            _log_ctx = AgentLogContext(
-                query_id=new_query_id(),
-                agent_name=self._chain._agent or "",
-                url=self._chain._url,
-                token=self._chain._token,
-                chain_type="TimbrSqlAgent",
-                start_time=_dt.now(),
-                prompt=user_input,
-                chain_trace_enabled=self._chain._chain_trace,
-                is_delegated=False,
-            )
-            log_agent_start(_log_ctx, self._chain._ontology, self._chain._schema)
-            _delegated_ctx = AgentLogContext(
-                query_id=_log_ctx.query_id,
-                agent_name=_log_ctx.agent_name,
-                url=_log_ctx.url,
-                token=_log_ctx.token,
-                chain_type=_log_ctx.chain_type,
-                start_time=_log_ctx.start_time,
-                prompt=_log_ctx.prompt,
-                chain_trace_enabled=_log_ctx.chain_trace_enabled,
-                is_delegated=True,
-            )
+        _conversation_id = (input.get("conversation_id") if isinstance(input, dict) else None) or self._conversation_id
+        _log_ctx, _delegated_ctx = self._setup_log_contexts(user_input, _conversation_id)
 
         try:
             # Use async invoke if available, fallback to sync
             if hasattr(self._chain, 'ainvoke'):
-                result = await self._chain.ainvoke({"prompt": user_input}, log_ctx=_delegated_ctx)
+                result = await self._chain.ainvoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
             else:
-                result = self._chain.invoke({"prompt": user_input}, log_ctx=_delegated_ctx)
+                result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
 
-            answer = None
-            _answer_chain_duration_ms = None
-            usage_metadata = result.get(self._chain.usage_metadata_key, {})
+            if result.get('conversation_id') != _conversation_id:
+                _conversation_id = result.get('conversation_id')  # Update conversation_id if it was changed/updated by the chain
 
-            if self._answer_chain and not self._should_skip_answer_generation(result):
-                _answer_start = _dt.now()
-                if hasattr(self._answer_chain, 'ainvoke'):
-                    answer_res = await self._answer_chain.ainvoke({
-                        "prompt": user_input,
-                        "rows": result.get("rows"),
-                        "sql": result.get("sql")
-                    }, log_ctx=_delegated_ctx)
-                else:
-                    answer_res = self._answer_chain.invoke({
-                        "prompt": user_input,
-                        "rows": result.get("rows"),
-                        "sql": result.get("sql")
-                    }, log_ctx=_delegated_ctx)
-                _answer_chain_duration_ms = int((_dt.now() - _answer_start).total_seconds() * 1000)
-                answer = answer_res.get("answer", "")
-                usage_metadata.update(answer_res.get(self._answer_chain.usage_metadata_key, {}))
+            answer, usage_metadata = await self._process_answer_async(user_input, result, _conversation_id, _delegated_ctx)
+            result[self._chain.usage_metadata_key] = usage_metadata
 
-            rows = result.get("rows", [])
-            error = result.get("error", None)
-
-            if _log_ctx:
-                if _delegated_ctx:
-                    _log_ctx.concept = _delegated_ctx.concept
-                    _log_ctx.retry_count = _delegated_ctx.retry_count
-                    _log_ctx.no_results_retry_count = _delegated_ctx.no_results_retry_count
-                log_agent_history(
-                    ctx=_log_ctx,
-                    ontology=result.get("ontology"),
-                    schema=result.get("schema"),
-                    concept=result.get("concept"),
-                    generated_sql=result.get("sql"),
-                    rows_returned=len(rows) if rows else 0,
-                    status=determine_status(rows, error),
-                    failed_at_step=_delegated_ctx.current_step if (error and _delegated_ctx) else None,
-                    error=error,
-                    reasoning_status=result.get("reasoning_status"),
-                    usage_metadata=usage_metadata,
-                    answer_generated=bool(answer),
-                    llm_type=get_llm_type(self._chain._llm),
-                    llm_model=get_llm_model(self._chain._llm),
-                    identify_concept_reason=result.get("identify_concept_reason"),
-                    generate_sql_reason=result.get("generate_sql_reason"),
-                    answer_chain_duration=_answer_chain_duration_ms,
-                )
-
-            return sanitize_results(self.output_keys, {
-                "answer": answer,
-                "rows": rows,
-                "sql": result.get("sql", ""),
-                "ontology": result.get("ontology", ""),
-                "schema": result.get("schema", ""),
-                "concept": result.get("concept", ""),
-                "error": error,
-                "reasoning_status": result.get("reasoning_status", None),
-                "identify_concept_reason": result.get("identify_concept_reason", None),
-                "generate_sql_reason": result.get("generate_sql_reason", None),
-                "usage_metadata": usage_metadata,
-            })
+            return self._build_result(result, answer, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
-            if _log_ctx:
-                log_agent_history(
-                    ctx=_log_ctx,
-                    ontology=None,
-                    schema=None,
-                    concept=None,
-                    generated_sql=None,
-                    rows_returned=None,
-                    status="timeout" if "timed out" in str(e).lower() else "failed",
-                    failed_at_step=_delegated_ctx.current_step if _delegated_ctx else None,
-                    error=str(e),
-                    reasoning_status=None,
-                    usage_metadata={},
-                    answer_generated=False,
-                    llm_type=get_llm_type(self._chain._llm),
-                    llm_model=get_llm_model(self._chain._llm),
-                )
-            return sanitize_results(self.output_keys, {
-                "error": str(e),
-                "answer": None,
-                "rows": None,
-                "sql": None,
-                "ontology": None,
-                "schema": None,
-                "concept": None,
-                "reasoning_status": None,
-                "identify_concept_reason": None,
-                "generate_sql_reason": None,
-                "usage_metadata": {},
-            })
+            return self._get_error_response(str(e), _conversation_id)
 
 
 def create_timbr_sql_agent(
@@ -530,8 +423,10 @@ def create_timbr_sql_agent(
     enable_reasoning: Optional[bool] = None,
     reasoning_steps: Optional[int] = None,
     debug: Optional[bool] = False,
-    enable_logging: Optional[bool] = False,
-    chain_trace: Optional[bool] = False,
+    enable_trace: Optional[bool] = config.enable_trace,
+    enable_history: Optional[bool] = config.enable_history,
+    save_results: Optional[bool] = config.history_save_results,
+    conversation_id: Optional[str] = None,
 ) -> TimbrSqlAgent:
     """
     Create and configure a Timbr agent with its executor.
@@ -563,6 +458,10 @@ def create_timbr_sql_agent(
     :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
     :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
     :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
+    :param enable_trace: Whether to enable detailed trace logging for the agent's operations (default is False).
+    :param enable_history: Whether to enable query history tracking (default is False).
+    :param save_results: Whether to save query results in history (default is False).
+    :param conversation_id: Optional conversation ID to associate with all interactions of this agent instance (useful for tracking and logging in multi-turn conversations).
 
     Returns:
         TimbrSqlAgent: Configured agent ready to use
@@ -633,8 +532,10 @@ def create_timbr_sql_agent(
         enable_reasoning=enable_reasoning,
         reasoning_steps=reasoning_steps,
         debug=debug,
-        enable_logging=enable_logging,
-        chain_trace=chain_trace,
+        enable_trace=enable_trace,
+        enable_history=enable_history,
+        save_results=save_results,
+        conversation_id=conversation_id,
     )
 
     return timbr_agent
