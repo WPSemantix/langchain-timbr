@@ -1,7 +1,6 @@
 """Unit tests for individual chain components."""
 import pytest
-from unittest.mock import Mock, patch, MagicMock
-import json
+from unittest.mock import Mock, patch
 
 from langchain_timbr import (
     IdentifyTimbrConceptChain,
@@ -382,6 +381,7 @@ class TestConversationIdAndAnswer:
             token="test",
             ontology="test",
             conversation_id="conv-abc",
+            enable_trace=True,
         )
 
         captured_ctx = {}
@@ -409,6 +409,7 @@ class TestConversationIdAndAnswer:
             url="http://test",
             token="test",
             ontology="test",
+            enable_trace=True,
         )
 
         captured_ctx = {}
@@ -431,7 +432,7 @@ class TestConversationIdAndAnswer:
         from unittest.mock import patch, MagicMock
         from langchain_timbr import GenerateAnswerChain
 
-        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test", enable_logging=True)
+        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test", enable_history=True)
 
         captured_kwargs = {}
 
@@ -538,3 +539,74 @@ class TestConversationIdAndAnswer:
             )
 
         assert 'answer' not in captured_payload, "None answer should be stripped by _clean()"
+
+
+class TestGenerateAnswerChainWithFallbackExecution:
+    """Tests covering the new GenerateAnswerChain behaviors added in this branch."""
+
+    def test_generate_answer_chain_invokes_execute_chain_when_no_rows(self, mock_llm):
+        """When rows are not provided, the embedded ExecuteTimbrQueryChain is called."""
+        from unittest.mock import patch, Mock
+        from langchain_timbr import GenerateAnswerChain
+
+        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test")
+        chain._execute_chain.invoke = Mock(return_value={
+            "rows": [{"n": 1}],
+            "sql": "SELECT 1",
+            "conversation_id": "q1",
+            "chain_context": {},
+        })
+
+        with patch('langchain_timbr.langchain.generate_answer_chain.answer_question') as mock_ans:
+            mock_ans.return_value = {"answer": "one", "usage_metadata": {}}
+            result = chain.invoke({"prompt": "test"})
+
+        chain._execute_chain.invoke.assert_called_once()
+        assert result["rows"] == [{"n": 1}]
+        assert result["answer"] == "one"
+
+    def test_generate_answer_chain_skips_execute_chain_when_rows_provided(self, mock_llm):
+        """When rows are already provided, the embedded ExecuteTimbrQueryChain is NOT called."""
+        from unittest.mock import patch, Mock
+        from langchain_timbr import GenerateAnswerChain
+
+        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test")
+        chain._execute_chain.invoke = Mock()
+
+        with patch('langchain_timbr.langchain.generate_answer_chain.answer_question') as mock_ans:
+            mock_ans.return_value = {"answer": "ninety-nine", "usage_metadata": {}}
+            result = chain.invoke({"prompt": "test", "rows": [{"n": 99}]})
+
+        chain._execute_chain.invoke.assert_not_called()
+        assert result["rows"] == [{"n": 99}]
+
+    def test_generate_answer_chain_duration_tracked_in_chain_context(self, mock_llm):
+        """After invoke(), chain_context contains a non-negative integer duration for GenerateAnswerChain."""
+        from unittest.mock import patch
+        from langchain_timbr import GenerateAnswerChain
+
+        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test")
+
+        with patch('langchain_timbr.langchain.generate_answer_chain.answer_question') as mock_ans:
+            mock_ans.return_value = {"answer": "x", "usage_metadata": {}}
+            result = chain.invoke({"prompt": "test", "rows": []})
+
+        duration = result["chain_context"]["duration"].get("GenerateAnswerChain")
+        assert isinstance(duration, int), "duration should be an int (milliseconds)"
+        assert duration >= 0
+
+    def test_merge_usage_metadata(self, mock_llm):
+        """_merge_usage_metadata sums numeric token fields across nested dicts."""
+        from langchain_timbr import GenerateAnswerChain
+
+        chain = GenerateAnswerChain(llm=mock_llm, url="http://test", token="test")
+
+        base = {"answer_question": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}}
+        result = chain._merge_usage_metadata({}, base)
+        assert result == base
+
+        extra = {"answer_question": {"input_tokens": 3, "output_tokens": 2, "total_tokens": 5}}
+        result = chain._merge_usage_metadata(result, extra)
+        assert result["answer_question"]["input_tokens"] == 13
+        assert result["answer_question"]["output_tokens"] == 7
+        assert result["answer_question"]["total_tokens"] == 20
