@@ -39,6 +39,6 @@ should_validate_sql = to_boolean(os.environ.get('SHOULD_VALIDATE_SQL', os.enviro
 retry_if_no_results = to_boolean(os.environ.get('RETRY_IF_NO_RESULTS', os.environ.get('LLM_RETRY_IF_NO_RESULTS', 'true')))
 llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.get('TIMBR_LLM_DEFAULT_LIMIT', 500)))  # Default max tokens limit for LLM responses
 
-enable_trace         = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE',          'false'))
-enable_history       = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY',        'true'))
-history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS',  'false'))
+enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'false'))
+enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'false'))
+history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS', 'false'))
