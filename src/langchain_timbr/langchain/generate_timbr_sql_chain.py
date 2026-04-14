@@ -225,7 +225,7 @@ class GenerateTimbrSqlChain(Chain):
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, str]:
         from ..utils.chain_logger import (
             AgentLogContext, new_query_id, _now,
-            log_agent_start, log_agent_step, log_chain_trace,
+            log_agent_start, log_agent_step, log_chain_trace, _sum_token_field,
         )
 
         prompt = inputs["prompt"]
@@ -284,6 +284,19 @@ class GenerateTimbrSqlChain(Chain):
         error = generate_res.get("error")
         reasoning_status = generate_res.get("reasoning_status")
         usage_metadata = generate_res.get("usage_metadata") or {}
+
+        _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
+        _chain_ctx = self._received_chain_context
+        _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _duration_ms
+        if generate_res.get("identify_concept_reason"):
+            _chain_ctx["reasoning"]["identify_concept_reason"] = generate_res["identify_concept_reason"]
+        if generate_res.get("generate_sql_reason"):
+            _chain_ctx["reasoning"]["generate_sql_reason"] = generate_res["generate_sql_reason"]
+        _chain_ctx["tokens"]["GenerateTimbrSqlChain"] = {
+            "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
+            "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
+            "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
+        }
 
         if _log_ctx:
             if concept:

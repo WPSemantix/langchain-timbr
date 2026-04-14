@@ -295,7 +295,7 @@ class ExecuteTimbrQueryChain(Chain):
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
         from ..utils.chain_logger import (
             AgentLogContext, new_query_id,
-            log_agent_start, log_agent_step, log_chain_trace, _now
+            log_agent_start, log_agent_step, log_chain_trace, _now, _sum_token_field,
         )
 
         # Variables declared before try so exception handler can reference them
@@ -422,6 +422,21 @@ class ExecuteTimbrQueryChain(Chain):
                 iteration += 1
 
             final_error = error if not is_sql_valid else None
+
+            _total_duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
+            _chain_ctx = self._received_chain_context
+            _chain_ctx["duration"]["ExecuteTimbrQueryChain"] = _total_duration_ms
+            if _generate_sql_chain_duration_ms:
+                _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _generate_sql_chain_duration_ms
+            if identify_concept_reason:
+                _chain_ctx["reasoning"]["identify_concept_reason"] = identify_concept_reason
+            if generate_sql_reason:
+                _chain_ctx["reasoning"]["generate_sql_reason"] = generate_sql_reason
+            _chain_ctx["tokens"]["ExecuteTimbrQueryChain"] = {
+                "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
+                "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
+                "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
+            }
 
             result = {
                 **inputs,

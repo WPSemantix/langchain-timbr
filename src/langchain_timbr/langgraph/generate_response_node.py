@@ -121,7 +121,8 @@ class GenerateResponseNode:
         prompt = state.get("prompt", "")
         conversation_id = state.get("conversation_id", None)
 
-        return self.chain.invoke({"prompt": prompt, "rows": rows, "sql": sql, "conversation_id": conversation_id})
+        chain_context = state.get("chain_context", None)
+        return self.chain.invoke({"prompt": prompt, "rows": rows, "sql": sql, "conversation_id": conversation_id, "chain_context": chain_context})
 
 
     def __call__(self, state: dict) -> dict:

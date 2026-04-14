@@ -187,7 +187,7 @@ class TimbrSqlAgent(Runnable):
             "answer", "rows", "sql", "ontology", "schema", "concept",
             "error", "reasoning_status", "usage_metadata",
             "identify_concept_reason", "generate_sql_reason",
-            "conversation_id",
+            "conversation_id", "chain_context",
         ]
 
     def _get_empty_input_response(self, conversation_id: Optional[str] = None) -> dict:
@@ -274,6 +274,7 @@ class TimbrSqlAgent(Runnable):
             "identify_concept_reason": result.get("identify_concept_reason"),
             "generate_sql_reason": result.get("generate_sql_reason"),
             "conversation_id": conversation_id,
+            "chain_context": result.get("chain_context"),
         })
 
 
@@ -295,10 +296,11 @@ class TimbrSqlAgent(Runnable):
             return self._get_empty_input_response()
 
         _conversation_id = (input.get("conversation_id") if isinstance(input, dict) else None) or self._conversation_id
+        _chain_context = input.get("chain_context") if isinstance(input, dict) else None
         _log_ctx, _delegated_ctx = self._setup_log_contexts(user_input, _conversation_id)
 
         try:
-            result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
+            result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id, "chain_context": _chain_context}, log_ctx=_delegated_ctx)
             if result.get('conversation_id') != _conversation_id:
                 _conversation_id = result.get('conversation_id')
 
@@ -324,13 +326,14 @@ class TimbrSqlAgent(Runnable):
             return self._get_empty_input_response()
 
         _conversation_id = (input.get("conversation_id") if isinstance(input, dict) else None) or self._conversation_id
+        _chain_context = input.get("chain_context") if isinstance(input, dict) else None
         _log_ctx, _delegated_ctx = self._setup_log_contexts(user_input, _conversation_id)
 
         try:
             if hasattr(self._chain, 'ainvoke'):
-                result = await self._chain.ainvoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
+                result = await self._chain.ainvoke({"prompt": user_input, "conversation_id": _conversation_id, "chain_context": _chain_context}, log_ctx=_delegated_ctx)
             else:
-                result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id}, log_ctx=_delegated_ctx)
+                result = self._chain.invoke({"prompt": user_input, "conversation_id": _conversation_id, "chain_context": _chain_context}, log_ctx=_delegated_ctx)
 
             if result.get('conversation_id') != _conversation_id:
                 _conversation_id = result.get('conversation_id')

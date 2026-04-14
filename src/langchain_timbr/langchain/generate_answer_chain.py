@@ -131,24 +131,28 @@ class GenerateAnswerChain(Chain):
         if self._agent:
             agent_options = get_timbr_agent_options(self._agent, conn_params=self._get_conn_params())
 
+            self._ontology = agent_options.get("ontology") if "ontology" in agent_options else ontology
+            self._schema = agent_options.get("schema") if "schema" in agent_options else schema
+            self._concept = agent_options.get("concept") if "concept" in agent_options else concept
+
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
             self._enable_history = to_boolean(agent_options.get("enable_history")) if "enable_history" in agent_options else to_boolean(enable_history)
             self._save_results = to_boolean(agent_options.get("history_save_results")) if "history_save_results" in agent_options else to_boolean(save_results)
-
         else:
             self._note = note
             self._enable_trace = to_boolean(enable_trace)
             self._enable_history = to_boolean(enable_history)
             self._save_results = to_boolean(save_results)
+            self._ontology = ontology
+            self._schema = schema
+            self._concept = concept
 
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
 
-        self._ontology = ontology
-        self._schema = schema
 
         from .execute_timbr_query_chain import ExecuteTimbrQueryChain
         _exclude_properties = parse_list(exclude_properties) if exclude_properties is not None else ['entity_id', 'entity_type', 'entity_label']
@@ -240,7 +244,7 @@ class GenerateAnswerChain(Chain):
         from ..utils.chain_logger import (
             AgentLogContext, new_query_id, _now,
             log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
-            determine_status, get_llm_type, get_llm_model,
+            determine_status, get_llm_type, get_llm_model, _sum_token_field,
         )
 
         prompt = inputs["prompt"]
@@ -251,9 +255,12 @@ class GenerateAnswerChain(Chain):
         execute_result = {}
         if rows is None:
             execute_result = self._execute_chain.invoke(
-                {"prompt": prompt, "conversation_id": conversation_id},
+                {"prompt": prompt, "conversation_id": conversation_id, "chain_context": self._received_chain_context},
                 log_ctx=self._received_log_ctx,
             )
+            # Sync chain_context updates made by the execute chain back into our context
+            if execute_result.get("chain_context"):
+                self._received_chain_context = execute_result["chain_context"]
             rows = execute_result.get("rows")
             sql = execute_result.get("sql") or sql
             conversation_id = execute_result.get("conversation_id") or conversation_id
@@ -273,6 +280,9 @@ class GenerateAnswerChain(Chain):
                 enable_trace=self._enable_trace,
                 is_delegated=False,
                 conversation_id=conversation_id or _query_id,
+                ontology=self._ontology,
+                schema=self._schema,
+                concept=self._concept,
             )
             log_agent_start(_log_ctx, None, None)
 
@@ -281,6 +291,7 @@ class GenerateAnswerChain(Chain):
             log_agent_step(_log_ctx)
 
         _chain_start = _now()
+        _answer_start = _chain_start
         res = answer_question(
             question=prompt,
             llm=self._llm,
@@ -294,6 +305,15 @@ class GenerateAnswerChain(Chain):
         answer = res.get("answer", "")
         usage_metadata = res.get("usage_metadata", {})
 
+        _chain_ctx = self._received_chain_context
+        _answer_duration_ms = int((_now() - _answer_start).total_seconds() * 1000)
+        _chain_ctx["duration"]["GenerateAnswerChain"] = _answer_duration_ms
+        _chain_ctx["tokens"]["GenerateAnswerChain"] = {
+            "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
+            "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
+            "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
+        }
+
         if self._enable_history and _log_ctx:
             _has_results = bool(rows and any(any(v is not None for v in r.values()) for r in rows))
 
@@ -306,10 +326,10 @@ class GenerateAnswerChain(Chain):
             _error = inputs.get("error") or execute_result.get("error")
             log_agent_history(
                 ctx=_log_ctx,
-                ontology=inputs.get("ontology") or execute_result.get("ontology"),
-                schema=inputs.get("schema") or execute_result.get("schema"),
-                concept=inputs.get("concept") or execute_result.get("concept") or (_log_ctx.concept if _log_ctx else None),
-                generated_sql=inputs.get("sql") or sql,
+                ontology=execute_result.get("ontology") or _log_ctx.ontology,
+                schema=execute_result.get("schema") or _log_ctx.schema,
+                concept=execute_result.get("concept") or _log_ctx.concept,
+                generated_sql=execute_result.get("sql") or inputs.get("sql") or sql,
                 rows_returned=len(rows) if rows is not None else None,
                 status=determine_status(rows, _error),
                 failed_at_step=None,
@@ -319,8 +339,12 @@ class GenerateAnswerChain(Chain):
                 answer_generated=bool(answer),
                 llm_type=get_llm_type(self._llm),
                 llm_model=get_llm_model(self._llm),
-                identify_concept_reason=inputs.get("identify_concept_reason") or execute_result.get("identify_concept_reason"),
-                generate_sql_reason=inputs.get("generate_sql_reason") or execute_result.get("generate_sql_reason"),
+                identify_concept_reason=_chain_ctx["reasoning"].get("identify_concept_reason") or inputs.get("identify_concept_reason") or execute_result.get("identify_concept_reason"),
+                generate_sql_reason=_chain_ctx["reasoning"].get("generate_sql_reason") or inputs.get("generate_sql_reason") or execute_result.get("generate_sql_reason"),
+                identify_concept_chain_duration=_chain_ctx["duration"].get("IdentifyTimbrConceptChain"),
+                generate_sql_chain_duration=_chain_ctx["duration"].get("GenerateTimbrSqlChain"),
+                answer_chain_duration=_chain_ctx["duration"].get("GenerateAnswerChain"),
+                reasoning_duration=_chain_ctx["duration"].get("reasoning"),
                 answer=answer or None,
                 has_results=_has_results,
                 results=rows,
@@ -345,6 +369,9 @@ class GenerateAnswerChain(Chain):
                 question=prompt,
                 chain_output={"answer": answer},
                 usage_metadata=usage_metadata,
+                ontology=execute_result.get("ontology") or _log_ctx.ontology,
+                schema=execute_result.get("schema") or _log_ctx.schema,
+                concept=execute_result.get("concept") or _log_ctx.concept,
             )
             
         return sanitize_results(self.output_keys, result)

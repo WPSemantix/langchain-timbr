@@ -224,7 +224,7 @@ class ValidateTimbrSqlChain(Chain):
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
         from ..utils.chain_logger import (
             AgentLogContext, new_query_id, _now,
-            log_agent_start, log_agent_step, log_chain_trace,
+            log_agent_start, log_agent_step, log_chain_trace, _sum_token_field,
         )
 
         sql = inputs["sql"]
@@ -304,6 +304,19 @@ class ValidateTimbrSqlChain(Chain):
                 if concept:
                     _log_ctx.concept = concept
 
+        _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
+        _chain_ctx = self._received_chain_context
+        _chain_ctx["duration"]["ValidateTimbrSqlChain"] = _duration_ms
+        if generate_sql_reason:
+            _chain_ctx["reasoning"]["generate_sql_reason"] = generate_sql_reason
+        if identify_concept_reason:
+            _chain_ctx["reasoning"]["identify_concept_reason"] = identify_concept_reason
+        _chain_ctx["tokens"]["ValidateTimbrSqlChain"] = {
+            "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
+            "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
+            "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
+        }
+
         result = {
             **inputs,
             "sql": sql,
@@ -318,7 +331,7 @@ class ValidateTimbrSqlChain(Chain):
             self.usage_metadata_key: usage_metadata,
             "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
         }
-        
+
         if _log_ctx:
             log_chain_trace(
                 ctx=_log_ctx,

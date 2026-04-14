@@ -30,6 +30,8 @@ class AgentLogContext:
     current_step: Optional[str] = None
     retry_count: int = 0
     no_results_retry_count: int = 0
+    ontology: Optional[str] = None
+    schema: Optional[str] = None
     concept: Optional[str] = None
     is_delegated: bool = False
     trace_sequence: int = 0
