@@ -112,10 +112,11 @@ class ExecuteSemanticQueryNode:
         try:
             prompt = state.messages[-1].get('content') if state.messages[-1] and 'content' in state.messages[-1] else None
         except Exception:
-            prompt = state.get('prompt', None)
+            prompt = state.get('prompt', None) if hasattr(state, 'get') else None
 
-        conversation_id = state.get('conversation_id', None)
-        chain_context = state.get('chain_context', None)
+        _state_get = state.get if hasattr(state, 'get') else lambda k, d=None: d
+        conversation_id = _state_get('conversation_id', None)
+        chain_context = _state_get('chain_context', None)
         return self.chain.invoke({"prompt": prompt, "conversation_id": conversation_id, "chain_context": chain_context})
 
 

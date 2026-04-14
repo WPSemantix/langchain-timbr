@@ -13,8 +13,10 @@ class GenerateAnswerChain(Chain):
     """
     Chain that generates an answer based on a given prompt and rows of data.
     It uses the LLM to build a human-readable answer.
-    
-    This chain connects to a Timbr server via the provided URL and token to generate contextual answers from query results using an LLM.
+
+    This chain connects to a Timbr server via the provided URL and token to generate contextual
+    answers from query results using an LLM. When rows are not provided, it automatically
+    executes a query against the specified ontology using the embedded ExecuteTimbrQueryChain.
     """
     def __init__(
         self,
@@ -315,7 +317,12 @@ class GenerateAnswerChain(Chain):
         }
 
         if self._enable_history and _log_ctx:
-            _has_results = bool(rows and any(any(v is not None for v in r.values()) for r in rows))
+            _has_results = bool(rows and any(
+                (any(v is not None for v in r.values()) if isinstance(r, dict)
+                 else any(v is not None for v in r) if isinstance(r, (list, tuple))
+                 else r is not None)
+                for r in rows
+            ))
 
             _all_usage = {}
             for k, v in inputs.items():
