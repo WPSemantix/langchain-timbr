@@ -9,6 +9,7 @@ For every chain:
 """
 import pytest
 from unittest.mock import Mock, patch
+from langchain_timbr.utils._base_chain import _init_chain_context
 
 from langchain_timbr.langchain.execute_timbr_query_chain import ExecuteTimbrQueryChain
 from langchain_timbr.langchain.generate_answer_chain import GenerateAnswerChain
@@ -38,6 +39,7 @@ class TestGenerateTimbrSqlChainOutput:
             "internal_llm_debug": "should_not_appear",  # extra key the util may return
         }
         chain = GenerateTimbrSqlChain(llm=Mock(), url=URL, token=TOKEN)
+        chain._received_chain_context = _init_chain_context(None)
         inputs = {"prompt": "list all cities", "surprise_key": "strip_me"}
 
         result = chain._call(inputs)
@@ -61,6 +63,8 @@ class TestGenerateAnswerChainOutput:
             "raw_response": "should_not_appear",  # extra key the util may return
         }
         chain = GenerateAnswerChain(llm=Mock(), url=URL, token=TOKEN)
+        # Initialize chain context so _call doesn't crash when tracking duration/tokens
+        chain._received_chain_context = _init_chain_context(None)
         inputs = {
             "prompt": "What is the capital of France?",
             "rows": [{"city": "Paris"}],
@@ -75,6 +79,10 @@ class TestGenerateAnswerChainOutput:
         assert result["answer"] == "Paris is the capital of France."
         assert result["prompt"] == "What is the capital of France?"
         assert result["rows"] == [{"city": "Paris"}]
+        # New output keys should be present (None when not provided via execute chain)
+        assert "conversation_id" in result
+        assert "execute_timbr_usage_metadata" in result
+        assert "ontology" in result
 
 
 class TestIdentifyTimbrConceptChainOutput:
@@ -93,6 +101,7 @@ class TestIdentifyTimbrConceptChainOutput:
             "internal_candidates": ["city", "country"],  # extra key that should be stripped
         }
         chain = IdentifyTimbrConceptChain(llm=Mock(), url=URL, token=TOKEN)
+        chain._received_chain_context = _init_chain_context(None)
         inputs = {"prompt": "find cities in Europe", "surprise_key": "strip_me"}
 
         result = chain._call(inputs)
@@ -112,6 +121,7 @@ class TestValidateTimbrSqlChainOutput:
     def test_returns_only_output_keys_when_sql_is_valid(self, mock_validate_sql):
         mock_validate_sql.return_value = (True, None, "SELECT * FROM cities")
         chain = ValidateTimbrSqlChain(llm=Mock(), url=URL, token=TOKEN)
+        chain._received_chain_context = _init_chain_context(None)
         inputs = {
             "prompt": "list cities",
             "sql": "SELECT * FROM cities",
@@ -144,6 +154,7 @@ class TestValidateTimbrSqlChainOutput:
             "internal_debug": "should_not_appear",
         }
         chain = ValidateTimbrSqlChain(llm=Mock(), url=URL, token=TOKEN)
+        chain._received_chain_context = _init_chain_context(None)
         inputs = {
             "prompt": "list cities",
             "sql": "BAD SQL",
@@ -171,6 +182,7 @@ class TestExecuteTimbrQueryChainOutput:
             should_validate_sql=False,
             no_results_max_retries=0,
         )
+        chain._received_chain_context = _init_chain_context(None)
         # Pass sql directly so no LLM generation is needed.
         # Also include an extra key that must not appear in the output.
         inputs = {

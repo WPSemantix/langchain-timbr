@@ -37,6 +37,8 @@ class GenerateTimbrSqlNode:
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -64,6 +66,8 @@ class GenerateTimbrSqlNode:
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
+        :param enable_trace: Whether to enable trace logging for this node's operations.
+        :param conversation_id: Optional conversation ID for tracking across multi-turn conversations.
         """
         self.chain = GenerateTimbrSqlChain(
             llm=llm,
@@ -91,9 +95,11 @@ class GenerateTimbrSqlNode:
             enable_reasoning=enable_reasoning,
             reasoning_steps=reasoning_steps,
             debug=debug,
+            enable_trace=enable_trace,
+            conversation_id=conversation_id,
             **kwargs,
         )
-        
+
 
     def run(self, state: StateGraph) -> dict:
         try:
@@ -101,7 +107,9 @@ class GenerateTimbrSqlNode:
         except Exception:
             prompt = state.get('prompt', None)
 
-        return self.chain.invoke({ "prompt": prompt })
+        conversation_id = state.get('conversation_id', None)
+        chain_context = state.get('chain_context', None)
+        return self.chain.invoke({"prompt": prompt, "conversation_id": conversation_id, "chain_context": chain_context})
 
 
     def __call__(self, state: dict) -> dict:

@@ -2,7 +2,7 @@ from typing import Optional, Union, Dict, Any
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
 
-from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
+from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
 from ..utils.general import parse_list, to_integer, to_boolean, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import generate_sql
@@ -48,6 +48,8 @@ class ValidateTimbrSqlChain(Chain):
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -60,7 +62,7 @@ class ValidateTimbrSqlChain(Chain):
         :param retries: The maximum number of retries to attempt
         :param concepts_list: Optional specific concept options to query
         :param views_list: Optional specific view options to query
-        :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query. 
+        :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query.
         :param include_tags: Optional specific concepts & properties tag options to use in the query (Disabled by default. Use '*' to enable all tags or a string represents a list of tags divided by commas (e.g. 'tag1,tag2')
         :param exclude_properties: Optional specific properties to exclude from the query (entity_id, entity_type & entity_label by default).
         :param max_limit: Maximum number of rows to query
@@ -74,6 +76,8 @@ class ValidateTimbrSqlChain(Chain):
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
+        :param enable_trace: Whether to enable trace logging for this chain's operations (default is False).
+        :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
         :param kwargs: Additional arguments to pass to the base
         
         ## Example
@@ -153,6 +157,7 @@ class ValidateTimbrSqlChain(Chain):
             self._reasoning_steps = to_integer(agent_options.get("reasoning_steps")) if "reasoning_steps" in agent_options else config.reasoning_steps
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
+            self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -169,6 +174,10 @@ class ValidateTimbrSqlChain(Chain):
             self._note = note
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
+            self._enable_trace = to_boolean(enable_trace)
+
+        self._enable_logging = self._enable_trace
+        self._conversation_id = conversation_id
 
 
     @property
@@ -178,7 +187,7 @@ class ValidateTimbrSqlChain(Chain):
 
     @property
     def input_keys(self) -> list:
-        return ["prompt", "sql"]
+        return ["prompt", "sql", "conversation_id"]
 
 
     @property
@@ -194,6 +203,7 @@ class ValidateTimbrSqlChain(Chain):
             "identify_concept_reason",
             "generate_sql_reason",
             self.usage_metadata_key,
+            "conversation_id",
         ]
         return list(dict.fromkeys(self.input_keys + base))
 
@@ -212,17 +222,51 @@ class ValidateTimbrSqlChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, Any]:
-        usage_metadata = {}
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id, _now,
+            log_agent_start, log_agent_step, log_chain_trace, _sum_token_field,
+        )
+
         sql = inputs["sql"]
         prompt = inputs["prompt"]
+        conversation_id = inputs.get("conversation_id") or self._conversation_id
         schema = self._schema
         concept = self._concept
         reasoning_status = None
         identify_concept_reason = None
         generate_sql_reason = None
+        usage_metadata = {}
 
+        _log_ctx = self._received_log_ctx
+
+        if _log_ctx is None and self._enable_logging:
+            _query_id = new_query_id()
+            _log_ctx = AgentLogContext(
+                query_id=_query_id,
+                agent_name=self._agent or "",
+                url=build_server_url(config.thrift_host, config.thrift_port),
+                token=self._token,
+                chain_type="ValidateTimbrSqlChain",
+                start_time=_now(),
+                prompt=prompt,
+                enable_trace=self._enable_trace,
+                is_delegated=False,
+                conversation_id=conversation_id or _query_id,
+            )
+            log_agent_start(_log_ctx, self._ontology, self._schema)
+
+        if _log_ctx:
+            _log_ctx.current_step = "validating_sql"
+            log_agent_step(_log_ctx)
+
+        _chain_start = _now()
         is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
+
         if not is_sql_valid:
+            if _log_ctx:
+                _log_ctx.current_step = "generating_sql"
+                log_agent_step(_log_ctx)
+
             prompt_extension = self._note + '\n' if self._note else ""
             generate_res = generate_sql(
                 question=prompt,
@@ -248,12 +292,30 @@ class ValidateTimbrSqlChain(Chain):
             sql = generate_res.get("sql", "")
             schema = generate_res.get("schema", self._schema)
             concept = generate_res.get("concept", self._concept)
-            usage_metadata.update(generate_res.get("usage_metadata", {}))
+            _gen_meta = generate_res.get("usage_metadata", {})
+            usage_metadata.update(_gen_meta)
             is_sql_valid = generate_res.get("is_sql_valid")
             reasoning_status = generate_res.get("reasoning_status")
             error = generate_res.get("error")
             identify_concept_reason = generate_res.get("identify_concept_reason")
             generate_sql_reason = generate_res.get("generate_sql_reason")
+
+            if _log_ctx:
+                if concept:
+                    _log_ctx.concept = concept
+
+        _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
+        _chain_ctx = self._received_chain_context
+        _chain_ctx["duration"]["ValidateTimbrSqlChain"] = _duration_ms
+        if generate_sql_reason:
+            _chain_ctx["reasoning"]["generate_sql_reason"] = generate_sql_reason
+        if identify_concept_reason:
+            _chain_ctx["reasoning"]["identify_concept_reason"] = identify_concept_reason
+        _chain_ctx["tokens"]["ValidateTimbrSqlChain"] = {
+            "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
+            "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
+            "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
+        }
 
         result = {
             **inputs,
@@ -267,5 +329,25 @@ class ValidateTimbrSqlChain(Chain):
             "identify_concept_reason": identify_concept_reason,
             "generate_sql_reason": generate_sql_reason,
             self.usage_metadata_key: usage_metadata,
+            "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
         }
+
+        if _log_ctx:
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type=_log_ctx.chain_type,
+                start_time=_chain_start,
+                status="failed" if (not is_sql_valid and error) else "completed",
+                question=prompt,
+                ontology=self._ontology,
+                concept=concept,
+                schema=schema,
+                generated_sql=sql,
+                chain_output={"is_sql_valid": is_sql_valid, "error": error},
+                is_sql_valid=is_sql_valid,
+                error=error if not is_sql_valid else None,
+                reasoning_status=reasoning_status,
+                usage_metadata=usage_metadata,
+            )
+
         return sanitize_results(self.output_keys, result)
