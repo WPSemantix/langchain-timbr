@@ -18,6 +18,9 @@ class GenerateAnswerChain(Chain):
     answers from query results using an LLM. When rows are not provided, it automatically
     executes a query against the specified ontology using the embedded ExecuteTimbrQueryChain.
     """
+
+    _ontology: Optional[str] = None
+
     def __init__(
         self,
         llm: Optional[LLM] = None,
@@ -162,9 +165,9 @@ class GenerateAnswerChain(Chain):
             llm=self._llm,
             url=self._url,
             token=self._token,
-            ontology=ontology,
-            schema=schema,
-            concept=concept,
+            ontology=self._ontology,
+            schema=self._schema,
+            concept=self._concept,
             concepts_list=parse_list(concepts_list),
             views_list=parse_list(views_list),
             include_logic_concepts=to_boolean(include_logic_concepts),
@@ -182,7 +185,7 @@ class GenerateAnswerChain(Chain):
             verify_ssl=self._verify_ssl,
             is_jwt=self._is_jwt,
             jwt_tenant_id=self._jwt_tenant_id,
-            conn_params=conn_params,
+            conn_params=self._get_conn_params(),
             enable_reasoning=to_boolean(enable_reasoning) if enable_reasoning is not None else None,
             reasoning_steps=to_integer(reasoning_steps) if reasoning_steps is not None else None,
             debug=self._debug,
@@ -215,7 +218,7 @@ class GenerateAnswerChain(Chain):
         return {
             "url": self._url,
             "token": self._token,
-            "ontology": config.ontology,
+            "ontology": self._ontology if self._ontology is not None else config.ontology,
             "verify_ssl": self._verify_ssl,
             "is_jwt": self._is_jwt,
             "jwt_tenant_id": self._jwt_tenant_id,
@@ -286,7 +289,7 @@ class GenerateAnswerChain(Chain):
                 schema=self._schema,
                 concept=self._concept,
             )
-            log_agent_start(_log_ctx, None, None)
+            log_agent_start(_log_ctx, _log_ctx.ontology, _log_ctx.schema)
 
         if _log_ctx:
             _log_ctx.current_step = "generating_answer"

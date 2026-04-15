@@ -256,7 +256,10 @@ def determine_status(rows: Optional[list], error: Optional[str]) -> str:
         return "timeout"
     if error:
         return "failed"
-    if not rows or all(all(v is None for v in row.values()) for row in rows):
+    if not rows or all(
+        all(v is None for v in (row.values() if isinstance(row, dict) else row))
+        for row in rows
+    ):
         return "completed_no_results"
     return "completed"
 
