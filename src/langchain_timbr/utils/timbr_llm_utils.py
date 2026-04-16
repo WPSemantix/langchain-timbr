@@ -304,7 +304,8 @@ def determine_concept(
     if timeout is None:
         timeout = config.llm_timeout
     
-    determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
+    # Fix for multiple ontologies - load the prompt template using a specific ontology connection
+    determine_concept_prompt = None
 
     ontologies_conn_params = {}
     #ontologies = [o.strip().lower() for o in conn_params.get("ontology").split(",")]
@@ -314,6 +315,10 @@ def determine_concept(
         ontology_conn_param =  conn_params.copy()
         ontology_conn_param["ontology"] = ontology
         ontologies_conn_params[ontology] = ontology_conn_param
+        
+        # Fix for multiple ontologies
+        if not determine_concept_prompt:
+            determine_concept_prompt = get_determine_concept_prompt_template(ontology_conn_param)
 
     concepts_desc_arr = []
     ontologies_concepts_and_views = {}
