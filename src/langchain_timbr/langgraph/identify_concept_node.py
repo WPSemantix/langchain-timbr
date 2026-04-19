@@ -3,6 +3,7 @@ from langchain_core.language_models.llms import LLM
 from langgraph.graph import StateGraph
 
 from ..langchain.identify_concept_chain import IdentifyTimbrConceptChain
+from .. import config
 
 
 class IdentifyConceptNode:
@@ -25,6 +26,8 @@ class IdentifyConceptNode:
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
         debug: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -44,6 +47,8 @@ class IdentifyConceptNode:
         :param is_jwt: Whether to use JWT authentication (default: False)
         :param jwt_tenant_id: Tenant ID for JWT authentication when using multi-tenant setup
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param enable_trace: Whether to enable trace logging for this node's operations.
+        :param conversation_id: Optional conversation ID for tracking across multi-turn conversations.
         """
         self.chain = IdentifyTimbrConceptChain(
             llm=llm,
@@ -63,6 +68,8 @@ class IdentifyConceptNode:
             jwt_tenant_id=jwt_tenant_id,
             conn_params=conn_params,
             debug=debug,
+            enable_trace=enable_trace,
+            conversation_id=conversation_id,
             **kwargs,
         )
 
@@ -73,7 +80,9 @@ class IdentifyConceptNode:
         except Exception:
           prompt = state.get('prompt', None)
 
-        return self.chain.invoke({ "prompt": prompt })
+        conversation_id = state.get('conversation_id', None)
+        chain_context = state.get('chain_context', None)
+        return self.chain.invoke({"prompt": prompt, "conversation_id": conversation_id, "chain_context": chain_context})
 
 
     def __call__(self, state: dict) -> dict:

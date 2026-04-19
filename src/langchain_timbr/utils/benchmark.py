@@ -40,7 +40,7 @@ from langchain_timbr import create_timbr_sql_agent, GenerateTimbrSqlChain
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .general import to_boolean
 from .prompt_service import get_benchmark_judge_prompt_template
-from .timbr_utils import get_timbr_agent_options, get_timbr_benchmark_info
+from .timbr_utils import get_timbr_agent_options, get_timbr_benchmark_info, build_server_url
 
 try:
     # from .._version import __version__ as _langchain_timbr_version
@@ -672,9 +672,7 @@ def run_benchmark(
             "Set THRIFT_HOST and THRIFT_PORT environment variables."
         )
 
-    server_url = f"{thrift_host}:{thrift_port}"
-    if not server_url.startswith("http"):
-        server_url = "http://" + server_url
+    server_url = build_server_url(thrift_host, thrift_port)
     resolved_url = url or config.url
     resolved_token = token or config.token
 

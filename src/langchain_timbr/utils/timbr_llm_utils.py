@@ -2,7 +2,20 @@ from typing import Any, Optional
 from langchain_core.language_models.llms import LLM
 from datetime import datetime
 import concurrent.futures
+import contextvars
 import json
+
+try:
+    from langsmith import traceable as ls_traceable
+    _LANGSMITH_AVAILABLE = True
+except ImportError:
+    def ls_traceable(*args, **kwargs):
+        if args and callable(args[0]):
+            return args[0]
+        def decorator(func):
+            return func
+        return decorator
+    _LANGSMITH_AVAILABLE = False
 
 from .general import parse_list
 from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt, get_ontology_description
@@ -56,22 +69,24 @@ def _clean_snowflake_prompt(prompt: Any) -> None:
 def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 120) -> Any:
     """
     Call LLM with timeout to prevent hanging.
-    
+
     Args:
         llm: The LLM instance
         prompt: The prompt to send
         timeout: Timeout in seconds (default: 120)
-        
+
     Returns:
         LLM response
-        
+
     Raises:
         TimeoutError: If the call takes longer than timeout seconds
         Exception: Any other exception from the LLM call
     """
+    ctx = contextvars.copy_context()
+
     def _llm_call():
-        return llm.invoke(prompt)
-    
+        return ctx.run(llm.invoke, prompt)
+
     with concurrent.futures.ThreadPoolExecutor() as executor:
         future = executor.submit(_llm_call)
         try:
@@ -265,6 +280,7 @@ def filter_list_by_ontology(concepts_list, ontology) -> list:
     
     return ontology_specific_concepts
 
+@ls_traceable(name="identify_concept")
 def determine_concept(
     question: str,
     llm: LLM,
@@ -288,7 +304,8 @@ def determine_concept(
     if timeout is None:
         timeout = config.llm_timeout
     
-    determine_concept_prompt = get_determine_concept_prompt_template(conn_params)
+    # Fix for multiple ontologies - load the prompt template using a specific ontology connection
+    determine_concept_prompt = None
 
     ontologies_conn_params = {}
     #ontologies = [o.strip().lower() for o in conn_params.get("ontology").split(",")]
@@ -298,6 +315,10 @@ def determine_concept(
         ontology_conn_param =  conn_params.copy()
         ontology_conn_param["ontology"] = ontology
         ontologies_conn_params[ontology] = ontology_conn_param
+        
+        # Fix for multiple ontologies
+        if not determine_concept_prompt:
+            determine_concept_prompt = get_determine_concept_prompt_template(ontology_conn_param)
 
     concepts_desc_arr = []
     ontologies_concepts_and_views = {}
@@ -933,6 +954,7 @@ def handle_validate_generate_sql(
 
     return is_sql_valid, error, sql_query
 
+@ls_traceable(name="generate_sql")
 def generate_sql(
         question: str,
         llm: LLM,
@@ -1101,6 +1123,7 @@ def generate_sql(
     }
 
 
+@ls_traceable(name="generate_answer")
 def answer_question(
     question: str,
     llm: LLM,

@@ -14,6 +14,15 @@ _cache = {}
 _ontology_version = None
 _last_version_check = 0
 
+
+def build_server_url(thrift_host: str, thrift_port: int) -> str:
+    """Build the timbr server URL from thrift host and port for API logging calls."""
+    url = f"{thrift_host}:{thrift_port}"
+    if not url.startswith("http"):
+        url = "http://" + url
+    return url
+
+
 def clear_cache():
     """Clear the cache and reset the ontology version."""
     global _cache, _ontology_version
@@ -118,7 +127,11 @@ def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use
         clean_prompt = llm_prompt.replace('\r\n', ' ').replace('\n', ' ').replace('?', '')
         query = f"-- LLM: {clean_prompt}\n{sql}"
 
-    query_conn_params = conn_params
+    # Fix for multiple ontologies - load the prompt template using a specific ontology connection
+    query_conn_params = conn_params.copy()
+    if 'ontology' in conn_params and conn_params['ontology'] and ',' in conn_params['ontology']:
+        query_conn_params['ontology'] = query_conn_params['ontology'].split(',')[0].strip()
+
     if not use_query_limit:
         # Remove results-limit
         if 'additional_headers' in conn_params and 'results-limit' in conn_params['additional_headers']:
@@ -170,7 +183,9 @@ def get_timbr_agent_options(agent_name: str, conn_params: dict) -> dict:
     # Query agent options (case-insensitive match on agent_name)
     options_query = f"SELECT option_name, option_value FROM timbr.sys_agents_options WHERE LOWER(agent_name) = LOWER('{agent_name}')"
     
-    results = run_query(options_query, conn_params)
+    # Fix for multiple ontologies - load the prompt template using a specific ontology connection
+    use_ontology = "system_db" if conn_params.get("ontology") and ',' in conn_params.get("ontology") else conn_params.get("ontology")
+    results = run_query(options_query, {**conn_params, "ontology": use_ontology})
     if len(results) == 0:
         raise Exception(f'Agent "{agent_name}" not found or has no options defined.')
     for row in results:

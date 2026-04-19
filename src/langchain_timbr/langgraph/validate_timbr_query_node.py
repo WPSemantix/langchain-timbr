@@ -37,6 +37,8 @@ class ValidateSemanticSqlNode:
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         debug: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -49,7 +51,7 @@ class ValidateSemanticSqlNode:
         :param retries: The maximum number of retries to attempt
         :param concepts_list: Optional specific concept options to query
         :param views_list: Optional specific view options to query
-        :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query. 
+        :param include_logic_concepts: Optional boolean to include logic concepts (concepts without unique properties which only inherits from an upper level concept with filter logic) in the query.
         :param include_tags: Optional specific concepts & properties tag options to use in the query (Disabled by default. Use '*' to enable all tags or a string represents a list of tags divided by commas (e.g. 'tag1,tag2')
         :param exclude_properties: Optional specific properties to exclude from the query (entity_id, entity_type & entity_label by default).
         :param max_limit: Maximum number of rows to query
@@ -63,6 +65,8 @@ class ValidateSemanticSqlNode:
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
         :param enable_reasoning: Whether to enable reasoning during SQL generation (default is False).
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
+        :param enable_trace: Whether to enable trace logging for this node's operations.
+        :param conversation_id: Optional conversation ID for tracking across multi-turn conversations.
         """
         self.chain = ValidateTimbrSqlChain(
             llm=llm,
@@ -89,6 +93,8 @@ class ValidateSemanticSqlNode:
             enable_reasoning=enable_reasoning,
             reasoning_steps=reasoning_steps,
             debug=debug,
+            enable_trace=enable_trace,
+            conversation_id=conversation_id,
             **kwargs,
         )
 
@@ -97,11 +103,14 @@ class ValidateSemanticSqlNode:
         try:
             sql = state.sql
             prompt = state.prompt
+            conversation_id = state.conversation_id
         except Exception:
             sql = state.get('sql', None)
             prompt = state.get('prompt', None)
-
-        return self.chain.invoke({ "sql": sql, "prompt": prompt })
+            conversation_id = state.get('conversation_id', None)
+        
+        chain_context = state.get('chain_context', None)
+        return self.chain.invoke({"sql": sql, "prompt": prompt, "conversation_id": conversation_id, "chain_context": chain_context})
 
 
     def __call__(self, payload: dict) -> dict:

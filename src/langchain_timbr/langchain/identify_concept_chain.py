@@ -2,9 +2,9 @@ from typing import Optional, Union, Dict, Any
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
 
-from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
+from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
-from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params
+from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import determine_concept
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -40,6 +40,8 @@ class IdentifyTimbrConceptChain(Chain):
         jwt_tenant_id: Optional[str] = None,
         conn_params: Optional[dict] = None,
         debug: Optional[bool] = False,
+        enable_trace: Optional[bool] = config.enable_trace,
+        conversation_id: Optional[str] = None,
         **kwargs,
     ):
         """
@@ -59,6 +61,8 @@ class IdentifyTimbrConceptChain(Chain):
         :param is_jwt: Whether to use JWT authentication (default is False).
         :param jwt_tenant_id: JWT tenant ID for multi-tenant environments (required when is_jwt=True).
         :param conn_params: Extra Timbr connection parameters sent with every request (e.g., 'x-api-impersonate-user').
+        :param enable_trace: Whether to enable trace logging for this chain's operations (default is False).
+        :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
         :param kwargs: Additional arguments to pass to the base
         
         ## Example
@@ -123,6 +127,7 @@ class IdentifyTimbrConceptChain(Chain):
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
+            self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._concepts_list = parse_list(concepts_list)
@@ -132,7 +137,11 @@ class IdentifyTimbrConceptChain(Chain):
             self._should_validate = to_boolean(should_validate)
             self._retries = to_integer(retries)
             self._note = note
-        
+            self._enable_trace = to_boolean(enable_trace)
+
+        self._enable_logging = self._enable_trace
+        self._conversation_id = conversation_id
+
 
     @property
     def usage_metadata_key(self) -> str:
@@ -141,12 +150,21 @@ class IdentifyTimbrConceptChain(Chain):
 
     @property
     def input_keys(self) -> list:
-        return ["prompt"]
+        return ["prompt", "conversation_id"]
 
 
     @property
     def output_keys(self) -> list:
-        return ["schema", "concept", "concept_metadata", self.usage_metadata_key]
+        base = [
+            "ontology",
+            "schema",
+            "concept",
+            "concept_metadata",
+            "identify_concept_reason",
+            self.usage_metadata_key,
+            "conversation_id",
+        ]
+        return list(dict.fromkeys(self.input_keys + base))
 
 
     def _get_conn_params(self) -> dict:
@@ -162,7 +180,37 @@ class IdentifyTimbrConceptChain(Chain):
 
 
     def _call(self, inputs: Dict[str, Any], run_manager=None) -> Dict[str, str]:
+        from ..utils.chain_logger import (
+            AgentLogContext, new_query_id, _now,
+            log_agent_start, log_agent_step, log_chain_trace, _sum_token_field,
+        )
+
         prompt = inputs["prompt"]
+        conversation_id = inputs.get("conversation_id") or self._conversation_id
+
+        _log_ctx = self._received_log_ctx
+
+        if _log_ctx is None and self._enable_logging:
+            _query_id = new_query_id()
+            _log_ctx = AgentLogContext(
+                query_id=_query_id,
+                agent_name=self._agent or "",
+                url=build_server_url(config.thrift_host, config.thrift_port),
+                token=self._token,
+                chain_type="IdentifyTimbrConceptChain",
+                start_time=_now(),
+                prompt=prompt,
+                enable_trace=self._enable_trace,
+                is_delegated=False,
+                conversation_id=conversation_id or _query_id,
+            )
+            log_agent_start(_log_ctx, self._ontology, None)
+
+        if _log_ctx:
+            _log_ctx.current_step = "identifying_concept"
+            log_agent_step(_log_ctx)
+
+        _chain_start = _now()
         res = determine_concept(
             question=prompt,
             llm=self._llm,
@@ -178,7 +226,42 @@ class IdentifyTimbrConceptChain(Chain):
         )
 
         usage_metadata = res.pop("usage_metadata", {})
-        return {
+        concept = res.get("concept")
+
+        if _log_ctx:
+            if concept:
+                _log_ctx.concept = concept
+
+        _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
+        _chain_ctx = self._received_chain_context
+        _chain_ctx["duration"]["IdentifyTimbrConceptChain"] = _duration_ms
+        if res.get("identify_concept_reason"):
+            _chain_ctx["reasoning"]["identify_concept_reason"] = res["identify_concept_reason"]
+        _chain_ctx["tokens"]["IdentifyTimbrConceptChain"] = {
+            "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
+            "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
+            "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
+        }
+
+        result = {
+            **inputs,
             **res,
             self.usage_metadata_key: usage_metadata,
+            "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
         }
+
+        if _log_ctx:
+            log_chain_trace(
+                ctx=_log_ctx,
+                chain_type=_log_ctx.chain_type,
+                start_time=_chain_start,
+                status="completed",
+                question=prompt,
+                ontology=self._ontology,
+                schema=res.get("schema"),
+                concept=concept,
+                chain_output={"concept": concept, "identify_concept_reason": result.get("identify_concept_reason")},
+                usage_metadata=usage_metadata,
+            )
+
+        return sanitize_results(self.output_keys, result)
