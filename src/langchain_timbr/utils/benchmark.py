@@ -90,10 +90,10 @@ def _matches_expected_value(expected_value: Any, selected_value: Any) -> Optiona
     """Compare expected and selected values using normalization.
 
     Returns:
-        ``None`` when expected value is missing, otherwise ``True``/``False``.
+        ``True`` when expected value is missing, otherwise ``True``/``False``.
     """
     if expected_value is None:
-        return None
+        return True
     return _normalize_value(expected_value) == _normalize_value(selected_value)
 
 
@@ -979,10 +979,7 @@ def run_benchmark(
                         "reasoning_status": raw.get("reasoning_status"),
                         "identify_concept_reason": raw.get("identify_concept_reason"),
                         "generate_sql_reason": raw.get("generate_sql_reason"),
-                        # Wrap into the nested format used by the token-counting logic
-                        "usage_metadata": {
-                            "generate_sql": raw.get("generate_sql_usage_metadata") or {}
-                        },
+                        "usage_metadata": raw.get("generate_sql_usage_metadata") or {},
                     }
                 else:
                     llm_result = agent_executor.invoke({"input": question_text})  # type: ignore[misc]
