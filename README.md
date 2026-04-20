@@ -82,3 +82,63 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`LLM_ENDPOINT`** - LLM provider OpenAI endpoint URL
 - **`LLM_API_VERSION`** - LLM provider API version
 - **`LLM_SCOPE`** - LLM provider authentication scope
+
+#### Monitoring & History
+
+- **`TIMBR_ENABLE_TRACE`** - Enable detailed trace logging for agent/chain execution (true/false, default: `false`)
+- **`TIMBR_ENABLE_HISTORY`** - Enable query history tracking (true/false, default: `false`)
+- **`TIMBR_HISTORY_SAVE_RESULTS`** - Whether to save query result rows in history (true/false, default: `false`)
+
+## Monitoring & Tracing
+
+The SDK supports optional execution tracing and query history recording. These can be enabled via environment variables (see above) or set directly on `TimbrSqlAgent`:
+
+```python
+from langchain_timbr import TimbrSqlAgent
+
+agent = TimbrSqlAgent(
+    llm=llm,
+    url="https://your-timbr-server",
+    token="your-token",
+    ontology="your_ontology",
+    enable_trace=True,        # Enable chain-level trace logging
+    enable_history=True,      # Enable query history storage
+    save_results=True,        # Save result rows in history
+    conversation_id="conv-123",  # Group calls into a multi-turn conversation
+)
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enable_trace` | `Optional[bool]` | `TIMBR_ENABLE_TRACE` | Enable detailed trace logging per chain step |
+| `enable_history` | `Optional[bool]` | `TIMBR_ENABLE_HISTORY` | Store query execution history |
+| `save_results` | `Optional[bool]` | `TIMBR_HISTORY_SAVE_RESULTS` | Include result rows in history entries |
+| `conversation_id` | `Optional[str]` | `None` | Associate multiple agent calls under one conversation |
+
+## Benchmarking
+
+The SDK includes a benchmarking utility to evaluate LLM query accuracy against a named benchmark defined in your Timbr server.
+
+```python
+from langchain_timbr.utils.benchmark import run_benchmark
+
+results = run_benchmark(
+    benchmark_name="my_benchmark",
+    url="https://your-timbr-server",
+    token="your-token",
+    ontology="your_ontology",
+    execution="full",             # "full" or "generate_sql_only"
+    number_of_iterations=1,
+    use_deterministic=True,       # Row-comparison scoring
+    use_llm_judge=False,          # LLM-as-judge scoring
+    llm_params={                  # Optional: override LLM at runtime
+        "llm_type": "openai",
+        "llm_model": "gpt-4o",
+        "api_key": "sk-...",
+    },
+)
+```
+
+The `llm_params` dict accepts: `llm_type`, `llm_model` / `model`, `llm_api_key` / `api_key`. Temperature and timeout are managed automatically.
+
+Results are returned as a dict keyed by question ID, with a `"_summary"` key containing aggregate statistics. Each result includes a `selected_entity` field identifying which ontology entity was used.
