@@ -582,8 +582,8 @@ class TestRunBenchmark:
 
         assert results["Q1"]["correct_concept"] is True
         assert results["Q1"]["correct_ontology"] is True
-        assert results["Q2"]["correct_concept"] is None
-        assert results["Q2"]["correct_ontology"] is None
+        assert results["Q2"]["correct_concept"] is True
+        assert results["Q2"]["correct_ontology"] is True
 
     @patch("langchain_timbr.utils.benchmark.LlmWrapper")
     @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
@@ -851,7 +851,7 @@ class TestRunBenchmarkExecutionMode:
             "reasoning_status": None,
             "identify_concept_reason": "Matched Policy concept.",
             "generate_sql_reason": "Count pattern applied.",
-            "generate_sql_usage_metadata": {"total_tokens": 150},
+            "generate_sql_usage_metadata": {"generate_sql": {"total_tokens": 150}},
         }
 
     @patch("langchain_timbr.utils.benchmark.GenerateTimbrSqlChain")
@@ -1282,7 +1282,7 @@ class TestRunBenchmarkIterations:
             "reasoning_status": None,
             "identify_concept_reason": None,
             "generate_sql_reason": None,
-            "generate_sql_usage_metadata": {"total_tokens": 80},
+            "generate_sql_usage_metadata": {"generate_sql": {"total_tokens": 80}},
         }
         mock_chain_cls.return_value = mock_chain
 

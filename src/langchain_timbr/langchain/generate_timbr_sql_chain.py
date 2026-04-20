@@ -1,13 +1,14 @@
+import logging
 from typing import Optional, Union, Dict, Any
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
-
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
-
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_llm_utils import generate_sql
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
+
+logger = logging.getLogger(__name__)
 
 class GenerateTimbrSqlChain(Chain):
     """
@@ -254,27 +255,65 @@ class GenerateTimbrSqlChain(Chain):
             log_agent_step(_log_ctx)
 
         _chain_start = _now()
-        generate_res = generate_sql(
-            question=prompt,
-            llm=self._llm,
-            conn_params=self._get_conn_params(),
-            schema=self._schema,
-            concept=self._concept,
-            concepts_list=self._concepts_list,
-            views_list=self._views_list,
-            include_tags=self._include_tags,
-            include_logic_concepts=self._include_logic_concepts,
-            exclude_properties=self._exclude_properties,
-            should_validate_sql=self._should_validate_sql,
-            retries=self._retries,
-            max_limit=self._max_limit,
-            note=self._note,
-            db_is_case_sensitive=self._db_is_case_sensitive,
-            graph_depth=self._graph_depth,
-            enable_reasoning=self._enable_reasoning,
-            reasoning_steps=self._reasoning_steps,
-            debug=self._debug,
-        )
+        try:
+            generate_res = generate_sql(
+                question=prompt,
+                llm=self._llm,
+                conn_params=self._get_conn_params(),
+                schema=self._schema,
+                concept=self._concept,
+                concepts_list=self._concepts_list,
+                views_list=self._views_list,
+                include_tags=self._include_tags,
+                include_logic_concepts=self._include_logic_concepts,
+                exclude_properties=self._exclude_properties,
+                should_validate_sql=self._should_validate_sql,
+                retries=self._retries,
+                max_limit=self._max_limit,
+                note=self._note,
+                db_is_case_sensitive=self._db_is_case_sensitive,
+                graph_depth=self._graph_depth,
+                enable_reasoning=self._enable_reasoning,
+                reasoning_steps=self._reasoning_steps,
+                debug=self._debug,
+            )
+        except Exception as exc:
+            error = str(exc)
+            logger.error("GenerateTimbrSqlChain generate_sql failed: %s", error)
+            if _log_ctx:
+                log_chain_trace(
+                    ctx=_log_ctx,
+                    chain_type=_log_ctx.chain_type,
+                    start_time=_chain_start,
+                    status="failed",
+                    question=prompt,
+                    ontology=self._ontology,
+                    concept=self._concept,
+                    schema=self._schema,
+                    generated_sql="",
+                    chain_output={},
+                    is_sql_valid=False,
+                    error=error,
+                    reasoning_status=None,
+                    usage_metadata={},
+                )
+            return sanitize_results(
+                self.output_keys,
+                {
+                    **inputs,
+                    "sql": "",
+                    "ontology": self._ontology,
+                    "schema": self._schema,
+                    "concept": self._concept,
+                    "is_sql_valid": False,
+                    "error": error,
+                    "identify_concept_reason": None,
+                    "generate_sql_reason": None,
+                    "reasoning_status": None,
+                    self.usage_metadata_key: {},
+                    "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
+                },
+            )
 
         sql = generate_res.get("sql", "")
         ontology = generate_res.get("ontology", self._ontology)

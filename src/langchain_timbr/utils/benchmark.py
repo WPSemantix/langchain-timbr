@@ -90,10 +90,10 @@ def _matches_expected_value(expected_value: Any, selected_value: Any) -> Optiona
     """Compare expected and selected values using normalization.
 
     Returns:
-        ``None`` when expected value is missing, otherwise ``True``/``False``.
+        ``True`` when expected value is missing, otherwise ``True``/``False``.
     """
     if expected_value is None:
-        return None
+        return True
     return _normalize_value(expected_value) == _normalize_value(selected_value)
 
 
@@ -574,6 +574,7 @@ def run_benchmark(
     verify_ssl: bool = False,
     is_jwt: Optional[bool] = None,
     jwt_tenant_id: Optional[str] = None,
+    llm_params: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run an LLM benchmark against a Timbr agent and return scored results.
@@ -798,6 +799,24 @@ def run_benchmark(
     llm_model: str = agent_options.get("llm_model") or config.llm_model or ""
     llm_api_key: Optional[str] = agent_options.get("llm_api_key") or config.llm_api_key
 
+    # Runtime override: if explicit llm_params passed
+    # they take precedence over agent_options and config.
+    # Keys match LlmWrapper constructor: llm_type, model, api_key (+ extras like endpoint).
+    _use_llm_params = bool(llm_params)
+    if llm_params:
+        # Extract named LlmWrapper params — pop so they don't leak into **llm_params
+        llm_type    = llm_params.pop("llm_type",    None) or llm_type
+        llm_model   = llm_params.pop("llm_model",   None) or llm_params.pop("model",   None) or llm_model
+        llm_api_key = llm_params.pop("llm_api_key", None) or llm_params.pop("api_key", None) or llm_api_key
+        # Temperature is always forced to 0 for judge / SQL generation
+        llm_params.pop("temperature",     None)
+        llm_params.pop("llm_temperature", None)
+        # Timeout is handled separately
+        llm_params.pop("llm_timeout", None)
+        additional_params = llm_params.pop("llm_additional_params", None)
+        if additional_params and isinstance(additional_params, dict):
+            llm_params.update(additional_params)
+
     # ------------------------------------------------------------------
     # Build LLM wrapper for judge scoring (if needed)
     # ------------------------------------------------------------------
@@ -808,6 +827,7 @@ def run_benchmark(
             model=llm_model,
             api_key=llm_api_key,
             temperature=0,
+            **(llm_params or {}),
         )
 
     # ------------------------------------------------------------------
@@ -833,6 +853,7 @@ def run_benchmark(
                 model=llm_model,
                 api_key=llm_api_key,
                 temperature=0,
+                **(llm_params or {}),
             )
         logger.info(f"Creating GenerateTimbrSqlChain for '{agent_name}'…")
         sql_chain = GenerateTimbrSqlChain(
@@ -846,7 +867,15 @@ def run_benchmark(
         )
     else:
         logger.info(f"Creating Timbr SQL agent for '{agent_name}'…")
+        override_llm = LlmWrapper(
+            llm_type=llm_type,
+            model=llm_model,
+            api_key=llm_api_key,
+            temperature=0,
+            **llm_params,
+        ) if _use_llm_params else None
         agent_executor = create_timbr_sql_agent(
+            llm=override_llm,
             url=resolved_url,
             token=resolved_token,
             # ontology=resolved_ontology,
@@ -950,10 +979,7 @@ def run_benchmark(
                         "reasoning_status": raw.get("reasoning_status"),
                         "identify_concept_reason": raw.get("identify_concept_reason"),
                         "generate_sql_reason": raw.get("generate_sql_reason"),
-                        # Wrap into the nested format used by the token-counting logic
-                        "usage_metadata": {
-                            "generate_sql": raw.get("generate_sql_usage_metadata") or {}
-                        },
+                        "usage_metadata": raw.get("generate_sql_usage_metadata") or {},
                     }
                 else:
                     llm_result = agent_executor.invoke({"input": question_text})  # type: ignore[misc]
@@ -1038,6 +1064,8 @@ def run_benchmark(
         benchmark_results[question_id]["correct_ontology"] = _matches_expected_value(expected_ontology, selected_ontology)
         benchmark_results[question_id]["tokens_used"] = question_tokens_total
         benchmark_results[question_id]["status"] = result_status
+        if last_llm_result.get("error"):
+            benchmark_results[question_id]["error"] = last_llm_result.get("error")
         benchmark_results[question_id]["score_breakdown"] = last_score_result.get("breakdown", {})
         benchmark_results[question_id]["scoring_method"] = last_score_result.get("scoring_method", "error")
         if "reasoning" in last_score_result:
