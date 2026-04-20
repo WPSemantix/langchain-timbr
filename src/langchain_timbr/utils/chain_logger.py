@@ -36,6 +36,8 @@ class AgentLogContext:
     is_delegated: bool = False
     trace_sequence: int = 0
     conversation_id: Optional[str] = None
+    is_follow_up: Optional[bool] = None
+    parent_query_id: Optional[str] = None
 
 
 def new_query_id() -> str:
@@ -169,10 +171,10 @@ def log_agent_history(
         "answer_generated":                answer_generated,
         "chain_trace_enabled":             ctx.enable_trace,
         "has_results":                     has_results,
-        # "is_follow_up":                  None,   # future
+        "is_follow_up":                  ctx.is_follow_up,
         # "summarized_question":           None,   # future
         # "summarized_answer":             None,   # future
-        # "parent_query_id":               None,   # future
+        "parent_query_id":               ctx.parent_query_id,
         "langchain_timbr_version":         _LANGCHAIN_TIMBR_VERSION,
         "llm_type":                        llm_type or "",
         "llm_model":                       llm_model or "",

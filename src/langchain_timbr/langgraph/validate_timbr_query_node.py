@@ -39,6 +39,8 @@ class ValidateSemanticSqlNode:
         debug: Optional[bool] = False,
         enable_trace: Optional[bool] = config.enable_trace,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
         **kwargs,
     ):
         """
@@ -67,6 +69,8 @@ class ValidateSemanticSqlNode:
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled (default is 2).
         :param enable_trace: Whether to enable trace logging for this node's operations.
         :param conversation_id: Optional conversation ID for tracking across multi-turn conversations.
+        :param enable_memory: Whether to enable conversation memory (default from TIMBR_ENABLE_MEMORY env var).
+        :param memory_window_size: Number of past conversation turns to consider (default from TIMBR_MEMORY_WINDOW_SIZE env var).
         """
         self.chain = ValidateTimbrSqlChain(
             llm=llm,
@@ -95,6 +99,8 @@ class ValidateSemanticSqlNode:
             debug=debug,
             enable_trace=enable_trace,
             conversation_id=conversation_id,
+            enable_memory=enable_memory,
+            memory_window_size=memory_window_size,
             **kwargs,
         )
 

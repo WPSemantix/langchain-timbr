@@ -240,12 +240,13 @@ def validate_sql(sql: str, conn_params: dict) -> tuple[bool, str, str]:
         is_valid = _validate(sql, conn_params)
     except Exception as e:
         error = str(getattr(e, 'doc', e))
-        if not sql.upper().startswith("SELECT"):
-            sql = sql[sql.upper().index("SELECT"):]
+        if not sql.upper().startswith("SELECT") and not sql.upper().startswith("WITH"):
+            test_sql = sql[sql.upper().index("SELECT"):]
             try:
-                is_valid = _validate(sql, conn_params)
+                is_valid = _validate(test_sql, conn_params)
                 if is_valid:
                     error = None
+                    sql = test_sql
             except Exception:
                 pass
 

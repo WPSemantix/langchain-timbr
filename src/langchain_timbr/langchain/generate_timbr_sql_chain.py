@@ -50,6 +50,8 @@ class GenerateTimbrSqlChain(Chain):
         debug: Optional[bool] = False,
         enable_trace: Optional[bool] = config.enable_trace,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
         **kwargs,
     ):
         """
@@ -160,6 +162,8 @@ class GenerateTimbrSqlChain(Chain):
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
+            self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
+            self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -178,6 +182,8 @@ class GenerateTimbrSqlChain(Chain):
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
             self._note = note
             self._enable_trace = to_boolean(enable_trace)
+            self._enable_memory = to_boolean(enable_memory)
+            self._memory_window_size = to_integer(memory_window_size)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -228,9 +234,25 @@ class GenerateTimbrSqlChain(Chain):
             AgentLogContext, new_query_id, _now,
             log_agent_start, log_agent_step, log_chain_trace, _sum_token_field,
         )
+        from ..utils.memory import resolve_memory, MemoryContext, MEMORY_DISABLED
 
         prompt = inputs["prompt"]
         conversation_id = inputs.get("conversation_id") or self._conversation_id
+
+        # ---- memory resolution (once per top-level invocation) ----
+        _chain_ctx = self._received_chain_context
+        if _chain_ctx.get("memory") is None and self._enable_memory:
+            _chain_ctx["memory"] = resolve_memory(
+                llm=self._llm,
+                conn_params=self._get_conn_params(),
+                conversation_id=conversation_id,
+                prompt=prompt,
+                enable_memory=self._enable_memory,
+                memory_window_size=self._memory_window_size,
+                concept_names=self._concepts_list,
+            )
+        memory_ctx = _chain_ctx.get("memory")
+        memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
 
         _log_ctx = self._received_log_ctx
 
@@ -276,6 +298,7 @@ class GenerateTimbrSqlChain(Chain):
                 enable_reasoning=self._enable_reasoning,
                 reasoning_steps=self._reasoning_steps,
                 debug=self._debug,
+                memory_context=memory_ctx,
             )
         except Exception as exc:
             error = str(exc)

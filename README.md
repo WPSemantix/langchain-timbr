@@ -142,3 +142,7 @@ results = run_benchmark(
 The `llm_params` dict accepts: `llm_type`, `llm_model` / `model`, `llm_api_key` / `api_key`. Temperature and timeout are managed automatically.
 
 Results are returned as a dict keyed by question ID, with a `"_summary"` key containing aggregate statistics. Each result includes a `selected_entity` field identifying which ontology entity was used.
+#### Conversation Memory
+
+- **`TIMBR_ENABLE_MEMORY`** - Enable conversation memory for follow-up question detection (true/false, default: false)
+- **`TIMBR_MEMORY_WINDOW_SIZE`** - Number of past conversation turns to consider when detecting follow-ups (default: 3)

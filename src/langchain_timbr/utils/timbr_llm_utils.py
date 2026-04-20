@@ -97,8 +97,7 @@ def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 120) -> Any:
             raise e
 
 MEASURES_DESCRIPTION = "The following columns are calculated measures and can only be aggregated with an aggregate function: COUNT/SUM/AVG/MIN/MAX (count distinct is not allowed)"
-TRANSITIVE_RELATIONSHIP_DESCRIPTION = "Transitive relationship columns allow you to access data through multiple relationship hops. These columns follow the pattern `<relationship_name>[<table_name>*<number>].<column_name>` where the number after the asterisk (*) indicates how many relationship levels to traverse. For example, `acquired_by[company*4].company_name` means 'go through up to 4 levels of the acquired_by relationship to get the company name', while columns ending with '_transitivity_level' indicate the actual relationship depth (Cannot be null or 0 - level 1 represents direct relationships, while levels 2, 3, 4, etc. represent indirect relationships through multiple hops. To filter by relationship type, use `_transitivity_level = 1` for direct relationships only, `_transitivity_level > 1` for indirect relationships only."
-
+TRANSITIVE_RELATIONSHIP_DESCRIPTION = "Transitive relationship columns match pattern \"<relationship>[<concept>*N].<column>\". The *N is a PLACEHOLDER you must rewrite: if the question specifies a depth set N to that number; otherwise keep the schema's N. Use the SAME N across the query. Example: if schema shows `<rel>[<concept>*2].<col>` and the question asks for 3 levels, write `<rel>[<concept>*3].<col>`. Do NOT add `<relationship>_transitivity_level BETWEEN 1 AND N` — *N already bounds traversal. Only filter `<relationship>_transitivity_level` to exclude levels: =1 for direct only, >1 for indirect only."
 
 def _prompt_to_string(prompt: Any) -> str:
     prompt_text = ''
@@ -294,6 +293,7 @@ def determine_concept(
     note: Optional[str] = '',
     debug: Optional[bool] = False,
     timeout: Optional[int] = None,
+    memory_context=None,
 ) -> dict[str, Any]:
     usage_metadata = {}
     determined_concept_name = None
@@ -303,6 +303,13 @@ def determine_concept(
     # Use config default timeout if none provided
     if timeout is None:
         timeout = config.llm_timeout
+
+    # Inject memory context into note
+    if memory_context is not None:
+        from .memory import format_memory_note_for_sql
+        memory_note = format_memory_note_for_sql(memory_context)
+        if memory_note:
+            note = (memory_note + '\n' + note) if note else memory_note
     
     # Fix for multiple ontologies - load the prompt template using a specific ontology connection
     determine_concept_prompt = None
@@ -710,8 +717,8 @@ def _build_sql_generation_context(
     
     # Build context descriptions
     sensitivity_txt = "- Ensure value comparisons are case-insensitive, e.g., use LOWER(column) = 'value'.\n" if db_is_case_sensitive else ""
-    measures_context = f"- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
-    transitive_context = f"- {TRANSITIVE_RELATIONSHIP_DESCRIPTION}\n" if has_transitive_relationships else ""
+    measures_context = f"\n- {MEASURES_DESCRIPTION}: {measures_str}\n" if measures_str else ""
+    transitive_context = f"\n- {TRANSITIVE_RELATIONSHIP_DESCRIPTION}\n" if has_transitive_relationships else ""
     
     return {
         'cur_date': cur_date,
@@ -976,6 +983,7 @@ def generate_sql(
         reasoning_steps: Optional[int] = 2,
         debug: Optional[bool] = False,
         timeout: Optional[int] = None,
+        memory_context=None,
     ) -> dict[str, str]:
     usage_metadata = {}
     concept_metadata = None
@@ -984,6 +992,13 @@ def generate_sql(
     # Use config default timeout if none provided
     if timeout is None:
         timeout = config.llm_timeout
+
+    # Inject memory context into note
+    if memory_context is not None:
+        from .memory import format_memory_note_for_sql
+        memory_note = format_memory_note_for_sql(memory_context)
+        if memory_note:
+            note = (memory_note + '\n' + note) if note else memory_note
     
     if concept and concept != "" and (schema is None or schema != "vtimbr"):
         concepts_list = [concept]
@@ -1133,6 +1148,7 @@ def answer_question(
     timeout: Optional[int] = None,
     note: Optional[str] = '',
     debug: Optional[bool] = False,
+    memory_context=None,
 ) -> dict[str, Any]:
     # Use config default timeout if none provided
     if timeout is None:
@@ -1140,10 +1156,18 @@ def answer_question(
 
     qa_prompt = get_qa_prompt_template(conn_params)
 
+    # Build additional_context with optional memory
+    additional_context = f"SQL QUERY:\n{sql}\n\n" if sql else ""
+    if memory_context is not None:
+        from .memory import format_memory_note_for_answer
+        memory_note = format_memory_note_for_answer(memory_context)
+        if memory_note:
+            additional_context = memory_note + "\n\n" + additional_context
+
     prompt = qa_prompt.format_messages(
         question=question,
         formatted_rows=results,
-        additional_context=f"SQL QUERY:\n{sql}\n\n" if sql else "",
+        additional_context=additional_context,
         note=note,
     )
     

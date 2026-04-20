@@ -45,6 +45,8 @@ class GenerateResponseNode:
         enable_history: Optional[bool] = config.enable_history,
         save_results: Optional[bool] = config.history_save_results,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
         **kwargs,
     ):
         """
@@ -78,6 +80,8 @@ class GenerateResponseNode:
         :param enable_history: Whether to enable history logging (default is True).
         :param save_results: Whether to save results in history when enable_history is True (default is False).
         :param conversation_id: Optional conversation ID for tracking across multi-turn conversations.
+        :param enable_memory: Whether to enable conversation memory (default from TIMBR_ENABLE_MEMORY env var).
+        :param memory_window_size: Number of past conversation turns to consider (default from TIMBR_MEMORY_WINDOW_SIZE env var).
         """
         self.chain = GenerateAnswerChain(
             llm=llm,
@@ -111,6 +115,8 @@ class GenerateResponseNode:
             enable_history=enable_history,
             save_results=save_results,
             conversation_id=conversation_id,
+            enable_memory=enable_memory,
+            memory_window_size=memory_window_size,
             **kwargs,
         )
 

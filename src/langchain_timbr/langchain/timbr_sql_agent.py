@@ -49,6 +49,8 @@ class TimbrSqlAgent(Runnable):
         enable_history: Optional[bool] = config.enable_history,
         save_results: Optional[bool] = config.history_save_results,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
@@ -112,6 +114,8 @@ class TimbrSqlAgent(Runnable):
         self._enable_logging = to_boolean(enable_trace)
         self._conversation_id = conversation_id
         self._generate_answer = to_boolean(generate_answer)
+        self._enable_memory = to_boolean(enable_memory)
+        self._memory_window_size = to_integer(memory_window_size)
 
         if self._generate_answer:
             self._chain = GenerateAnswerChain(
@@ -146,6 +150,8 @@ class TimbrSqlAgent(Runnable):
                 enable_history=to_boolean(enable_history),
                 save_results=to_boolean(save_results),
                 conversation_id=conversation_id,
+                enable_memory=self._enable_memory,
+                memory_window_size=self._memory_window_size,
             )
         else:
             self._chain = ExecuteTimbrQueryChain(
@@ -178,6 +184,8 @@ class TimbrSqlAgent(Runnable):
                 debug=to_boolean(debug),
                 enable_trace=to_boolean(enable_trace),
                 conversation_id=conversation_id,
+                enable_memory=self._enable_memory,
+                memory_window_size=self._memory_window_size,
             )
 
 
@@ -304,6 +312,13 @@ class TimbrSqlAgent(Runnable):
             if result.get('conversation_id') != _conversation_id:
                 _conversation_id = result.get('conversation_id')
 
+            # Persist memory follow-up state to log context
+            _result_chain_ctx = result.get("chain_context") or {}
+            _mem = _result_chain_ctx.get("memory")
+            if _log_ctx and _mem and hasattr(_mem, "is_follow_up") and _mem.is_follow_up:
+                _log_ctx.is_follow_up = True
+                _log_ctx.parent_query_id = _mem.parent_message_id
+
             return self._build_result(result, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
             return self._get_error_response(str(e), _conversation_id)
@@ -337,6 +352,13 @@ class TimbrSqlAgent(Runnable):
 
             if result.get('conversation_id') != _conversation_id:
                 _conversation_id = result.get('conversation_id')
+
+            # Persist memory follow-up state to log context
+            _result_chain_ctx = result.get("chain_context") or {}
+            _mem = _result_chain_ctx.get("memory")
+            if _log_ctx and _mem and hasattr(_mem, "is_follow_up") and _mem.is_follow_up:
+                _log_ctx.is_follow_up = True
+                _log_ctx.parent_query_id = _mem.parent_message_id
 
             return self._build_result(result, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
@@ -376,6 +398,8 @@ def create_timbr_sql_agent(
     enable_history: Optional[bool] = config.enable_history,
     save_results: Optional[bool] = config.history_save_results,
     conversation_id: Optional[str] = None,
+    enable_memory: Optional[bool] = config.enable_memory,
+    memory_window_size: Optional[int] = config.memory_window_size,
 ) -> TimbrSqlAgent:
     """
     Create and configure a Timbr agent with its executor.
@@ -485,6 +509,8 @@ def create_timbr_sql_agent(
         enable_history=enable_history,
         save_results=save_results,
         conversation_id=conversation_id,
+        enable_memory=enable_memory,
+        memory_window_size=memory_window_size,
     )
 
     return timbr_agent
