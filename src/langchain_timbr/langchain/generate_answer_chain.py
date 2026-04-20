@@ -54,6 +54,8 @@ class GenerateAnswerChain(Chain):
         enable_history: Optional[bool] = config.enable_history,
         save_results: Optional[bool] = config.history_save_results,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
         **kwargs,
     ):
         """
@@ -146,6 +148,8 @@ class GenerateAnswerChain(Chain):
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
             self._enable_history = to_boolean(agent_options.get("enable_history")) if "enable_history" in agent_options else to_boolean(enable_history)
             self._save_results = to_boolean(agent_options.get("history_save_results")) if "history_save_results" in agent_options else to_boolean(save_results)
+            self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
+            self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
         else:
             self._note = note
             self._enable_trace = to_boolean(enable_trace)
@@ -154,6 +158,8 @@ class GenerateAnswerChain(Chain):
             self._ontology = ontology
             self._schema = schema
             self._concept = concept
+            self._enable_memory = to_boolean(enable_memory)
+            self._memory_window_size = to_integer(memory_window_size)
 
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
@@ -191,6 +197,8 @@ class GenerateAnswerChain(Chain):
             debug=self._debug,
             enable_trace=enable_trace,
             conversation_id=conversation_id,
+            enable_memory=self._enable_memory,
+            memory_window_size=self._memory_window_size,
         )
 
 
@@ -251,11 +259,27 @@ class GenerateAnswerChain(Chain):
             log_agent_start, log_agent_step, log_agent_history, log_chain_trace,
             determine_status, get_llm_type, get_llm_model, _sum_token_field,
         )
+        from ..utils.memory import resolve_memory, MemoryContext, MEMORY_DISABLED
 
         prompt = inputs["prompt"]
         rows = inputs.get("rows")
         sql = inputs.get("sql")
         conversation_id = inputs.get("conversation_id") or self._conversation_id
+
+        # ---- memory resolution (once per top-level invocation) ----
+        _chain_ctx = self._received_chain_context
+        if _chain_ctx.get("memory") is None and self._enable_memory:
+            _chain_ctx["memory"] = resolve_memory(
+                llm=self._llm,
+                conn_params=self._get_conn_params(),
+                conversation_id=conversation_id,
+                prompt=prompt,
+                enable_memory=self._enable_memory,
+                memory_window_size=self._memory_window_size,
+                concept_names=self._concepts_list if hasattr(self, '_concepts_list') else None,
+            )
+        memory_ctx = _chain_ctx.get("memory")
+        memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
 
         execute_result = {}
         if rows is None:
@@ -294,6 +318,10 @@ class GenerateAnswerChain(Chain):
         if _log_ctx:
             _log_ctx.current_step = "generating_answer"
             log_agent_step(_log_ctx)
+            # Persist memory follow-up state
+            if memory_ctx and memory_ctx.is_follow_up:
+                _log_ctx.is_follow_up = True
+                _log_ctx.parent_query_id = memory_ctx.parent_message_id
 
         _chain_start = _now()
         _answer_start = _chain_start
@@ -305,6 +333,7 @@ class GenerateAnswerChain(Chain):
             sql=sql,
             note=self._note,
             debug=self._debug,
+            memory_context=memory_ctx,
         )
 
         answer = res.get("answer", "")

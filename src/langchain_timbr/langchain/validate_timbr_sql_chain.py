@@ -50,6 +50,8 @@ class ValidateTimbrSqlChain(Chain):
         debug: Optional[bool] = False,
         enable_trace: Optional[bool] = config.enable_trace,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
         **kwargs,
     ):
         """
@@ -158,6 +160,8 @@ class ValidateTimbrSqlChain(Chain):
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
+            self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
+            self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -175,6 +179,8 @@ class ValidateTimbrSqlChain(Chain):
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
             self._enable_trace = to_boolean(enable_trace)
+            self._enable_memory = to_boolean(enable_memory)
+            self._memory_window_size = to_integer(memory_window_size)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id

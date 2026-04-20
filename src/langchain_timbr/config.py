@@ -42,3 +42,6 @@ llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.ge
 enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'false'))
 enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'false'))
 history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS', 'false'))
+
+enable_memory = to_boolean(os.environ.get('TIMBR_ENABLE_MEMORY', 'false'))
+memory_window_size = to_integer(os.environ.get('TIMBR_MEMORY_WINDOW_SIZE', 3))

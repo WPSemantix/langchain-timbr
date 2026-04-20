@@ -52,6 +52,8 @@ class ExecuteTimbrQueryChain(Chain):
         debug: Optional[bool] = False,
         enable_trace: Optional[bool] = config.enable_trace,
         conversation_id: Optional[str] = None,
+        enable_memory: Optional[bool] = config.enable_memory,
+        memory_window_size: Optional[int] = config.memory_window_size,
         **kwargs,
     ):
         """
@@ -166,6 +168,8 @@ class ExecuteTimbrQueryChain(Chain):
             if reasoning_steps is not None and reasoning_steps != self._reasoning_steps:
                 self._reasoning_steps = to_integer(reasoning_steps)
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
+            self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
+            self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -186,6 +190,8 @@ class ExecuteTimbrQueryChain(Chain):
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
             self._enable_trace = to_boolean(enable_trace)
+            self._enable_memory = to_boolean(enable_memory)
+            self._memory_window_size = to_integer(memory_window_size)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -244,7 +250,8 @@ class ExecuteTimbrQueryChain(Chain):
         concept_name: Optional[str] = None,
         schema_name: Optional[str] = None,
         error: Optional[str] = None,
-        conn_params: dict = None
+        conn_params: dict = None,
+        memory_context=None,
     ) -> Dict[str, Any]:
 
         if not prompt:
@@ -271,24 +278,31 @@ class ExecuteTimbrQueryChain(Chain):
             enable_reasoning=self._enable_reasoning,
             reasoning_steps=self._reasoning_steps,
             debug=self._debug,
+            memory_context=memory_context,
         )
 
         return generate_res
 
-
-    def _has_no_meaningful_results(self, rows: list) -> bool:
+    def _has_no_meaningful_results(self, rows: list, sql: str) -> bool:
         """
         Check if the rows returned from the query are empty or do not contain meaningful data.
         This can be customized based on specific criteria for what constitutes "meaningful" results.
         """
         if not rows:
             return True
-        
+
+        # Single-row aggregate returning 0/NULL — filter matched nothing.
+        if sql and len(rows) == 1:
+            sql_lower = sql.lower()
+            if any(fn in sql_lower for fn in ('count(', 'sum(', 'avg(', 'min(', 'max(')):
+                if all(v is None or v == 0 for v in rows[0].values()):
+                    return True
+
         # Check if all rows have all None values
         for row in rows:
             if any(value is not None for value in row.values()):
                 return False
-        
+
         return True
 
 
@@ -297,6 +311,7 @@ class ExecuteTimbrQueryChain(Chain):
             AgentLogContext, new_query_id,
             log_agent_start, log_agent_step, log_chain_trace, _now, _sum_token_field,
         )
+        from ..utils.memory import resolve_memory, MemoryContext, MEMORY_DISABLED
 
         # Variables declared before try so exception handler can reference them
         prompt = inputs.get("prompt")
@@ -311,6 +326,21 @@ class ExecuteTimbrQueryChain(Chain):
         identify_concept_reason = None
         generate_sql_reason = None
         _generate_sql_chain_duration_ms = 0
+
+        # ---- memory resolution (once per top-level invocation) ----
+        _chain_ctx = self._received_chain_context
+        if _chain_ctx.get("memory") is None and self._enable_memory:
+            _chain_ctx["memory"] = resolve_memory(
+                llm=self._llm,
+                conn_params=self._get_conn_params(),
+                conversation_id=conversation_id,
+                prompt=prompt or "",
+                enable_memory=self._enable_memory,
+                memory_window_size=self._memory_window_size,
+                concept_names=self._concepts_list,
+            )
+        memory_ctx = _chain_ctx.get("memory")
+        memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
 
         # Resolve logging context: received from parent (delegated) or create standalone
         _log_ctx = self._received_log_ctx
@@ -333,6 +363,11 @@ class ExecuteTimbrQueryChain(Chain):
         elif _log_ctx is not None:
             _log_ctx.retry_count = 0
             _log_ctx.no_results_retry_count = 0
+
+        # Persist memory follow-up state
+        if _log_ctx and memory_ctx and memory_ctx.is_follow_up:
+            _log_ctx.is_follow_up = True
+            _log_ctx.parent_query_id = memory_ctx.parent_message_id
 
         _chain_start = _now()
         try:
@@ -363,7 +398,7 @@ class ExecuteTimbrQueryChain(Chain):
                         log_agent_step(_log_ctx)
 
                     _gen_start = _now()
-                    generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params)
+                    generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params, memory_context=memory_ctx)
                     _generate_sql_chain_duration_ms += int((_now() - _gen_start).total_seconds() * 1000)
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
@@ -402,13 +437,13 @@ class ExecuteTimbrQueryChain(Chain):
 
                 if iteration < self._no_results_max_retries:
                     # If no rows are returned and we should infer the result, we will try to re-generate the SQL query
-                    if prompt is not None and self._retry_if_no_results and self._has_no_meaningful_results(rows):
+                    if prompt is not None and self._retry_if_no_results and self._has_no_meaningful_results(rows, sql):
                         if is_sql_not_tried:
                             generated.append(sql)
                             # If the SQL is valid but no rows are returned, create an error message to be sent to the LLM
                             if is_sql_valid:
-                                error = "No rows returned. Please revise the SQL considering if the question was ambiguous (e.g., which ID or name to use), try use alternative columns in the WHERE clause part in a way that could match the user's intent, without adding new columns with new filters."
-                                error += "\nConsider that this queries already generated and returned 0 rows:\n" + "\n".join(generated)
+                                error = "The query returned no rows, or an aggregate matched nothing (zero/null). Please revise the SQL considering if the question was ambiguous (e.g., which ID or name to use), try use alternative columns in the WHERE clause part in a way that could match the user's intent, without adding new columns with new filters."
+                                error += "\nConsider that these queries already generated and returned no results:\n" + "\n".join(generated)
                                 is_sql_valid = False
                             if _log_ctx:
                                 _log_ctx.no_results_retry_count += 1

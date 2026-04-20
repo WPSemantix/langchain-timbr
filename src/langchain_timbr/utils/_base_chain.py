@@ -15,6 +15,7 @@ def _init_chain_context(ctx: Optional[dict]) -> dict:
     ctx.setdefault("duration", {})
     ctx.setdefault("reasoning", {})
     ctx.setdefault("tokens", {})
+    ctx.setdefault("memory", None)
     return ctx
 
 

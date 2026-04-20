@@ -610,3 +610,114 @@ class TestGenerateAnswerChainWithFallbackExecution:
         assert result["answer_question"]["input_tokens"] == 13
         assert result["answer_question"]["output_tokens"] == 7
         assert result["answer_question"]["total_tokens"] == 20
+
+
+class TestHasNoMeaningfulResults:
+    """Unit tests for ExecuteTimbrQueryChain._has_no_meaningful_results."""
+
+    @pytest.fixture
+    def chain(self, mock_llm):
+        return ExecuteTimbrQueryChain(
+            llm=mock_llm, url="http://test", token="test", ontology="test"
+        )
+
+    # --- empty / None rows ---
+
+    def test_empty_list_returns_true(self, chain):
+        assert chain._has_no_meaningful_results([], "SELECT 1") is True
+
+    def test_none_rows_returns_true(self, chain):
+        assert chain._has_no_meaningful_results(None, "SELECT 1") is True
+
+    # --- rows with real data ---
+
+    def test_single_row_with_values(self, chain):
+        rows = [{"name": "Alice", "amount": 100}]
+        assert chain._has_no_meaningful_results(rows, "SELECT name, amount FROM t") is False
+
+    def test_multiple_rows_with_values(self, chain):
+        rows = [{"id": 1, "v": 10}, {"id": 2, "v": 20}]
+        assert chain._has_no_meaningful_results(rows, "SELECT id, v FROM t") is False
+
+    def test_row_with_some_none_and_some_values(self, chain):
+        rows = [{"a": None, "b": 42}]
+        assert chain._has_no_meaningful_results(rows, "SELECT a, b FROM t") is False
+
+    # --- all-None rows ---
+
+    def test_single_row_all_none(self, chain):
+        rows = [{"a": None, "b": None}]
+        assert chain._has_no_meaningful_results(rows, "SELECT a, b FROM t") is True
+
+    def test_multiple_rows_all_none(self, chain):
+        rows = [{"a": None}, {"a": None}]
+        assert chain._has_no_meaningful_results(rows, "SELECT a FROM t") is True
+
+    def test_multiple_rows_one_has_value(self, chain):
+        rows = [{"a": None}, {"a": 5}]
+        assert chain._has_no_meaningful_results(rows, "SELECT a FROM t") is False
+
+    # --- aggregate with 0 ---
+
+    def test_count_returning_zero(self, chain):
+        rows = [{"count_val": 0}]
+        assert chain._has_no_meaningful_results(rows, "SELECT COUNT(id) AS count_val FROM t") is True
+
+    def test_sum_returning_zero(self, chain):
+        rows = [{"total": 0}]
+        assert chain._has_no_meaningful_results(rows, "SELECT SUM(amount) AS total FROM t") is True
+
+    def test_avg_returning_null(self, chain):
+        rows = [{"avg_val": None}]
+        assert chain._has_no_meaningful_results(rows, "SELECT AVG(price) AS avg_val FROM t") is True
+
+    def test_min_returning_zero(self, chain):
+        rows = [{"min_val": 0}]
+        assert chain._has_no_meaningful_results(rows, "SELECT MIN(qty) AS min_val FROM t") is True
+
+    def test_max_returning_null(self, chain):
+        rows = [{"max_val": None}]
+        assert chain._has_no_meaningful_results(rows, "SELECT MAX(score) AS max_val FROM t") is True
+
+    def test_aggregate_mixed_zero_and_null(self, chain):
+        rows = [{"cnt": 0, "total": None}]
+        assert chain._has_no_meaningful_results(rows, "SELECT COUNT(id) AS cnt, SUM(v) AS total FROM t") is True
+
+    # --- aggregate with actual results (should be meaningful) ---
+
+    def test_count_returning_nonzero(self, chain):
+        rows = [{"cnt": 42}]
+        assert chain._has_no_meaningful_results(rows, "SELECT COUNT(id) AS cnt FROM t") is False
+
+    def test_sum_returning_nonzero(self, chain):
+        rows = [{"total": 1500.50}]
+        assert chain._has_no_meaningful_results(rows, "SELECT SUM(amount) AS total FROM t") is False
+
+    def test_aggregate_one_zero_one_nonzero(self, chain):
+        rows = [{"cnt": 0, "total": 100}]
+        assert chain._has_no_meaningful_results(rows, "SELECT COUNT(id) AS cnt, SUM(v) AS total FROM t") is False
+
+    # --- non-aggregate single row with all zeros (should be meaningful) ---
+
+    def test_non_aggregate_single_row_all_zeros(self, chain):
+        """A plain SELECT returning zeros is still meaningful data."""
+        rows = [{"a": 0, "b": 0}]
+        assert chain._has_no_meaningful_results(rows, "SELECT a, b FROM t") is False
+
+    # --- multiple rows from aggregate (not the single-row shortcut) ---
+
+    def test_aggregate_multiple_rows_not_caught_by_single_row_check(self, chain):
+        """Multi-row aggregates with zeros are not caught by the single-row check."""
+        rows = [{"cnt": 0}, {"cnt": 0}]
+        # Two rows → skips single-row aggregate check, falls to all-None check.
+        # Rows have 0 (not None), so at least one value is not None → meaningful.
+        assert chain._has_no_meaningful_results(rows, "SELECT COUNT(id) AS cnt FROM t GROUP BY region") is False
+
+    # --- None sql parameter ---
+
+    def test_none_sql_with_rows(self, chain):
+        rows = [{"a": 1}]
+        assert chain._has_no_meaningful_results(rows, None) is False
+
+    def test_none_sql_empty_rows(self, chain):
+        assert chain._has_no_meaningful_results([], None) is True
