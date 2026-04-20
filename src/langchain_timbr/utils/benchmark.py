@@ -827,7 +827,7 @@ def run_benchmark(
             model=llm_model,
             api_key=llm_api_key,
             temperature=0,
-            **llm_params,
+            **(llm_params or {}),
         )
 
     # ------------------------------------------------------------------
@@ -853,7 +853,7 @@ def run_benchmark(
                 model=llm_model,
                 api_key=llm_api_key,
                 temperature=0,
-                **llm_params,
+                **(llm_params or {}),
             )
         logger.info(f"Creating GenerateTimbrSqlChain for '{agent_name}'…")
         sql_chain = GenerateTimbrSqlChain(
