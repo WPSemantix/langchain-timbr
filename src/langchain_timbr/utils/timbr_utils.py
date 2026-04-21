@@ -1,3 +1,4 @@
+import os
 from typing import Optional, Any
 import time
 import base64
@@ -15,11 +16,15 @@ _ontology_version = None
 _last_version_check = 0
 
 
-def build_server_url(thrift_host: str, thrift_port: int) -> str:
+def build_server_url(url: str, thrift_host: str, thrift_port: int) -> str:
     """Build the timbr server URL from thrift host and port for API logging calls."""
-    url = f"{thrift_host}:{thrift_port}"
-    if not url.startswith("http"):
-        url = "http://" + url
+    if ("0.0.0.0" in url or "localhost" in url or os.environ.get("THRIFT_HOST")):
+        thrift_host = os.environ.get('THRIFT_HOST', 'timbr-server')
+        if thrift_host.startswith("http"):
+            url = f"{thrift_host.rstrip('/')}:{os.environ.get('THRIFT_PORT', '11000')}"
+        else:
+            url = f"http://{thrift_host}:{os.environ.get('THRIFT_PORT', '11000')}"
+    
     return url
 
 
