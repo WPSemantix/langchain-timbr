@@ -21,6 +21,7 @@ opentelemetry-api~=1.38.0; python_version < "3.12"
 opentelemetry-sdk~=1.38.0; python_version < "3.12"
 pydantic~=2.12.5
 pytest~=8.3.4
+pytest-rerunfailures~=15.0
 pytimbr-api~=2.1.1
 snowflake~=1.8.0
 snowflake-snowpark-python~=1.45.0
