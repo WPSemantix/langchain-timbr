@@ -673,9 +673,9 @@ def run_benchmark(
             "Set THRIFT_HOST and THRIFT_PORT environment variables."
         )
 
-    server_url = build_server_url(thrift_host, thrift_port)
     resolved_url = url or config.url
     resolved_token = token or config.token
+    server_url = build_server_url(resolved_url, thrift_host, thrift_port)
 
     if not resolved_url:
         raise ValueError(
