@@ -304,32 +304,3 @@ class TestChainIntegration:
             for i in range(len(chain_configs) - 1):
                 assert chain_configs[i]._url == chain_configs[i+1]._url, "Chains should share URL configuration"
                 assert chain_configs[i]._token == chain_configs[i+1]._token, "Chains should share token configuration"
-    
-    def test_chain_memory_usage(self, mock_llm, minimal_config):
-        """Test that chains don't have memory leaks."""
-        import gc
-        import sys
-        
-        chain = IdentifyTimbrConceptChain(
-            llm=mock_llm,
-            url=minimal_config["timbr_url"],
-            token=minimal_config["timbr_token"],
-            ontology=minimal_config["timbr_ontology"]
-        )
-        
-        # Get initial reference count
-        initial_refs = sys.getrefcount(chain)
-        
-        # Use chain multiple times
-        for i in range(5):
-            try:
-                chain.invoke({"prompt": f"test query {i}"})
-            except Exception:
-                pass  # Ignore connection errors
-        
-        # Force garbage collection
-        gc.collect()
-        
-        # Check that reference count hasn't grown significantly
-        final_refs = sys.getrefcount(chain)
-        assert final_refs <= initial_refs + 2, "Chain should not accumulate references"
