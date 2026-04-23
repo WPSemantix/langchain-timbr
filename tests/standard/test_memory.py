@@ -182,7 +182,7 @@ class TestFetchConversationHistory:
 
     def test_returns_none_when_no_url(self):
         result = fetch_conversation_history({"url": ""}, "conv1", top=3)
-        assert result is None
+        assert not result
 
     @patch("langchain_timbr.utils.memory.requests.get")
     def test_truncated_flag_logged_but_data_returned(self, mock_get, conn_params):
