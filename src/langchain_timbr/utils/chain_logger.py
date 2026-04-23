@@ -142,7 +142,17 @@ def log_agent_history(
 ) -> None:
     """POST to sys_agents_history — triggers server-side deletion of the running row."""
     end_time = _now()
-    duration_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
+    wall_clock_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
+    _sub_total_ms = sum(
+        d for d in [
+            identify_concept_chain_duration,
+            generate_sql_chain_duration,
+            answer_chain_duration,
+            reasoning_duration,
+        ]
+        if d is not None
+    )
+    duration_ms = max(wall_clock_ms, _sub_total_ms)
 
     post_params = {
         "query_id":                        ctx.query_id,

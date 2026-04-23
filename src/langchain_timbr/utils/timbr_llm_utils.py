@@ -816,11 +816,13 @@ def handle_generate_sql_reasoning(
     timeout: int,
     debug: bool,
     previous_token_count
-) -> tuple[str, int, str]:
+) -> tuple[str, int, str, int]:
+    import time as _time
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
     context_graph_depth = graph_depth
     reasoned_sql = sql_query
     reasoned_sql_reason = None
+    _reasoning_start = _time.monotonic()
     for step in range(reasoning_steps):
         try:
             # Step 1: Evaluate the current SQL
@@ -896,7 +898,8 @@ def handle_generate_sql_reasoning(
             print(f"Warning: LLM reasoning failed: {e}")
             break
     
-    return reasoned_sql, context_graph_depth, reasoned_sql_reason
+    _reasoning_duration_ms = int((_time.monotonic() - _reasoning_start) * 1000)
+    return reasoned_sql, context_graph_depth, reasoned_sql_reason, _reasoning_duration_ms
 
 def handle_validate_generate_sql(
     sql_query: str,
@@ -988,6 +991,7 @@ def generate_sql(
     usage_metadata = {}
     concept_metadata = None
     reasoning_status = 'correct'
+    reasoning_duration = 0
 
     # Use config default timeout if none provided
     if timeout is None:
@@ -1073,7 +1077,7 @@ def generate_sql(
             raise Exception(error)
         
         if enable_reasoning and sql_query is not None:
-            sql_query, graph_depth, generate_sql_reason = handle_generate_sql_reasoning(
+            sql_query, graph_depth, generate_sql_reason, reasoning_duration = handle_generate_sql_reasoning(
                 sql_query=sql_query,
                 question=question,
                 llm=llm,
@@ -1132,6 +1136,7 @@ def generate_sql(
         "identify_concept_reason": identify_concept_reason,
         "generate_sql_reason": generate_sql_reason,
         "reasoning_status": reasoning_status,
+        "reasoning_duration": reasoning_duration,
         "usage_metadata": usage_metadata,
         "ontology": conn_params.get('ontology'),
         "conn_params": conn_params

@@ -351,6 +351,7 @@ class GenerateTimbrSqlChain(Chain):
         _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
         _chain_ctx = self._received_chain_context
         _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _duration_ms
+        _chain_ctx["duration"]["reasoning"] = generate_res.get("reasoning_duration", 0) or 0
         if generate_res.get("identify_concept_reason"):
             _chain_ctx["reasoning"]["identify_concept_reason"] = generate_res["identify_concept_reason"]
         if generate_res.get("generate_sql_reason"):
