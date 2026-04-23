@@ -1,3 +1,4 @@
+import os
 import pytest
 
 from langchain_timbr import (
@@ -376,6 +377,10 @@ class TestExecuteTimbrQueryChain:
         assert result["sql"], "SQL should be present in the result"
         assert "total_sales" in result["rows"][0], "Result rows should contain 'total_sales'"
 
+    @pytest.mark.skipif(
+        os.getenv("IS_GITHUB_ACTIONS", "").lower() == "true",
+        reason="Skipped in GitHub Actions; runs only in local environment.",
+    )
     def test_execute_transitive(self, llm, config):
         """Test query execution with multiple ontologies."""
         chain = ExecuteTimbrQueryChain(
