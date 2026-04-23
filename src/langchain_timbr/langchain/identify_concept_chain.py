@@ -217,7 +217,7 @@ class IdentifyTimbrConceptChain(Chain):
             _log_ctx = AgentLogContext(
                 query_id=_query_id,
                 agent_name=self._agent or "",
-                url=build_server_url(config.thrift_host, config.thrift_port),
+                url=build_server_url(self._url, config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="IdentifyTimbrConceptChain",
                 start_time=_now(),

@@ -5,7 +5,7 @@ from .utils.general import to_boolean, to_integer, parse_list
 url = os.environ.get('TIMBR_URL')
 token = os.environ.get('TIMBR_TOKEN')
 ontology = os.environ.get('TIMBR_ONTOLOGY', os.environ.get('ONTOLOGY', 'system_db'))
-thrift_host = os.environ.get('THRIFT_HOST', 'http://localhost')
+thrift_host = os.environ.get('THRIFT_HOST', url.split("//")[-1].split(":")[0] if url else 'localhost')
 thrift_port = to_integer(os.environ.get('THRIFT_PORT', 11000))
 
 # OPTIONAL VARIABLES
@@ -39,8 +39,8 @@ should_validate_sql = to_boolean(os.environ.get('SHOULD_VALIDATE_SQL', os.enviro
 retry_if_no_results = to_boolean(os.environ.get('RETRY_IF_NO_RESULTS', os.environ.get('LLM_RETRY_IF_NO_RESULTS', 'true')))
 llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.get('TIMBR_LLM_DEFAULT_LIMIT', 500)))  # Default max tokens limit for LLM responses
 
-enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'false'))
-enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'false'))
+enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'true'))
+enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'true'))
 history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS', 'false'))
 
 enable_memory = to_boolean(os.environ.get('TIMBR_ENABLE_MEMORY', 'false'))

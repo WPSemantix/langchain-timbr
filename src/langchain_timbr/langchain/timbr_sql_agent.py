@@ -233,7 +233,7 @@ class TimbrSqlAgent(Runnable):
             _log_ctx = AgentLogContext(
                 query_id=_query_id,
                 agent_name=self._chain._agent or "",
-                url=build_server_url(config.thrift_host, config.thrift_port),
+                url=build_server_url(self._chain._url, config.thrift_host, config.thrift_port),
                 token=self._chain._token,
                 chain_type="TimbrSqlAgent",
                 start_time=_now(),

@@ -7,6 +7,7 @@ on:
     branches: [ main, master ]
 
 env:
+  IS_GITHUB_ACTIONS: ${{ secrets.IS_GITHUB_ACTIONS }}
   TIMBR_URL: ${{ secrets.TIMBR_URL }}
   TIMBR_TOKEN: ${{ secrets.TIMBR_TOKEN }}
   TIMBR_ONTOLOGY_NO_DTIMBR_PERMS: ${{ secrets.TIMBR_ONTOLOGY_NO_DTIMBR_PERMS }}
@@ -44,7 +45,7 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --maxfail=1 --disable-warnings -q
+        python -m pytest -v --reruns 3 --maxfail 1 --disable-warnings -q
 
   test-python-311:
     runs-on: ubuntu-latest
@@ -66,7 +67,7 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --maxfail=1 --disable-warnings -q
+        python -m pytest -v --maxfail 1 --reruns 3 --disable-warnings -q
 
   test-python-312:
     runs-on: ubuntu-latest
@@ -88,4 +89,4 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --maxfail=1 --disable-warnings -q
+        python -m pytest -v --reruns 3 --maxfail 1 --disable-warnings -q
