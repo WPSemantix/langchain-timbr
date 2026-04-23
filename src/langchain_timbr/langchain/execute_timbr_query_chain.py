@@ -350,6 +350,7 @@ class ExecuteTimbrQueryChain(Chain):
             _log_ctx = AgentLogContext(
                 query_id=_query_id,
                 agent_name=self._agent or "",
+                ontology=ontology_name or "",
                 url=build_server_url(self._url, config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="ExecuteTimbrQueryChain",
@@ -459,7 +460,6 @@ class ExecuteTimbrQueryChain(Chain):
             final_error = error if not is_sql_valid else None
 
             _total_duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
-            _chain_ctx = self._received_chain_context
             _chain_ctx["duration"]["ExecuteTimbrQueryChain"] = _total_duration_ms
             if _generate_sql_chain_duration_ms:
                 _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _generate_sql_chain_duration_ms

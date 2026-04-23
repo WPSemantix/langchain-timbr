@@ -106,6 +106,7 @@ def log_agent_step(ctx: AgentLogContext) -> None:
     _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running_update_step", _clean({
         "query_id":               ctx.query_id,
         "agent_name":             ctx.agent_name,
+        "ontology":               ctx.ontology,
         "current_step":           ctx.current_step or "",
         "retry_count":            ctx.retry_count,
         "no_results_retry_count": ctx.no_results_retry_count,
