@@ -250,13 +250,13 @@ class IdentifyTimbrConceptChain(Chain):
         )
 
         usage_metadata = res.pop("usage_metadata", {})
+        _duration_ms = res.pop("duration_ms", 0)
         concept = res.get("concept")
 
         if _log_ctx:
             if concept:
                 _log_ctx.concept = concept
 
-        _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
         _chain_ctx = self._received_chain_context
         _chain_ctx["duration"]["IdentifyTimbrConceptChain"] = _duration_ms
         if res.get("identify_concept_reason"):

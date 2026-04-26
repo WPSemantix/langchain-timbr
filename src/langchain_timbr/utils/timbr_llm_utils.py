@@ -295,6 +295,7 @@ def determine_concept(
     timeout: Optional[int] = None,
     memory_context=None,
 ) -> dict[str, Any]:
+    _determine_concept_start = datetime.now()
     usage_metadata = {}
     determined_concept_name = None
     identify_concept_reason = None
@@ -475,7 +476,8 @@ def determine_concept(
         "schema": schema,
         "usage_metadata": usage_metadata,
         "ontology": ontology,
-        "conn_params": ontologies_conn_params.get(ontology)
+        "conn_params": ontologies_conn_params.get(ontology),
+        "duration_ms": int((datetime.now() - _determine_concept_start).total_seconds() * 1000),
     }
 
 
@@ -1024,6 +1026,8 @@ def generate_sql(
         timeout=timeout,
     )
 
+    identify_concept_chain_duration = determine_concept_res.pop("duration_ms", 0)
+
     if (type(conn_params.get('ontology')) == list and len(conn_params.get('ontology')) > 1) or ',' in conn_params.get('ontology'):
         conn_params = determine_concept_res.get('conn_params')
 
@@ -1137,6 +1141,7 @@ def generate_sql(
         "generate_sql_reason": generate_sql_reason,
         "reasoning_status": reasoning_status,
         "reasoning_duration": reasoning_duration,
+        "identify_concept_chain_duration": identify_concept_chain_duration,
         "usage_metadata": usage_metadata,
         "ontology": conn_params.get('ontology'),
         "conn_params": conn_params
