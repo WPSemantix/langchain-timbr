@@ -37,6 +37,7 @@ class TestGenerateTimbrSqlChainOutput:
             "reasoning_status": None,
             "usage_metadata": {"input_tokens": 10, "output_tokens": 5},
             "internal_llm_debug": "should_not_appear",  # extra key the util may return
+            "identify_concept_chain_duration": 55,  # consumed by _chain_ctx, must not leak to output
         }
         chain = GenerateTimbrSqlChain(llm=Mock(), url=URL, token=TOKEN)
         chain._received_chain_context = _init_chain_context(None)
@@ -99,6 +100,7 @@ class TestIdentifyTimbrConceptChainOutput:
             "identify_concept_reason": "city matched the question intent",
             "usage_metadata": {"input_tokens": 15, "output_tokens": 6},
             "internal_candidates": ["city", "country"],  # extra key that should be stripped
+            "duration_ms": 42,  # popped internally, must not leak to output
         }
         chain = IdentifyTimbrConceptChain(llm=Mock(), url=URL, token=TOKEN)
         chain._received_chain_context = _init_chain_context(None)
