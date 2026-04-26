@@ -106,6 +106,7 @@ def log_agent_step(ctx: AgentLogContext) -> None:
     _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running_update_step", _clean({
         "query_id":               ctx.query_id,
         "agent_name":             ctx.agent_name,
+        "ontology":               ctx.ontology,
         "current_step":           ctx.current_step or "",
         "retry_count":            ctx.retry_count,
         "no_results_retry_count": ctx.no_results_retry_count,
@@ -141,7 +142,17 @@ def log_agent_history(
 ) -> None:
     """POST to sys_agents_history — triggers server-side deletion of the running row."""
     end_time = _now()
-    duration_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
+    wall_clock_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
+    _sub_total_ms = sum(
+        d for d in [
+            identify_concept_chain_duration,
+            generate_sql_chain_duration,
+            answer_chain_duration,
+            reasoning_duration,
+        ]
+        if d is not None
+    )
+    duration_ms = max(wall_clock_ms, _sub_total_ms)
 
     post_params = {
         "query_id":                        ctx.query_id,

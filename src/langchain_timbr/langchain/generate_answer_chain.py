@@ -9,6 +9,8 @@ from ..utils.timbr_llm_utils import answer_question
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
 
+from .execute_timbr_query_chain import ExecuteTimbrQueryChain
+
 class GenerateAnswerChain(Chain):
     """
     Chain that generates an answer based on a given prompt and rows of data.
@@ -164,8 +166,6 @@ class GenerateAnswerChain(Chain):
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
 
-
-        from .execute_timbr_query_chain import ExecuteTimbrQueryChain
         _exclude_properties = parse_list(exclude_properties) if exclude_properties is not None else ['entity_id', 'entity_type', 'entity_label']
         self._execute_chain = ExecuteTimbrQueryChain(
             llm=self._llm,
@@ -266,34 +266,6 @@ class GenerateAnswerChain(Chain):
         sql = inputs.get("sql")
         conversation_id = inputs.get("conversation_id") or self._conversation_id
 
-        # ---- memory resolution (once per top-level invocation) ----
-        _chain_ctx = self._received_chain_context
-        if _chain_ctx.get("memory") is None and self._enable_memory:
-            _chain_ctx["memory"] = resolve_memory(
-                llm=self._llm,
-                conn_params=self._get_conn_params(),
-                conversation_id=conversation_id,
-                prompt=prompt,
-                enable_memory=self._enable_memory,
-                memory_window_size=self._memory_window_size,
-                concept_names=self._concepts_list if hasattr(self, '_concepts_list') else None,
-            )
-        memory_ctx = _chain_ctx.get("memory")
-        memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
-
-        execute_result = {}
-        if rows is None:
-            execute_result = self._execute_chain.invoke(
-                {"prompt": prompt, "conversation_id": conversation_id, "chain_context": self._received_chain_context},
-                log_ctx=self._received_log_ctx,
-            )
-            # Sync chain_context updates made by the execute chain back into our context
-            if execute_result.get("chain_context"):
-                self._received_chain_context = execute_result["chain_context"]
-            rows = execute_result.get("rows")
-            sql = execute_result.get("sql") or sql
-            conversation_id = execute_result.get("conversation_id") or conversation_id
-
         _log_ctx = self._received_log_ctx
 
         if _log_ctx is None and self._enable_logging:
@@ -314,6 +286,38 @@ class GenerateAnswerChain(Chain):
                 concept=self._concept,
             )
             log_agent_start(_log_ctx, _log_ctx.ontology, _log_ctx.schema)
+
+        # ---- memory resolution (once per top-level invocation) ----
+        _chain_ctx = self._received_chain_context
+        if _chain_ctx.get("memory") is None and self._enable_memory:
+            _chain_ctx["memory"] = resolve_memory(
+                llm=self._llm,
+                conn_params=self._get_conn_params(),
+                conversation_id=conversation_id,
+                prompt=prompt,
+                enable_memory=self._enable_memory,
+                memory_window_size=self._memory_window_size,
+                concept_names=self._concepts_list if hasattr(self, '_concepts_list') else None,
+            )
+        memory_ctx = _chain_ctx.get("memory")
+        memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
+
+        execute_result = {}
+        if rows is None:
+            execute_result = self._execute_chain.invoke(
+                {
+                    "prompt": prompt,
+                    "conversation_id": conversation_id,
+                    "chain_context": _chain_ctx,
+                },
+                log_ctx=self._received_log_ctx,
+            )
+            # Sync chain_context updates made by the execute chain back into our context
+            if execute_result.get("chain_context"):
+                self._received_chain_context = execute_result["chain_context"]
+            rows = execute_result.get("rows")
+            sql = execute_result.get("sql") or sql
+            conversation_id = execute_result.get("conversation_id") or conversation_id
 
         if _log_ctx:
             _log_ctx.current_step = "generating_answer"
@@ -339,7 +343,6 @@ class GenerateAnswerChain(Chain):
         answer = res.get("answer", "")
         usage_metadata = res.get("usage_metadata", {})
 
-        _chain_ctx = self._received_chain_context
         _answer_duration_ms = int((_now() - _answer_start).total_seconds() * 1000)
         _chain_ctx["duration"]["GenerateAnswerChain"] = _answer_duration_ms
         _chain_ctx["tokens"]["GenerateAnswerChain"] = {
