@@ -77,6 +77,16 @@ class LlmWrapper(LLM):
     if "temperature" not in llm_params:
       if config.llm_temperature is not None and is_support_temperature(llm_type, llm_model):
         llm_params["temperature"] = config.llm_temperature
+    
+    # Normalize llm_* prefixed parameters by removing the prefix
+    llm_prefixed_keys = [key for key in llm_params.keys() if key.startswith('llm_')]
+    for key in llm_prefixed_keys:
+      normalized_key = key[4:]  # Remove 'llm_' prefix
+      if normalized_key not in llm_params:  # Only set if not already present
+        llm_params[normalized_key] = llm_params.pop(key)
+      else:
+        llm_params.pop(key)  # Remove the prefixed version
+    
     return llm_params
 
   def _try_build_vertexai_credentials(self,params, api_key):
