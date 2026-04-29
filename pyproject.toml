@@ -76,7 +76,7 @@ bedrock = [
   "langchain-aws~=1.2.5",
 ]
 tracing = [
-  "langsmith>=0.1.0",
+  "langsmith>=0.6.0",
 ]
 
 # Development and testing
@@ -99,7 +99,7 @@ all = [
   "langchain-google-vertexai~=2.1.2",
   "langchain-openai~=0.3.34",
   "langchain-tests~=0.3.22",
-  "langsmith>=0.1.0",
+  "langsmith>=0.6.0",
   "openai~=2.1.0",
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
   "opentelemetry-sdk~=1.38.0; python_version<'3.12'",
