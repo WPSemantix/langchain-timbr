@@ -64,9 +64,10 @@ vertex_ai = [
 snowflake = [
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
   "opentelemetry-sdk~=1.38.0; python_version<'3.12'",
-  "snowflake~=1.8.0",
-  "snowflake-snowpark-python~=1.45.0",
+  "snowflake~=1.12.0",
+  "snowflake-snowpark-python~=1.47.0",
   "snowflake-connector-python[pandas]~=4.3.0",
+  "pyopenssl~=26.0.0",
 ]
 databricks = [
   "databricks-langchain~=0.7.1",
@@ -104,9 +105,10 @@ all = [
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
   "opentelemetry-sdk~=1.38.0; python_version<'3.12'",
   "pytest~=8.3.4",
-  "snowflake~=1.8.0",
-  "snowflake-snowpark-python~=1.45.0",
+  "snowflake~=1.12.0",
+  "snowflake-snowpark-python~=1.47.0",
   "snowflake-connector-python[pandas]~=4.3.0",
+  "pyopenssl~=26.0.0",
 ]
 
 [project.urls]
