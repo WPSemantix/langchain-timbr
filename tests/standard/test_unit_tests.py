@@ -10,6 +10,7 @@ from langchain_timbr import (
     GenerateAnswerChain,
 )
 from langchain_timbr.utils.timbr_llm_utils import _calculate_token_count
+from langchain_timbr.utils._base_chain import _init_chain_context
 
 
 class TestChainUnitTests:
@@ -22,7 +23,8 @@ class TestChainUnitTests:
                 'concept': 'customer',
                 'schema': 'dtimbr',
                 'concept_metadata': {},
-                'usage_metadata': {}
+                'usage_metadata': {},
+                'duration_ms': 42,
             }
             
             chain = IdentifyTimbrConceptChain(
@@ -721,3 +723,50 @@ class TestHasNoMeaningfulResults:
 
     def test_none_sql_empty_rows(self, chain):
         assert chain._has_no_meaningful_results([], None) is True
+
+
+class TestDurationTracking:
+    """Tests verifying that determine_concept duration flows through each chain into _chain_ctx."""
+
+    @patch('langchain_timbr.langchain.identify_concept_chain.determine_concept')
+    def test_identify_concept_chain_duration_sourced_from_determine_concept(self, mock_determine, mock_llm):
+        """IdentifyTimbrConceptChain must store the duration_ms returned by determine_concept, not re-time it."""
+        mock_determine.return_value = {
+            'concept': 'customer', 'schema': 'dtimbr',
+            'concept_metadata': {}, 'usage_metadata': {},
+            'duration_ms': 42,
+        }
+        chain = IdentifyTimbrConceptChain(llm=mock_llm, url="http://test", token="test", ontology="test")
+        chain._received_chain_context = _init_chain_context(None)
+        chain._call({"prompt": "test"})
+        assert chain._received_chain_context["duration"]["IdentifyTimbrConceptChain"] == 42
+
+    @patch('langchain_timbr.langchain.generate_timbr_sql_chain.generate_sql')
+    def test_generate_sql_chain_identify_concept_duration_propagated(self, mock_generate_sql, mock_llm):
+        """GenerateTimbrSqlChain must forward identify_concept_chain_duration from generate_sql into _chain_ctx."""
+        mock_generate_sql.return_value = {
+            'sql': 'SELECT 1', 'concept': 'customer', 'schema': 'dtimbr',
+            'usage_metadata': {}, 'identify_concept_chain_duration': 55,
+        }
+        chain = GenerateTimbrSqlChain(llm=mock_llm, url="http://test", token="test", ontology="test")
+        chain._received_chain_context = _init_chain_context(None)
+        chain._call({"prompt": "test"})
+        assert chain._received_chain_context["duration"]["IdentifyTimbrConceptChain"] == 55
+
+    @patch('langchain_timbr.langchain.execute_timbr_query_chain.run_query')
+    @patch('langchain_timbr.langchain.execute_timbr_query_chain.generate_sql')
+    def test_execute_query_chain_identify_concept_duration_stored(self, mock_generate_sql, mock_run_query, mock_llm):
+        """ExecuteTimbrQueryChain must accumulate identify_concept_chain_duration across iterations into _chain_ctx."""
+        mock_generate_sql.return_value = {
+            'sql': 'SELECT 1', 'concept': 'customer', 'schema': 'dtimbr',
+            'is_sql_valid': True, 'error': None, 'usage_metadata': {},
+            'reasoning_duration': 0, 'identify_concept_chain_duration': 30,
+        }
+        mock_run_query.return_value = [{"id": 1}]
+        chain = ExecuteTimbrQueryChain(
+            llm=mock_llm, url="http://test", token="test", ontology="test",
+            should_validate_sql=False,
+        )
+        chain._received_chain_context = _init_chain_context(None)
+        chain._call({"prompt": "test"})
+        assert chain._received_chain_context["duration"]["IdentifyTimbrConceptChain"] == 30

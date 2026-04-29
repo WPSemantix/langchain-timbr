@@ -326,6 +326,8 @@ class ExecuteTimbrQueryChain(Chain):
         identify_concept_reason = None
         generate_sql_reason = None
         _generate_sql_chain_duration_ms = 0
+        _reasoning_duration_ms = 0
+        _identify_concept_chain_duration_ms = 0
 
         # ---- memory resolution (once per top-level invocation) ----
         _chain_ctx = self._received_chain_context
@@ -350,6 +352,7 @@ class ExecuteTimbrQueryChain(Chain):
             _log_ctx = AgentLogContext(
                 query_id=_query_id,
                 agent_name=self._agent or "",
+                ontology=ontology_name or "",
                 url=build_server_url(self._url, config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="ExecuteTimbrQueryChain",
@@ -400,6 +403,8 @@ class ExecuteTimbrQueryChain(Chain):
                     _gen_start = _now()
                     generate_res = self._generate_sql(prompt, sql, concept_name, schema_name, error, conn_params, memory_context=memory_ctx)
                     _generate_sql_chain_duration_ms += int((_now() - _gen_start).total_seconds() * 1000)
+                    _reasoning_duration_ms += generate_res.get("reasoning_duration", 0) or 0
+                    _identify_concept_chain_duration_ms += generate_res.get("identify_concept_chain_duration") or 0
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
                     ontology_name = generate_res.get("ontology", ontology_name)
@@ -459,10 +464,11 @@ class ExecuteTimbrQueryChain(Chain):
             final_error = error if not is_sql_valid else None
 
             _total_duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
-            _chain_ctx = self._received_chain_context
             _chain_ctx["duration"]["ExecuteTimbrQueryChain"] = _total_duration_ms
             if _generate_sql_chain_duration_ms:
                 _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _generate_sql_chain_duration_ms
+            _chain_ctx["duration"]["reasoning"] = _reasoning_duration_ms
+            _chain_ctx["duration"]["IdentifyTimbrConceptChain"] = _identify_concept_chain_duration_ms or None
             if identify_concept_reason:
                 _chain_ctx["reasoning"]["identify_concept_reason"] = identify_concept_reason
             if generate_sql_reason:

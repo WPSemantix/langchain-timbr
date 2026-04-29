@@ -261,6 +261,7 @@ class GenerateTimbrSqlChain(Chain):
             _log_ctx = AgentLogContext(
                 query_id=_query_id,
                 agent_name=self._agent or "",
+                ontology=self._ontology or "",
                 url=build_server_url(self._url, config.thrift_host, config.thrift_port),
                 token=self._token,
                 chain_type="GenerateTimbrSqlChain",
@@ -350,6 +351,8 @@ class GenerateTimbrSqlChain(Chain):
         _duration_ms = int((_now() - _chain_start).total_seconds() * 1000)
         _chain_ctx = self._received_chain_context
         _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _duration_ms
+        _chain_ctx["duration"]["reasoning"] = generate_res.get("reasoning_duration", 0) or 0
+        _chain_ctx["duration"]["IdentifyTimbrConceptChain"] = generate_res.get("identify_concept_chain_duration")
         if generate_res.get("identify_concept_reason"):
             _chain_ctx["reasoning"]["identify_concept_reason"] = generate_res["identify_concept_reason"]
         if generate_res.get("generate_sql_reason"):
