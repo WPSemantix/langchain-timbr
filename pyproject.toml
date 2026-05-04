@@ -35,6 +35,8 @@ dependencies = [
   "cryptography~=46.0.7",
   "transformers~=5.0.0",
   "uuid6~=2025.0.1",
+  "rapidfuzz~=3.12",
+  "pyahocorasick~=2.1",
 ]
 
 [project.optional-dependencies]

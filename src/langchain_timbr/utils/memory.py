@@ -62,6 +62,19 @@ class MemoryDisabledSentinel:
 MEMORY_DISABLED = MemoryDisabledSentinel()
 
 
+# Make MemoryDisabledSentinel JSON-serializable (serializes as null)
+_original_json_encoder_default = json.JSONEncoder.default
+
+
+def _json_default_with_sentinel(self, obj):
+    if isinstance(obj, MemoryDisabledSentinel):
+        return None
+    return _original_json_encoder_default(self, obj)
+
+
+json.JSONEncoder.default = _json_default_with_sentinel
+
+
 @dataclass
 class MemoryContext:
     """Immutable-by-convention result of ``resolve_memory()``."""
@@ -403,6 +416,9 @@ def _validate_classifier_output(
     if seq_to_guid:
         relevant_ids = [seq_to_guid.get(rid, rid) for rid in relevant_ids]
         if parent_id is not None:
+            if isinstance(parent_id, list) and len(parent_id) > 0:
+                parent_id = parent_id[0]
+
             parent_id = seq_to_guid.get(str(parent_id), str(parent_id))
 
     # is_follow_up=True but no relevant IDs → force to False
