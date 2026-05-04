@@ -84,13 +84,13 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`LLM_SCOPE`** - LLM provider authentication scope
 
 
-#### Conversation Memory
+## Conversation Memory
 
 - **`TIMBR_ENABLE_MEMORY`** - Enable conversation memory for follow-up question detection (true/false, default: false)
 - **`TIMBR_MEMORY_WINDOW_SIZE`** - Number of past conversation turns to consider when detecting follow-ups (default: 3)
 
 
-#### Technical Context
+## Technical Context
 
 Technical context enriches SQL generation prompts with per-column statistical annotations
 
@@ -135,13 +135,11 @@ chain = ExecuteTimbrQueryChain(
 
 
 
-#### Monitoring & History
+## Monitoring & History
 
 - **`TIMBR_ENABLE_TRACE`** - Enable detailed trace logging for agent/chain execution (true/false, default: `false`)
 - **`TIMBR_ENABLE_HISTORY`** - Enable query history tracking (true/false, default: `false`)
 - **`TIMBR_HISTORY_SAVE_RESULTS`** - Whether to save query result rows in history (true/false, default: `false`)
-
-## Monitoring & Tracing
 
 The SDK supports optional execution tracing and query history recording. These can be enabled via environment variables (see above) or set directly on `TimbrSqlAgent`:
 
