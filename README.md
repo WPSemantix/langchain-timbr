@@ -83,6 +83,56 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`LLM_API_VERSION`** - LLM provider API version
 - **`LLM_SCOPE`** - LLM provider authentication scope
 
+
+#### Conversation Memory
+
+- **`TIMBR_ENABLE_MEMORY`** - Enable conversation memory for follow-up question detection (true/false, default: false)
+- **`TIMBR_MEMORY_WINDOW_SIZE`** - Number of past conversation turns to consider when detecting follow-ups (default: 3)
+
+#### Technical Context
+
+Technical context enriches SQL generation prompts with per-column statistical annotations
+
+- **`ENABLE_TECHNICAL_CONTEXT`** - Enable or disable technical context enrichment (true/false, default: `true`)
+- **`TECHNICAL_CONTEXT_MODE`** - Controls which columns receive annotations:
+  - `include_all` — annotate every column that has statistics
+  - `filter_matched` — annotate only columns whose values match the user's question
+  - `auto` (default) — choose automatically based on token budget
+- **`TECHNICAL_CONTEXT_MAX_TOKENS`** - Maximum token budget allocated for technical context annotations (default: `3000`)
+- **`TECHNICAL_CONTEXT_PROPERTIES`** - Comma-separated whitelist of property names to fetch statistics for. When set, **only** these properties will have statistics loaded from the ontology. Properties not in this list are skipped, reducing query cost and response size. Empty (default) means all properties are fetched.
+
+These options can also be passed directly to chain/node constructors:
+
+```python
+from langchain_timbr import ExecuteTimbrQueryChain
+
+chain = ExecuteTimbrQueryChain(
+    llm=llm,
+    url="https://your-timbr-server",
+    token="your-token",
+    ontology="your_ontology",
+    concepts_list="organization",
+    enable_technical_context=True,
+    technical_context_mode="auto",
+    technical_context_max_tokens=3000,
+    # Only fetch stats for these properties (whitelist):
+    technical_context_properties=["region", "status", "country_code"],
+    # Exclude these properties from schema display AND stats fetching (blacklist):
+    exclude_properties=["entity_id", "entity_type", "entity_label"],
+)
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `enable_technical_context` | `Optional[bool]` | `True` | Enable/disable technical context enrichment |
+| `technical_context_mode` | `Optional[str]` | `"auto"` | Column annotation strategy (`include_all`, `filter_matched`, `auto`) |
+| `technical_context_max_tokens` | `Optional[int]` | `3000` | Maximum token budget for annotations |
+| `technical_context_properties` | `Optional[list\|str]` | `[]` (all) | Whitelist of property names to fetch statistics for. Empty = no restriction |
+| `exclude_properties` | `Optional[list\|str]` | `['entity_id', 'entity_type', 'entity_label']` | Properties excluded from schema display and statistics fetching |
+
+> **Note:** `technical_context_properties` (whitelist) and `exclude_properties` (blacklist) can be used together. The whitelist restricts which properties get statistics fetched; the blacklist further removes properties from the fetched set.
+
+
 #### Monitoring & History
 
 - **`TIMBR_ENABLE_TRACE`** - Enable detailed trace logging for agent/chain execution (true/false, default: `false`)
@@ -142,50 +192,3 @@ results = run_benchmark(
 The `llm_params` dict accepts: `llm_type`, `llm_model` / `model`, `llm_api_key` / `api_key`. Temperature and timeout are managed automatically.
 
 Results are returned as a dict keyed by question ID, with a `"_summary"` key containing aggregate statistics. Each result includes a `selected_entity` field identifying which ontology entity was used.
-#### Conversation Memory
-
-- **`TIMBR_ENABLE_MEMORY`** - Enable conversation memory for follow-up question detection (true/false, default: false)
-- **`TIMBR_MEMORY_WINDOW_SIZE`** - Number of past conversation turns to consider when detecting follow-ups (default: 3)
-
-#### Technical Context
-
-Technical context enriches SQL generation prompts with per-column statistical annotations
-
-- **`ENABLE_TECHNICAL_CONTEXT`** - Enable or disable technical context enrichment (true/false, default: `true`)
-- **`TECHNICAL_CONTEXT_MODE`** - Controls which columns receive annotations:
-  - `include_all` — annotate every column that has statistics
-  - `filter_matched` — annotate only columns whose values match the user's question
-  - `auto` (default) — choose automatically based on token budget
-- **`TECHNICAL_CONTEXT_MAX_TOKENS`** - Maximum token budget allocated for technical context annotations (default: `3000`)
-- **`TECHNICAL_CONTEXT_PROPERTIES`** - Comma-separated whitelist of property names to fetch statistics for. When set, **only** these properties will have statistics loaded from the ontology. Properties not in this list are skipped, reducing query cost and response size. Empty (default) means all properties are fetched.
-
-These options can also be passed directly to chain/node constructors:
-
-```python
-from langchain_timbr import ExecuteTimbrQueryChain
-
-chain = ExecuteTimbrQueryChain(
-    llm=llm,
-    url="https://your-timbr-server",
-    token="your-token",
-    ontology="your_ontology",
-    concepts_list="organization",
-    enable_technical_context=True,
-    technical_context_mode="auto",
-    technical_context_max_tokens=3000,
-    # Only fetch stats for these properties (whitelist):
-    technical_context_properties=["region", "status", "country_code"],
-    # Exclude these properties from schema display AND stats fetching (blacklist):
-    exclude_properties=["entity_id", "entity_type", "entity_label"],
-)
-```
-
-| Parameter | Type | Default | Description |
-| --- | --- | --- | --- |
-| `enable_technical_context` | `Optional[bool]` | `True` | Enable/disable technical context enrichment |
-| `technical_context_mode` | `Optional[str]` | `"auto"` | Column annotation strategy (`include_all`, `filter_matched`, `auto`) |
-| `technical_context_max_tokens` | `Optional[int]` | `3000` | Maximum token budget for annotations |
-| `technical_context_properties` | `Optional[list\|str]` | `[]` (all) | Whitelist of property names to fetch statistics for. Empty = no restriction |
-| `exclude_properties` | `Optional[list\|str]` | `['entity_id', 'entity_type', 'entity_label']` | Properties excluded from schema display and statistics fetching |
-
-> **Note:** `technical_context_properties` (whitelist) and `exclude_properties` (blacklist) can be used together. The whitelist restricts which properties get statistics fetched; the blacklist further removes properties from the fetched set.
