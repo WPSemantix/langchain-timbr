@@ -18,7 +18,7 @@ except ImportError:
     _LANGSMITH_AVAILABLE = False
 
 from .general import parse_list
-from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, cache_with_version_check, encrypt_prompt, get_ontology_description
+from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, encrypt_prompt, get_ontology_description
 from .prompt_service import (
     get_determine_concept_prompt_template,
     get_generate_sql_prompt_template,
@@ -513,6 +513,10 @@ def _build_columns_str(
         if col_tags:
             col_meta.append(f"annotations and constraints: {col_tags}")
 
+        statistics = col.get('technical_context')
+        if statistics:
+            col_meta.append(f"statistics: {statistics}")
+
         col_meta_str = ', '.join(col_meta) if col_meta else ''
         if col_meta_str:
             col_meta_str = f" ({col_meta_str})"
@@ -656,8 +660,8 @@ def _evaluate_sql_enable_reasoning(
     }
 
 
-@cache_with_version_check
 def _build_sql_generation_context(
+    question: str,
     conn_params: dict,
     schema: str,
     concept: str,
@@ -667,6 +671,11 @@ def _build_sql_generation_context(
     exclude_properties: Optional[list],
     db_is_case_sensitive: bool,
     max_limit: int,
+    llm=None,
+    enable_technical_context: bool = True,
+    technical_context_mode: str = "auto",
+    technical_context_max_tokens: int = 3000,
+    technical_context_properties: Optional[list] = None,
 ) -> dict:
     """
     Prepare the complete SQL generation context by gathering all necessary metadata.
@@ -698,6 +707,37 @@ def _build_sql_generation_context(
     measures = concept_properties_metadata.get('measures', [])
     relationships = concept_properties_metadata.get('relationships', {})
     tags = get_tags(conn_params=conn_params, include_tags=include_tags).get('property_tags')
+
+    # Enrich column dicts with technical context annotations (stats + question matching)
+    if enable_technical_context:
+        try:
+            from ..technical_context import build_technical_context
+            from ..technical_context.config import TechnicalContextConfig
+            all_col_dicts = columns + measures
+            for rel in relationships.values():
+                all_col_dicts += rel.get('columns', []) + rel.get('measures', [])
+            tc_columns = [{"name": c.get("name") or c.get("col_name", ""), "type": c.get("data_type", "")} for c in all_col_dicts]
+            tc_config = TechnicalContextConfig(
+                mode=technical_context_mode,
+                max_tokens=technical_context_max_tokens,
+                technical_context_properties=technical_context_properties or [],
+                exclude_properties=exclude_properties or [],
+            )
+            tc_result = build_technical_context(
+                question=question,
+                columns=tc_columns,
+                schema=schema,
+                concept=concept,
+                conn_params=conn_params,
+                config=tc_config,
+                llm=llm,
+            )
+            for c in all_col_dicts:
+                name = c.get('name') or c.get('col_name', '')
+                if name and name in tc_result.column_annotations:
+                    c['technical_context'] = tc_result.column_annotations[name]
+        except Exception:
+            pass  # Technical context failure must not break SQL generation
 
     columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties)
     measures_str = _build_columns_str(measures, tags, exclude=exclude_properties)
@@ -817,7 +857,11 @@ def handle_generate_sql_reasoning(
     usage_metadata: dict,
     timeout: int,
     debug: bool,
-    previous_token_count
+    previous_token_count,
+    enable_technical_context: bool = True,
+    technical_context_mode: str = "auto",
+    technical_context_max_tokens: int = 3000,
+    technical_context_properties: Optional[list] = None,
 ) -> tuple[str, int, str, int]:
     import time as _time
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
@@ -863,6 +907,7 @@ def handle_generate_sql_reasoning(
                 llm=llm,
                 generate_sql_prompt=generate_sql_prompt,
                 current_context=_build_sql_generation_context(
+                    question=question,
                     conn_params=conn_params,
                     schema=schema,
                     concept=concept,
@@ -871,7 +916,13 @@ def handle_generate_sql_reasoning(
                     include_tags=include_tags,
                     exclude_properties=exclude_properties,
                     db_is_case_sensitive=db_is_case_sensitive,
-                    max_limit=max_limit),
+                    max_limit=max_limit,
+                    llm=llm,
+                    enable_technical_context=enable_technical_context,
+                    technical_context_mode=technical_context_mode,
+                    technical_context_max_tokens=technical_context_max_tokens,
+                    technical_context_properties=technical_context_properties,
+                ),
                 note=evaluation_note,
                 timeout=timeout,
                 debug=debug,
@@ -921,6 +972,10 @@ def handle_validate_generate_sql(
     timeout: int,
     debug: bool,
     usage_metadata: dict,
+    enable_technical_context: bool = True,
+    technical_context_mode: str = "auto",
+    technical_context_max_tokens: int = 3000,
+    technical_context_properties: Optional[list] = None,
 ) -> tuple[bool, str, str]:
     is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
     validation_attempt = 0
@@ -934,6 +989,7 @@ def handle_validate_generate_sql(
             llm=llm,
             generate_sql_prompt=generate_sql_prompt,
             current_context=_build_sql_generation_context(
+                question=question,
                 conn_params=conn_params,
                 schema=schema,
                 concept=concept,
@@ -942,7 +998,13 @@ def handle_validate_generate_sql(
                 include_tags=include_tags,
                 exclude_properties=exclude_properties,
                 db_is_case_sensitive=db_is_case_sensitive,
-                max_limit=max_limit),
+                max_limit=max_limit,
+                llm=llm,
+                enable_technical_context=enable_technical_context,
+                technical_context_mode=technical_context_mode,
+                technical_context_max_tokens=technical_context_max_tokens,
+                technical_context_properties=technical_context_properties,
+            ),
             note=validation_err_txt,
             timeout=timeout,
             debug=debug,
@@ -989,6 +1051,10 @@ def generate_sql(
         debug: Optional[bool] = False,
         timeout: Optional[int] = None,
         memory_context=None,
+        enable_technical_context: Optional[bool] = None,
+        technical_context_mode: Optional[str] = None,
+        technical_context_max_tokens: Optional[int] = None,
+        technical_context_properties: Optional[list] = None,
     ) -> dict[str, str]:
     usage_metadata = {}
     concept_metadata = None
@@ -1052,6 +1118,7 @@ def generate_sql(
             llm=llm,
             generate_sql_prompt=generate_sql_prompt,
             current_context=_build_sql_generation_context(
+                question=question,
                 conn_params=conn_params,
                 schema=schema,
                 concept=concept,
@@ -1060,7 +1127,13 @@ def generate_sql(
                 include_tags=include_tags,
                 exclude_properties=exclude_properties,
                 db_is_case_sensitive=db_is_case_sensitive,
-                max_limit=max_limit),
+                max_limit=max_limit,
+                llm=llm,
+                enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
+                technical_context_mode=technical_context_mode or config.technical_context_mode,
+                technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
+                technical_context_properties=technical_context_properties,
+            ),
             note=note,
             timeout=timeout,
             debug=debug,
@@ -1099,7 +1172,11 @@ def generate_sql(
                 usage_metadata=usage_metadata,
                 timeout=timeout,
                 debug=debug,
-                previous_token_count=result['apx_token_count']
+                previous_token_count=result['apx_token_count'],
+                enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
+                technical_context_mode=technical_context_mode or config.technical_context_mode,
+                technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
+                technical_context_properties=technical_context_properties,
             )
 
         if should_validate_sql or enable_reasoning:
@@ -1123,6 +1200,10 @@ def generate_sql(
                 timeout=timeout,
                 debug=debug,
                 usage_metadata=usage_metadata,
+                enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
+                technical_context_mode=technical_context_mode or config.technical_context_mode,
+                technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
+                technical_context_properties=technical_context_properties,
             )
     except TimeoutError as e:
         error = f"LLM call timed out: {str(e)}"

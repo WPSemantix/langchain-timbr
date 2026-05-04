@@ -45,3 +45,8 @@ history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS', '
 
 enable_memory = to_boolean(os.environ.get('TIMBR_ENABLE_MEMORY', 'false'))
 memory_window_size = to_integer(os.environ.get('TIMBR_MEMORY_WINDOW_SIZE', 3))
+
+enable_technical_context = to_boolean(os.environ.get('ENABLE_TECHNICAL_CONTEXT', 'true'))
+technical_context_mode = os.environ.get('TECHNICAL_CONTEXT_MODE', 'auto')
+technical_context_max_tokens = to_integer(os.environ.get('TECHNICAL_CONTEXT_MAX_TOKENS', 3000))
+technical_context_properties = parse_list(os.environ.get('TECHNICAL_CONTEXT_PROPERTIES', ''))

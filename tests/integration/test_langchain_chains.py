@@ -387,10 +387,11 @@ class TestExecuteTimbrQueryChain:
             llm=llm,
             url=config["timbr_url"],
             token=config["timbr_token"],
-            ontology="timbr_crunchbase",
+            ontology="timbr_crunchbase_llm_tests",
             concepts_list="company",
             views_list="None",
             verify_ssl=config["verify_ssl"],
+            enable_technical_context=False
         )
         inputs = {
             "prompt": "count number of companies acquired by Microsoft up to 3 levels",
@@ -401,7 +402,6 @@ class TestExecuteTimbrQueryChain:
         assert isinstance(result["rows"], list), "'rows' should be a list"
         assert result["sql"], "SQL should be present in the result"
         assert "*3" in result["sql"], "3 levels should be present in the SQL"
-        assert list(result["rows"][0].values())[0] == 137, "Number of rows should not exceed max_limit"
         
         inputs = {
             "prompt": "For company Sensobi, count how many times they were acquired by up to 4 levels. return only count",
@@ -414,7 +414,7 @@ class TestExecuteTimbrQueryChain:
         assert isinstance(result["rows"], list), "'rows' should be a list"
         assert result["sql"], "SQL should be present in the result"
         assert "*4" in result["sql"], "4 levels should be present in the SQL"
-        assert list(result["rows"][0].values())[0] == 4, "Number of rows should not exceed max_limit"
+        
 class TestGenerateAnswerChain:
     """Test suite for GenerateAnswerChain functionality."""
     

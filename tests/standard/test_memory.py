@@ -81,6 +81,25 @@ class TestMemoryDisabledSentinel:
     def test_repr(self):
         assert repr(MEMORY_DISABLED) == "MemoryDisabledSentinel()"
 
+    def test_json_serializable_in_dict(self):
+        """MemoryDisabledSentinel serializes as null when inside a dict."""
+        data = {"memory_context": MEMORY_DISABLED, "other": "value"}
+        result = json.dumps(data)
+        parsed = json.loads(result)
+        assert parsed == {"memory_context": None, "other": "value"}
+
+    def test_json_serializable_in_nested_structure(self):
+        """MemoryDisabledSentinel serializes as null in nested structures."""
+        data = {"results": [{"memory": MEMORY_DISABLED, "x": 1}]}
+        result = json.dumps(data)
+        parsed = json.loads(result)
+        assert parsed == {"results": [{"memory": None, "x": 1}]}
+
+    def test_json_serializable_standalone(self):
+        """MemoryDisabledSentinel serializes as null when encoded directly."""
+        result = json.dumps(MEMORY_DISABLED)
+        assert json.loads(result) is None
+
 
 # ---------------------------------------------------------------------------
 # resolve_memory — activation gate

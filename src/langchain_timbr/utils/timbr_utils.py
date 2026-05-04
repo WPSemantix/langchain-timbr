@@ -643,9 +643,9 @@ def get_concept_properties(
                 measures.append({ **column, 'comment': comment })
             else:
                 columns.append({ **column, 'comment': comment })
+
     return {
         "columns": columns,
         "measures": measures,
         "relationships": relationships,
     }
-

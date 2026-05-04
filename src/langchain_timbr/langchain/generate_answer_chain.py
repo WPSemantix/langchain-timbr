@@ -57,8 +57,9 @@ class GenerateAnswerChain(Chain):
         save_results: Optional[bool] = config.history_save_results,
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
-        memory_window_size: Optional[int] = config.memory_window_size,
-        **kwargs,
+        memory_window_size: Optional[int] = config.memory_window_size,        enable_technical_context: Optional[bool] = config.enable_technical_context,
+        technical_context_mode: Optional[str] = config.technical_context_mode,
+        technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,        **kwargs,
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM’s response (optional, will use LlmWrapper with env variables if not provided)
@@ -152,6 +153,9 @@ class GenerateAnswerChain(Chain):
             self._save_results = to_boolean(agent_options.get("history_save_results")) if "history_save_results" in agent_options else to_boolean(save_results)
             self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
             self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
+            self._enable_technical_context = to_boolean(agent_options.get("enable_technical_context")) if "enable_technical_context" in agent_options else to_boolean(enable_technical_context)
+            self._technical_context_mode = agent_options.get("technical_context_mode") if "technical_context_mode" in agent_options else technical_context_mode
+            self._technical_context_max_tokens = to_integer(agent_options.get("technical_context_max_tokens")) if "technical_context_max_tokens" in agent_options else to_integer(technical_context_max_tokens)
         else:
             self._note = note
             self._enable_trace = to_boolean(enable_trace)
@@ -162,6 +166,9 @@ class GenerateAnswerChain(Chain):
             self._concept = concept
             self._enable_memory = to_boolean(enable_memory)
             self._memory_window_size = to_integer(memory_window_size)
+            self._enable_technical_context = to_boolean(enable_technical_context)
+            self._technical_context_mode = technical_context_mode
+            self._technical_context_max_tokens = to_integer(technical_context_max_tokens)
 
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
@@ -199,6 +206,9 @@ class GenerateAnswerChain(Chain):
             conversation_id=conversation_id,
             enable_memory=self._enable_memory,
             memory_window_size=self._memory_window_size,
+            enable_technical_context=self._enable_technical_context,
+            technical_context_mode=self._technical_context_mode,
+            technical_context_max_tokens=self._technical_context_max_tokens,
         )
 
 

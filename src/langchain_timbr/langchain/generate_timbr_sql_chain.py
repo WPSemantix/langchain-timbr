@@ -52,6 +52,10 @@ class GenerateTimbrSqlChain(Chain):
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
         memory_window_size: Optional[int] = config.memory_window_size,
+        enable_technical_context: Optional[bool] = config.enable_technical_context,
+        technical_context_mode: Optional[str] = config.technical_context_mode,
+        technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
+        technical_context_properties: Optional[Union[list[str], str]] = None,
         **kwargs,
     ):
         """
@@ -82,6 +86,9 @@ class GenerateTimbrSqlChain(Chain):
         :param debug: Whether to enable debug mode for detailed logging
         :param enable_trace: Whether to enable trace logging for this chain's operations (default is False).
         :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
+        :param enable_technical_context: Whether to enable technical context enrichment (default is True).
+        :param technical_context_mode: Technical context mode - 'include_all', 'filter_matched', or 'auto' (default is 'auto').
+        :param technical_context_max_tokens: Maximum token budget for technical context (default is 3000).
         :param kwargs: Additional arguments to pass to the base
         
         ## Example
@@ -164,6 +171,10 @@ class GenerateTimbrSqlChain(Chain):
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
             self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
             self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
+            self._enable_technical_context = to_boolean(agent_options.get("enable_technical_context")) if "enable_technical_context" in agent_options else to_boolean(enable_technical_context)
+            self._technical_context_mode = agent_options.get("technical_context_mode") if "technical_context_mode" in agent_options else technical_context_mode
+            self._technical_context_max_tokens = to_integer(agent_options.get("technical_context_max_tokens")) if "technical_context_max_tokens" in agent_options else to_integer(technical_context_max_tokens)
+            self._technical_context_properties = parse_list(agent_options.get("technical_context_properties")) if "technical_context_properties" in agent_options else parse_list(technical_context_properties)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -184,6 +195,10 @@ class GenerateTimbrSqlChain(Chain):
             self._enable_trace = to_boolean(enable_trace)
             self._enable_memory = to_boolean(enable_memory)
             self._memory_window_size = to_integer(memory_window_size)
+            self._enable_technical_context = to_boolean(enable_technical_context)
+            self._technical_context_mode = technical_context_mode
+            self._technical_context_max_tokens = to_integer(technical_context_max_tokens)
+            self._technical_context_properties = parse_list(technical_context_properties)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -300,6 +315,10 @@ class GenerateTimbrSqlChain(Chain):
                 reasoning_steps=self._reasoning_steps,
                 debug=self._debug,
                 memory_context=memory_ctx,
+                enable_technical_context=self._enable_technical_context,
+                technical_context_mode=self._technical_context_mode,
+                technical_context_max_tokens=self._technical_context_max_tokens,
+                technical_context_properties=self._technical_context_properties,
             )
         except Exception as exc:
             error = str(exc)
