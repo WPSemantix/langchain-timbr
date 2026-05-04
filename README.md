@@ -89,6 +89,7 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`TIMBR_ENABLE_MEMORY`** - Enable conversation memory for follow-up question detection (true/false, default: false)
 - **`TIMBR_MEMORY_WINDOW_SIZE`** - Number of past conversation turns to consider when detecting follow-ups (default: 3)
 
+
 #### Technical Context
 
 Technical context enriches SQL generation prompts with per-column statistical annotations
@@ -131,6 +132,7 @@ chain = ExecuteTimbrQueryChain(
 | `exclude_properties` | `Optional[list\|str]` | `['entity_id', 'entity_type', 'entity_label']` | Properties excluded from schema display and statistics fetching |
 
 > **Note:** `technical_context_properties` (whitelist) and `exclude_properties` (blacklist) can be used together. The whitelist restricts which properties get statistics fetched; the blacklist further removes properties from the fetched set.
+
 
 
 #### Monitoring & History
