@@ -1,6 +1,12 @@
 import pytest
 import os
 
+# Disable technical context by default for all tests.
+# Tests that need it (TC/stats-loader tests) call TC functions directly
+# or pass enable_technical_context=True explicitly to chain constructors.
+# Must be set before the first langchain_timbr import so config.py bakes in False.
+os.environ["ENABLE_TECHNICAL_CONTEXT"] = "false"
+
 from langchain_timbr import LlmWrapper
 
 @pytest.fixture(scope="session")
@@ -23,7 +29,7 @@ def config():
         "test_prompt_3": os.environ.get("TEST_PROMPT_3", "Get all products and materials"),
         "test_reasoning_prompt": os.environ.get("TEST_REASONING_PROMPT", "show me 10 orders in 2021 that contain metal"),
         "timbr_agent_name": os.environ.get("TIMBR_AGENT_NAME", "langchain_timbr_sdk_tests"),
-        "verify_ssl": os.environ.get("VERIFY_SSL", "true"),
+        "verify_ssl": os.environ.get("VERIFY_SSL", "true").lower() in ("true", "1", "yes"),
         "jwt_timbr_url": os.environ.get("JWT_TIMBR_URL", "https://staging.timbr.ai:443/"),
         "jwt_timbr_ontology": os.environ.get("JWT_TIMBR_ONTOLOGY", "supply_metrics"),
         "jwt_client_id": os.environ.get("JWT_CLIENT_ID"),
