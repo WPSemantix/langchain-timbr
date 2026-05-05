@@ -126,6 +126,61 @@ class TestTechnicalContextStatistics:
         assert "status" in stats_map, "status should have stats when not blacklisted"
         assert stats_map["status"].top_k, "status should have top_k values"
 
+    def test_cached_stats_filtered_by_whitelist_and_blacklist(self, config):
+        """Fetch all stats (no filters) to populate cache, then verify filters work on cached data."""
+        conn_params = self._conn_params(config)
+        columns = [
+            {"name": "country_code", "type": "varchar"},
+            {"name": "region", "type": "varchar"},
+            {"name": "status", "type": "varchar"},
+        ]
+
+        # First call: no filters — populates cache with all 3 properties
+        no_filter_config = StatisticsLoaderConfig()
+        stats_map_all = load_column_statistics(
+            schema="dtimbr",
+            table_name="organization",
+            columns=columns,
+            conn_params=conn_params,
+            config=no_filter_config,
+        )
+        # Sanity: all three should have stats
+        assert "country_code" in stats_map_all and stats_map_all["country_code"].top_k, (
+            "country_code should have stats with no filter"
+        )
+        assert "region" in stats_map_all and stats_map_all["region"].top_k, (
+            "region should have stats with no filter"
+        )
+        assert "status" in stats_map_all and stats_map_all["status"].top_k, (
+            "status should have stats with no filter"
+        )
+
+        # Second call: whitelist=["region", "status"] + blacklist=["status"]
+        # Expected: only "region" has stats (status excluded by blacklist, country_code excluded by whitelist)
+        filtered_config = StatisticsLoaderConfig(
+            include_properties=["region", "status"],
+            exclude_properties=["status"],
+        )
+        stats_map_filtered = load_column_statistics(
+            schema="dtimbr",
+            table_name="organization",
+            columns=columns,
+            conn_params=conn_params,
+            config=filtered_config,
+        )
+
+        # region should have stats (in whitelist, not in blacklist)
+        assert "region" in stats_map_filtered, "region should have stats (whitelisted, not blacklisted)"
+        assert stats_map_filtered["region"].top_k, "region should have top_k values"
+        # country_code should NOT have stats (not in whitelist)
+        assert "country_code" not in stats_map_filtered or stats_map_filtered["country_code"].top_k is None or len(stats_map_filtered["country_code"].top_k) == 0, (
+            "country_code should not have stats (not in whitelist)"
+        )
+        # status should NOT have stats (in blacklist)
+        assert "status" not in stats_map_filtered or stats_map_filtered["status"].top_k is None or len(stats_map_filtered["status"].top_k) == 0, (
+            "status should not have stats (blacklisted even though whitelisted)"
+        )
+
 
 class TestTechnicalContextModes:
     """Test build_technical_context with all modes on the crunchbase ontology."""

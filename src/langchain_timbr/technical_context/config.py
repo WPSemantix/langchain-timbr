@@ -12,8 +12,6 @@ class TechnicalContextConfig:
 
     Controls mode selection, token budgets, matching thresholds, and trimming behavior.
     """
-
-    enable_technical_context: bool = True
     mode: Literal["include_all", "filter_matched", "auto"] = "auto"
     max_tokens: int = 3000
     safety_ceiling: int = 10000

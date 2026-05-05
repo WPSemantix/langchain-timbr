@@ -711,8 +711,13 @@ def _build_sql_generation_context(
     # Enrich column dicts with technical context annotations (stats + question matching)
     if enable_technical_context:
         try:
+            import copy
             from ..technical_context import build_technical_context
             from ..technical_context.config import TechnicalContextConfig
+            columns = copy.deepcopy(columns)
+            measures = copy.deepcopy(measures)
+            relationships = copy.deepcopy(relationships)
+
             all_col_dicts = columns + measures
             for rel in relationships.values():
                 all_col_dicts += rel.get('columns', []) + rel.get('measures', [])

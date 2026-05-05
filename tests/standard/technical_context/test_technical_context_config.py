@@ -9,7 +9,6 @@ class TestTechnicalContextConfigDefaults:
 
     def test_defaults(self):
         cfg = TechnicalContextConfig()
-        assert cfg.enable_technical_context is True
         assert cfg.mode == "auto"
         assert cfg.max_tokens == 3000
         assert cfg.safety_ceiling == 10000

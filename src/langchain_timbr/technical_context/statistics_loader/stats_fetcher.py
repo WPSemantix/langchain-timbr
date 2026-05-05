@@ -75,8 +75,9 @@ def fetch_stats_for_mappings(
 ) -> list[RawStatsRow]:
     """Fetch statistics rows for a set of mapping names (dtimbr path).
 
-    Cache (if provided) is consulted first; only missing targets are fetched from DB.
-    Splits mapping_names into chunks of config.in_clause_chunk_size to avoid
+    Cache (if provided) is consulted first at property-level granularity;
+    only missing targets/properties are fetched from DB.
+    Splits names into chunks of config.in_clause_chunk_size to avoid
     overly large IN-clauses.
 
     Args:
@@ -97,31 +98,53 @@ def fetch_stats_for_mappings(
     ontology = conn_params.get("ontology", "")
     target_keys = [("mapping", name) for name in sorted(mapping_names)]
 
-    # Check cache (also triggers idle sweep + batch validation)
+    # Compute requested_properties for cache lookup
+    requested_properties: set[str] | None = None
+    if include_properties:
+        requested_properties = set(include_properties)
+        if exclude_properties:
+            requested_properties -= set(exclude_properties)
+
+    # Check cache
     cached_rows: list[RawStatsRow] = []
-    missing_keys: list[tuple[str, str]] = target_keys
+    names_to_fetch: list[str] = sorted(mapping_names)
+    fetch_prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
+
     if cache is not None:
-        cached_by_key, missing_keys = cache.get_many(ontology, target_keys)
-        for rows in cached_by_key.values():
-            cached_rows.extend(rows)
+        cached_rows, missing = cache.get_many(ontology, target_keys, requested_properties)
+        if not missing:
+            return cached_rows
 
-    if not missing_keys:
-        return cached_rows
+        names_to_fetch = [name for (_, name, _) in missing]
 
-    # Fetch missing mappings from DB (chunked)
-    missing_names = [name for (_, name) in missing_keys]
+        # Build optimised property filter from missing props
+        all_missing_props: set[str] | None = set()
+        for _, _, props in missing:
+            if props is None:
+                all_missing_props = None
+                break
+            all_missing_props.update(props)
+
+        if all_missing_props is not None:
+            safe_names = _validate_property_names(list(all_missing_props))
+            if safe_names:
+                prop_in = ", ".join(f"'{n}'" for n in safe_names)
+                fetch_prop_filter = f" AND property_name IN ({prop_in})"
+            else:
+                fetch_prop_filter = ""
+
+    # Fetch missing from DB (chunked)
     fetched: list[RawStatsRow] = []
     chunk_size = config.in_clause_chunk_size
 
-    for i in range(0, len(missing_names), chunk_size):
-        chunk = missing_names[i : i + chunk_size]
+    for i in range(0, len(names_to_fetch), chunk_size):
+        chunk = names_to_fetch[i : i + chunk_size]
         in_clause = ", ".join(f"'{name}'" for name in chunk)
-        prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
         query = (
             f"SELECT {_STATS_COLUMNS} "
             f"FROM timbr.sys_properties_statistics "
             f"WHERE target_type = 'mapping' AND target_name IN ({in_clause})"
-            f"{prop_filter}"
+            f"{fetch_prop_filter}"
         )
 
         try:
@@ -134,15 +157,11 @@ def fetch_stats_for_mappings(
             if parsed:
                 fetched.append(parsed)
 
-    # Group fetched rows by (target_type, target_name) and cache
+    # Cache fetched rows
     if cache is not None and fetched:
-        by_target: dict[tuple[str, str], list[RawStatsRow]] = {}
-        for row in fetched:
-            by_target.setdefault((row.target_type, row.target_name), []).append(row)
-        cache.put_many(ontology, by_target)
+        cache.put_many(ontology, fetched)
 
     return cached_rows + fetched
-
 
 def fetch_stats_for_view(
     view_name: str,
@@ -153,6 +172,9 @@ def fetch_stats_for_view(
     exclude_properties: list[str] | None = None,
 ) -> list[RawStatsRow]:
     """Fetch statistics rows for a single view (vtimbr path).
+
+    Cache (if provided) is consulted first at property-level granularity;
+    only missing properties are fetched from DB.
 
     Args:
         view_name: The view name to fetch stats for.
@@ -168,17 +190,40 @@ def fetch_stats_for_view(
     ontology = conn_params.get("ontology", "")
     target_keys = [("view", view_name)]
 
-    if cache is not None:
-        cached_by_key, missing_keys = cache.get_many(ontology, target_keys)
-        if not missing_keys:
-            return cached_by_key.get(("view", view_name), [])
+    # Compute requested_properties for cache lookup
+    requested_properties: set[str] | None = None
+    if include_properties:
+        requested_properties = set(include_properties)
+        if exclude_properties:
+            requested_properties -= set(exclude_properties)
 
-    prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
+    # Check cache
+    cached_rows: list[RawStatsRow] = []
+    missing_props: set[str] | None = None  # None = fetch all
+
+    if cache is not None:
+        cached_rows, missing = cache.get_many(ontology, target_keys, requested_properties)
+        if not missing:
+            return cached_rows
+        # Extract missing_props from the single target
+        _, _, missing_props = missing[0]
+
+    # Build property filter for DB query
+    if missing_props is not None:
+        safe_names = _validate_property_names(list(missing_props))
+        if safe_names:
+            prop_in = ", ".join(f"'{n}'" for n in safe_names)
+            fetch_prop_filter = f" AND property_name IN ({prop_in})"
+        else:
+            fetch_prop_filter = ""
+    else:
+        fetch_prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
+
     query = (
         f"SELECT {_STATS_COLUMNS} "
         f"FROM timbr.sys_properties_statistics "
         f"WHERE target_name = '{view_name}' AND target_type = 'view'"
-        f"{prop_filter}"
+        f"{fetch_prop_filter}"
     )
 
     try:
@@ -186,16 +231,16 @@ def fetch_stats_for_view(
     except Exception:
         raise  # db_executor errors propagate
 
-    result: list[RawStatsRow] = []
+    fetched: list[RawStatsRow] = []
     for row in rows:
         parsed = _parse_row(row, columns_type_map)
         if parsed:
-            result.append(parsed)
+            fetched.append(parsed)
 
-    if cache is not None and result:
-        cache.put_many(ontology, {("view", view_name): result})
+    if cache is not None and fetched:
+        cache.put_many(ontology, fetched)
 
-    return result
+    return cached_rows + fetched
 
 
 def _parse_row(row: dict, columns_type_map: dict[str, str]) -> RawStatsRow | None:

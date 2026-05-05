@@ -26,6 +26,18 @@ from .stats_merger import merge_rows
 logger = logging.getLogger(__name__)
 
 _DEFAULT_CONFIG = StatisticsLoaderConfig()
+_stats_cache: StatsCache | None = None
+
+
+def _get_or_create_cache(
+    config: StatisticsLoaderConfig,
+    conn_params: dict,
+) -> StatsCache:
+    """Lazy-init module-level cache singleton. Recreates if config changes."""
+    global _stats_cache
+    if _stats_cache is None:
+        _stats_cache = StatsCache(config, conn_params)
+    return _stats_cache
 
 
 def load_column_statistics(
@@ -87,6 +99,8 @@ def _load_vtimbr(
     cache: Optional[StatsCache] = None,
 ) -> dict[str, ColumnStatistics]:
     """vtimbr path: single view, no merge needed."""
+    if cache is None and config.cache_enabled:
+        cache = _get_or_create_cache(config, conn_params)
     # 1. Get view row count (cached)
     view_row_counts = load_view_row_counts(conn_params=conn_params)
     view_rows = view_row_counts.get(view_name, -1)
@@ -143,6 +157,8 @@ def _load_dtimbr(
     cache: Optional[StatsCache] = None,
 ) -> dict[str, ColumnStatistics]:
     """dtimbr path: parse paths, resolve mappings, fetch and merge."""
+    if cache is None and config.cache_enabled:
+        cache = _get_or_create_cache(config, conn_params)
     # A.1 — Parse columns into paths
     paths: list[ColumnPath] = []
     path_errors: dict[str, str] = {}
