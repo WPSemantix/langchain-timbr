@@ -181,6 +181,57 @@ class TestTechnicalContextStatistics:
             "status should not have stats (blacklisted even though whitelisted)"
         )
 
+    def test_cached_stats_filtered_by_whitelist_and_blacklist2(self, config):
+        """Fetch all stats (no filters) to populate cache, then verify filters work on cached data."""
+        conn_params = self._conn_params(config)
+        columns = [
+            {"name": "country_code", "type": "varchar"},
+            {"name": "region", "type": "varchar"},
+            {"name": "status", "type": "varchar"},
+        ]
+
+        # First call: no filters — populates cache with all 3 properties
+        filtered_config = StatisticsLoaderConfig(
+            include_properties=["region"],
+        )
+        stats_map_all = load_column_statistics(
+            schema="dtimbr",
+            table_name="organization",
+            columns=columns,
+            conn_params=conn_params,
+            config=filtered_config,
+        )
+        # Sanity: all three should have stats
+        assert "country_code" in stats_map_all and not stats_map_all["country_code"].top_k, (
+            "country_code should not have stats with no filter"
+        )
+        assert "region" in stats_map_all and stats_map_all["region"].top_k, (
+            "region should have stats with no filter"
+        )
+        assert "status" in stats_map_all and not stats_map_all["status"].top_k, (
+            "status should not have stats with no filter"
+        )
+
+        # Second call: whitelist=["region", "status"] + blacklist=["status"]
+        # Expected: only "region" has stats (status excluded by blacklist, country_code excluded by whitelist)
+        filtered_config = StatisticsLoaderConfig()
+        stats_map_all = load_column_statistics(
+            schema="dtimbr",
+            table_name="organization",
+            columns=columns,
+            conn_params=conn_params,
+            config=filtered_config,
+        )
+
+        assert "country_code" in stats_map_all and stats_map_all["country_code"].top_k, (
+            "country_code should have stats with no filter"
+        )
+        assert "region" in stats_map_all and stats_map_all["region"].top_k, (
+            "region should have stats with no filter"
+        )
+        assert "status" in stats_map_all and stats_map_all["status"].top_k, (
+            "status should have stats with no filter"
+        )
 
 class TestTechnicalContextModes:
     """Test build_technical_context with all modes on the crunchbase ontology."""

@@ -16,6 +16,7 @@ from ...utils import timbr_utils as _timbr_utils
 from .types import RawStatsRow, TopKEntry
 from .stats_parser import parse_stats_json
 from .config import StatisticsLoaderConfig
+from .ontology_cache import load_mapping_properties_index
 
 if TYPE_CHECKING:
     from .stats_cache import StatsCache
@@ -64,6 +65,95 @@ def _build_property_filter_clause(
     return "".join(parts)
 
 
+def _build_compound_mapping_query(
+    chunk: list[str],
+    per_mapping_missing: dict[str, set[str] | None],
+    props_index: dict[str, set[str]],
+    include_properties: list[str] | None = None,
+    exclude_properties: list[str] | None = None,
+) -> str:
+    """Build a compound OR query fetching per-mapping missing properties.
+
+    Produces:
+        SELECT ... FROM ... WHERE target_type = 'mapping' AND (
+            (target_name = 'X' AND property_name IN ('a','b'))
+            OR (target_name = 'Y' AND property_name IN ('c','d'))
+            ...
+        )
+
+    For each mapping, the properties to fetch are:
+        intersection of (missing_from_cache, exists_in_index, include_properties)
+        minus exclude_properties.
+
+    If a mapping is not in the index or missing_props is None (fetch all),
+    it uses include_properties as the filter (or no property filter for that mapping).
+    """
+    include_set = set(include_properties) if include_properties else None
+    exclude_set = set(exclude_properties) if exclude_properties else None
+
+    or_parts: list[str] = []
+    for mapping_name in chunk:
+        missing_props = per_mapping_missing.get(mapping_name)
+        available_props = props_index.get(mapping_name)
+
+        # Determine which properties to fetch for this mapping
+        if missing_props is None:
+            # Cache said "fetch all" for this target
+            if include_set:
+                needed = set(include_set)
+            elif available_props:
+                needed = set(available_props)
+            else:
+                needed = None  # no filter — fetch everything for this mapping
+        else:
+            # Intersect missing with what exists in the index
+            if available_props:
+                needed = missing_props & available_props
+            else:
+                # Not in index (stale index?) — use missing as-is
+                needed = set(missing_props)
+
+            # Intersect with include_properties if specified
+            if include_set:
+                needed = needed & include_set
+
+        # Apply exclude
+        if needed is not None and exclude_set:
+            needed -= exclude_set
+
+        # Build the clause for this mapping
+        safe_name = mapping_name.replace("'", "''")
+        if needed is not None and needed:
+            safe_props = _validate_property_names(sorted(needed))
+            if safe_props:
+                prop_in = ", ".join(f"'{p}'" for p in safe_props)
+                or_parts.append(
+                    f"(target_name = '{safe_name}' AND property_name IN ({prop_in}))"
+                )
+            else:
+                # All prop names failed validation — fetch all for this mapping
+                or_parts.append(f"(target_name = '{safe_name}')")
+        elif needed is None:
+            # No property filter for this mapping
+            or_parts.append(f"(target_name = '{safe_name}')")
+        # else: needed is empty set — nothing to fetch for this mapping, skip
+
+    if not or_parts:
+        # Nothing to fetch — return a query that returns no rows
+        return (
+            f"SELECT {_STATS_COLUMNS} "
+            f"FROM timbr.sys_properties_statistics "
+            f"WHERE 1 = 0"
+        )
+
+    or_clause = " OR ".join(or_parts)
+    return (
+        f"SELECT {_STATS_COLUMNS} "
+        f"FROM timbr.sys_properties_statistics "
+        f"WHERE target_type = 'mapping' AND ({or_clause})"
+    )
+
+
 def fetch_stats_for_mappings(
     mapping_names: set[str],
     conn_params: dict,
@@ -98,17 +188,40 @@ def fetch_stats_for_mappings(
     ontology = conn_params.get("ontology", "")
     target_keys = [("mapping", name) for name in sorted(mapping_names)]
 
-    # Compute requested_properties for cache lookup
-    requested_properties: set[str] | None = None
+    # Compute requested_properties for cache lookup.
+    # When no include_properties given, use all columns from the type map (already
+    # exclude-filtered by the caller) so the cache can do property-level lookup
+    # instead of always falling back to DB.
     if include_properties:
-        requested_properties = set(include_properties)
+        requested_properties: set[str] = set(include_properties)
+        if exclude_properties:
+            requested_properties -= set(exclude_properties)
+    else:
+        requested_properties = set()
+        for col in columns_type_map.keys():
+            # Normalize: extract short property name
+            # - If col contains "]_", take everything after the last "]_"
+            # - Else if col contains ".", take everything after the last "."
+            if "]_" in col:
+                prop = col.rsplit("]_", 1)[-1]
+            elif "." in col:
+                prop = col.rsplit(".", 1)[-1]
+            else:
+                prop = col
+
+            if prop.startswith("_type_of") or prop.startswith("measure."):
+                continue
+
+            requested_properties.add(prop)
         if exclude_properties:
             requested_properties -= set(exclude_properties)
 
     # Check cache
     cached_rows: list[RawStatsRow] = []
     names_to_fetch: list[str] = sorted(mapping_names)
-    fetch_prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
+    # Per-mapping missing properties: {mapping_name: set of props to fetch}
+    per_mapping_missing: dict[str, set[str] | None] = {}
+    use_compound_filter = False
 
     if cache is not None:
         cached_rows, missing = cache.get_many(ontology, target_keys, requested_properties)
@@ -117,21 +230,20 @@ def fetch_stats_for_mappings(
 
         names_to_fetch = [name for (_, name, _) in missing]
 
-        # Build optimised property filter from missing props
-        all_missing_props: set[str] | None = set()
-        for _, _, props in missing:
-            if props is None:
-                all_missing_props = None
-                break
-            all_missing_props.update(props)
+        # Build per-mapping missing props dict
+        for _, name, props in missing:
+            per_mapping_missing[name] = props
 
-        if all_missing_props is not None:
-            safe_names = _validate_property_names(list(all_missing_props))
-            if safe_names:
-                prop_in = ", ".join(f"'{n}'" for n in safe_names)
-                fetch_prop_filter = f" AND property_name IN ({prop_in})"
-            else:
-                fetch_prop_filter = ""
+        # Determine if we need per-mapping granularity (partial hit) or simple filter
+        has_partial_hit = bool(cached_rows)
+        if has_partial_hit:
+            use_compound_filter = True
+
+    # Load property index to know what actually exists per mapping in the DB.
+    # This is cached until ontology version changes (typically 1 round-trip).
+    props_index: dict[str, set[str]] | None = None
+    if use_compound_filter:
+        props_index = load_mapping_properties_index(conn_params)
 
     # Fetch missing from DB (chunked)
     fetched: list[RawStatsRow] = []
@@ -139,13 +251,34 @@ def fetch_stats_for_mappings(
 
     for i in range(0, len(names_to_fetch), chunk_size):
         chunk = names_to_fetch[i : i + chunk_size]
-        in_clause = ", ".join(f"'{name}'" for name in chunk)
-        query = (
-            f"SELECT {_STATS_COLUMNS} "
-            f"FROM timbr.sys_properties_statistics "
-            f"WHERE target_type = 'mapping' AND target_name IN ({in_clause})"
-            f"{fetch_prop_filter}"
-        )
+
+        if use_compound_filter and props_index is not None:
+            # Build compound OR filter: per-mapping property IN-clauses
+            query = _build_compound_mapping_query(
+                chunk, per_mapping_missing, props_index,
+                include_properties, exclude_properties,
+            )
+        else:
+            # Simple query: all mappings with a single property filter
+            in_clause = ", ".join(f"'{name}'" for name in chunk)
+            if include_properties:
+                # Subtract exclude from include — single IN-clause is sufficient
+                effective = sorted(set(include_properties) - set(exclude_properties or []))
+                safe_names = _validate_property_names(effective)
+                if safe_names:
+                    prop_in = ", ".join(f"'{n}'" for n in safe_names)
+                    prop_filter = f" AND property_name IN ({prop_in})"
+                else:
+                    prop_filter = ""
+            else:
+                # No include — only apply exclude if present
+                prop_filter = _build_property_filter_clause(None, exclude_properties)
+            query = (
+                f"SELECT {_STATS_COLUMNS} "
+                f"FROM timbr.sys_properties_statistics "
+                f"WHERE target_type = 'mapping' AND target_name IN ({in_clause})"
+                f"{prop_filter}"
+            )
 
         try:
             rows = _timbr_utils.run_query(query, conn_params)
@@ -190,10 +323,16 @@ def fetch_stats_for_view(
     ontology = conn_params.get("ontology", "")
     target_keys = [("view", view_name)]
 
-    # Compute requested_properties for cache lookup
-    requested_properties: set[str] | None = None
+    # Compute requested_properties for cache lookup.
+    # When no include_properties given, use all columns from the type map (already
+    # exclude-filtered by the caller) so the cache can do property-level lookup
+    # instead of always falling back to DB.
     if include_properties:
-        requested_properties = set(include_properties)
+        requested_properties: set[str] = set(include_properties)
+        if exclude_properties:
+            requested_properties -= set(exclude_properties)
+    else:
+        requested_properties = set(columns_type_map.keys())
         if exclude_properties:
             requested_properties -= set(exclude_properties)
 
@@ -209,7 +348,12 @@ def fetch_stats_for_view(
         _, _, missing_props = missing[0]
 
     # Build property filter for DB query
-    if missing_props is not None:
+    # Only narrow the filter when we have an explicit whitelist OR a
+    # partial cache hit (not everything is missing).  On a full miss
+    # without include_properties we fetch all columns — no IN-clause.
+    if missing_props is not None and (
+        include_properties or missing_props != requested_properties
+    ):
         safe_names = _validate_property_names(list(missing_props))
         if safe_names:
             prop_in = ", ".join(f"'{n}'" for n in safe_names)

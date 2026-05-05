@@ -72,17 +72,19 @@ class TestFullFetchFromDB:
         for _, _, miss_props in missing:
             assert miss_props == props
 
-    def test_requested_properties_none_always_marks_missing(self):
-        """requested_properties=None means 'fetch all' — always missing."""
+    def test_requested_properties_none_returns_cached_and_marks_missing(self):
+        """requested_properties=None returns any cached rows but also marks target missing."""
         cache = StatsCache(_make_config(), _conn_params())
+        cache._last_validated["test_ontology"] = time.monotonic()
         # Pre-populate cache
         cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
 
         cached, missing = cache.get_many(
             "test_ontology", [("mapping", "map_a")], requested_properties=None,
         )
-        # Even though data is cached, None means can't determine completeness
-        assert cached == []
+        # Cached rows are returned, but target is still marked missing (can't determine completeness)
+        assert len(cached) == 1
+        assert cached[0].property_name == "col_a"
         assert len(missing) == 1
         assert missing[0] == ("mapping", "map_a", None)
 
@@ -229,8 +231,9 @@ class TestPartialCacheHit:
         assert missing[0][1] == "map_b"
         assert missing[0][2] == {"col_a", "col_b"}
 
+    @patch("langchain_timbr.technical_context.statistics_loader.stats_fetcher.load_mapping_properties_index")
     @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_fetcher_only_queries_missing_properties(self, mock_run_query):
+    def test_fetcher_only_queries_missing_properties(self, mock_run_query, mock_props_index):
         """Fetcher should query DB only for properties not in cache."""
         from langchain_timbr.technical_context.statistics_loader.stats_fetcher import (
             fetch_stats_for_mappings,
@@ -239,6 +242,9 @@ class TestPartialCacheHit:
         cache = StatsCache(_make_config(), _conn_params())
         cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
         cache._last_validated["test_ontology"] = time.monotonic()
+
+        # Property index: map_a has both col_a and col_b in the stats table
+        mock_props_index.return_value = {"map_a": {"col_a", "col_b"}}
 
         mock_run_query.return_value = [
             {
@@ -266,7 +272,7 @@ class TestPartialCacheHit:
         prop_names = {r.property_name for r in result}
         assert prop_names == {"col_a", "col_b"}
 
-        # DB query should only request col_b
+        # DB query should only request col_b (col_a is cached)
         assert mock_run_query.call_count == 1
         query_sql = mock_run_query.call_args[0][0]
         assert "col_b" in query_sql
@@ -435,8 +441,9 @@ class TestIncludeExcludeLogic:
         assert cached[0].property_name == "col_a"
 
     @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_no_include_no_exclude_fetches_all(self, mock_run_query):
-        """Without include/exclude, requested_properties=None triggers full fetch."""
+    def test_no_include_no_exclude_uses_columns_type_map_as_requested(self, mock_run_query):
+        """Without include/exclude, fetcher uses columns_type_map keys as requested_properties.
+        Cache returns hits; DB is only queried for missing properties."""
         from langchain_timbr.technical_context.statistics_loader.stats_fetcher import (
             fetch_stats_for_mappings,
         )
@@ -455,9 +462,8 @@ class TestIncludeExcludeLogic:
             exclude_properties=None,
         )
 
-        # SQL should not contain property_name IN/NOT IN filter
+        # SQL should not contain NOT IN filter (no exclude_properties)
         query_sql = mock_run_query.call_args[0][0]
-        assert "property_name IN" not in query_sql
         assert "property_name NOT IN" not in query_sql
 
 

@@ -109,3 +109,33 @@ def load_view_row_counts(conn_params: dict) -> dict[str, int]:
         result[view_name] = num_rows
 
     return result
+
+
+@cache_with_version_check
+def load_mapping_properties_index(conn_params: dict) -> dict[str, set[str]]:
+    """Load the mapping→properties index from timbr.sys_properties_statistics.
+
+    Fetches all (target_name, property_name) pairs where target_type = 'mapping'.
+    Cached until the ontology version changes, so typically one DB round-trip.
+
+    Returns:
+        Dict of mapping_name -> set of property_names available in the stats table.
+    """
+    query = (
+        "SELECT target_name, property_name "
+        "FROM timbr.sys_properties_statistics "
+        "WHERE target_type = 'mapping'"
+    )
+    rows = _timbr_utils.run_query(query, conn_params)
+
+    result: dict[str, set[str]] = {}
+    for row in rows:
+        target_name = row.get("target_name")
+        property_name = row.get("property_name")
+        if not target_name or not property_name:
+            continue
+        if target_name not in result:
+            result[target_name] = set()
+        result[target_name].add(property_name)
+
+    return result

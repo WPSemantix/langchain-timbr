@@ -96,8 +96,12 @@ class StatsCache:
         with self._lock:
             for target_type, target_name in target_keys:
                 if requested_properties is None:
-                    # Can't determine completeness without a property list;
-                    # always mark as missing so the caller fetches from DB.
+                    # True fallback: no reference list available at all.
+                    # Return any cached rows for the target but also mark it
+                    # missing so the caller can decide whether to fetch from DB.
+                    now_inner = time.monotonic()
+                    all_rows = self._get_all_for_target(ontology, target_type, target_name, now_inner)
+                    cached_rows.extend(all_rows)
                     missing.append((target_type, target_name, None))
                 else:
                     # Look up each requested property individually
