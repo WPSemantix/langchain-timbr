@@ -124,7 +124,7 @@ def _calculate_token_count(llm: LLM, prompt: str | list[Any]) -> int:
 
     encoding = None
     try:
-        if hasattr(llm, 'client') and hasattr(llm.client, 'model_name'):
+        if hasattr(llm, 'client') and hasattr(llm.client, 'model_name') and llm.client.model_name:
             encoding = tiktoken.encoding_for_model(llm.client.model_name)
     except Exception as e:
         print(f"Error with primary token counting: {e}")
