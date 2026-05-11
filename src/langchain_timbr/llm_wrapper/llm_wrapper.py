@@ -206,14 +206,14 @@ class LlmWrapper(LLM):
       llm_model = model or "gpt-4o-2024-11-20"
       params = self._add_temperature(LlmTypes.AzureOpenAI.name, llm_model, **llm_params)
 
-      azure_endpoint = pop_param_value(params, ['azure_endpoint', 'llm_endpoint'], default=config.llm_endpoint)
-      azure_api_version = pop_param_value(params, ['azure_api_version', 'llm_api_version'], default=config.llm_api_version)
+      azure_endpoint = pop_param_value(params, ['azure_endpoint', 'llm_endpoint', 'endpoint'], default=config.llm_endpoint)
+      azure_api_version = pop_param_value(params, ['azure_api_version', 'llm_api_version', 'api_version'], default=config.llm_api_version)
 
-      azure_client_id = pop_param_value(params, ['azure_client_id', 'llm_client_id'], default=config.llm_client_id)
-      azure_tenant_id = pop_param_value(params, ['azure_tenant_id', 'llm_tenant_id'], default=config.llm_tenant_id)
+      azure_client_id = pop_param_value(params, ['azure_client_id', 'llm_client_id', 'client_id'], default=config.llm_client_id)
+      azure_tenant_id = pop_param_value(params, ['azure_tenant_id', 'llm_tenant_id', 'tenant_id'], default=config.llm_tenant_id)
       if azure_tenant_id and azure_client_id:
         from azure.identity import ClientSecretCredential, get_bearer_token_provider
-        azure_client_secret = pop_param_value(params, ['azure_client_secret', 'llm_client_secret'], default=api_key)
+        azure_client_secret = pop_param_value(params, ['azure_client_secret', 'llm_client_secret', 'client_secret'], default=api_key)
         scope = pop_param_value(params, ['azure_scope', 'llm_scope', 'scope'], default=config.llm_scope)
         credential = ClientSecretCredential(
           tenant_id=azure_tenant_id,
