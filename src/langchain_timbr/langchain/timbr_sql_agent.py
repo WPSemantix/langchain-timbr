@@ -51,6 +51,10 @@ class TimbrSqlAgent(Runnable):
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
         memory_window_size: Optional[int] = config.memory_window_size,
+        enable_technical_context: Optional[bool] = config.enable_technical_context,
+        technical_context_mode: Optional[str] = config.technical_context_mode,
+        technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
+        technical_context_properties: Optional[Union[list[str], str]] = None,
     ):
         """
         :param llm: An LLM instance or a function that takes a prompt string and returns the LLM's response (optional, will use LlmWrapper with env variables if not provided)
@@ -152,6 +156,10 @@ class TimbrSqlAgent(Runnable):
                 conversation_id=conversation_id,
                 enable_memory=self._enable_memory,
                 memory_window_size=self._memory_window_size,
+                enable_technical_context=to_boolean(enable_technical_context),
+                technical_context_mode=technical_context_mode,
+                technical_context_max_tokens=to_integer(technical_context_max_tokens),
+                technical_context_properties=technical_context_properties,
             )
         else:
             self._chain = ExecuteTimbrQueryChain(
@@ -186,6 +194,10 @@ class TimbrSqlAgent(Runnable):
                 conversation_id=conversation_id,
                 enable_memory=self._enable_memory,
                 memory_window_size=self._memory_window_size,
+                enable_technical_context=to_boolean(enable_technical_context),
+                technical_context_mode=technical_context_mode,
+                technical_context_max_tokens=to_integer(technical_context_max_tokens),
+                technical_context_properties=technical_context_properties,
             )
 
 
@@ -400,6 +412,10 @@ def create_timbr_sql_agent(
     conversation_id: Optional[str] = None,
     enable_memory: Optional[bool] = config.enable_memory,
     memory_window_size: Optional[int] = config.memory_window_size,
+    enable_technical_context: Optional[bool] = config.enable_technical_context,
+    technical_context_mode: Optional[str] = config.technical_context_mode,
+    technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
+    technical_context_properties: Optional[Union[list[str], str]] = None,
 ) -> TimbrSqlAgent:
     """
     Create and configure a Timbr agent with its executor.
@@ -511,6 +527,10 @@ def create_timbr_sql_agent(
         conversation_id=conversation_id,
         enable_memory=enable_memory,
         memory_window_size=memory_window_size,
+        enable_technical_context=enable_technical_context,
+        technical_context_mode=technical_context_mode,
+        technical_context_max_tokens=technical_context_max_tokens,
+        technical_context_properties=technical_context_properties,
     )
 
     return timbr_agent
