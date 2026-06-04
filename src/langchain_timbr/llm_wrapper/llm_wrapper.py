@@ -265,21 +265,39 @@ class LlmWrapper(LLM):
       )
     elif is_llm_type(llm_type, LlmTypes.Bedrock):
       from langchain_aws import ChatBedrockConverse
-      llm_model = model or "openai.gpt-oss-20b-1:0"
+      llm_model = model or "anthropic.claude-3-5-sonnet-20241022-v2:0"
       params = self._add_temperature(LlmTypes.Bedrock.name, llm_model, **llm_params)
 
       aws_region = pop_param_value(params, ['aws_region', 'llm_region', 'region'])
       if aws_region:
         params['region_name'] = aws_region
+
       aws_access_key_id = pop_param_value(params, ['aws_access_key_id', 'llm_access_key_id', 'access_key_id'])
       if aws_access_key_id:
         params['aws_access_key_id'] = aws_access_key_id
+
       aws_secret_access_key = pop_param_value(params, ['aws_secret_access_key', 'llm_secret_access_key', 'secret_access_key'], default=api_key)
       if aws_secret_access_key:
         params['aws_secret_access_key'] = aws_secret_access_key
+
       aws_session_token = pop_param_value(params, ['aws_session_token', 'llm_session_token', 'session_token'])
       if aws_session_token:
         params['aws_session_token'] = aws_session_token
+
+      endpoint_url = pop_param_value(params, ['endpoint_url', 'llm_endpoint', 'endpoint', 'base_url'])
+      if endpoint_url:
+        params['endpoint_url'] = endpoint_url
+
+      credentials_profile_name = pop_param_value(params, ['credentials_profile_name', 'profile_name', 'profile'])
+      if credentials_profile_name:
+        params['credentials_profile_name'] = credentials_profile_name
+
+      # provider is a ChatBedrockConverse field used for routing/streaming detection.
+      # For non-ARN model IDs it is inferred from the model ID automatically; only
+      # pass it explicitly when the model is an ARN (where it cannot be inferred).
+      provider = pop_param_value(params, ['provider', 'bedrock_provider', 'llm_provider'])
+      if provider and llm_model.startswith('arn:'):
+        params['provider'] = provider
 
       return ChatBedrockConverse(
         model=llm_model,
