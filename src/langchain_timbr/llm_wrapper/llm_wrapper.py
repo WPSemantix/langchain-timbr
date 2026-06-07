@@ -50,7 +50,8 @@ class LlmWrapper(LLM):
       selected_additional_params = llm_params.pop('additional_params', None)
 
       # Parse additional parameters from init params or config and merge with provided params
-      default_additional_params = parse_additional_params(selected_additional_params or config.llm_additional_params or {})
+      default_additional_params = parse_additional_params(selected_additional_params or
+                                                          config.llm_additional_params if config.llm_type == llm_type else {})
       additional_llm_params = {**default_additional_params, **llm_params}
       
       # Validation: Ensure we have the required parameters
