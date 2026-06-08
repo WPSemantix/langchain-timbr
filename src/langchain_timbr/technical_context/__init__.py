@@ -89,6 +89,7 @@ def build_technical_context(
             name, sql_type, stats,
             free_text_threshold=config.free_text_distinct_threshold,
             id_unique_ratio=config.id_unique_ratio_threshold,
+            categorical_enum_max_distinct=config.categorical_enum_max_distinct,
         )
         distance = compute_ontology_distance(name)
         col_ref = ColumnRef(
@@ -141,15 +142,17 @@ def build_technical_context(
         candidates = extract_prompt_tokens(question)
 
     # 5. Run matchers per column (same cascade in ALL modes)
+    # We run matchers for EVERY column with stats, including ID and FREE_TEXT.
+    # The previous early-skip silently dropped categorical dimension columns
+    # whose distinct/non_null ratio happened to be ≈ 1.0 (the unique-ratio
+    # signal is grain-dependent; a relationship-joined label column is unique
+    # in its own dimension by construction). Running matchers unconditionally
+    # means misclassification degrades to name_only with matched values
+    # instead of producing no annotation at all.
     matches_by_column: dict[str, list[MatchResult]] = {}
     for col_ref in col_refs:
         stats = stats_map.get(col_ref.name)
         if not stats or not stats.top_k:
-            continue
-        # Skip ID and FREE_TEXT for matching (unless in include_all mode)
-        if effective_mode != "include_all" and col_ref.semantic_type in (
-            SemanticType.ID, SemanticType.FREE_TEXT
-        ):
             continue
 
         known_values = [str(e.value) for e in stats.top_k]

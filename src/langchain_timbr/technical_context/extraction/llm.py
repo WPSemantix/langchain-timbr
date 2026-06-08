@@ -14,9 +14,35 @@ import contextvars
 import json
 import logging
 import re
+from collections import OrderedDict
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# In-process LRU cache for candidate extraction.
+#
+# The extraction is a pure function of ``question`` — no columns, no schema,
+# no time — so memoizing by ``(question.strip(), id(llm))`` is safe. The
+# primary win is the dynamic-metadata-context ``tc_topup`` path, which today
+# re-invokes ``build_technical_context`` with the SAME question + LLM after
+# an ``expand_to`` / anchor swap, causing a second identical LLM call. With
+# this cache the second call is served from memory.
+#
+# ``id(llm)`` is the cheap process-local identity guard against multi-LLM
+# processes serving the same question. ``OrderedDict.move_to_end`` +
+# ``popitem(last=False)`` is the canonical Python LRU pattern. We do NOT
+# use ``functools.lru_cache`` because the cached value is a ``list`` and we
+# return defensive copies (lru_cache returns the same object — caller
+# mutation would poison the cache).
+_CACHE_MAXSIZE = 128
+_EXTRACTION_CACHE: "OrderedDict[tuple[str, int], list[str]]" = OrderedDict()
+
+
+def _extraction_cache_clear() -> None:
+    """Drop every cached extraction. Used by tests for isolation; also handy
+    when debugging by hand from a REPL."""
+    _EXTRACTION_CACHE.clear()
 
 
 def extract_candidates_with_llm(
@@ -30,14 +56,21 @@ def extract_candidates_with_llm(
     The LLM uses world knowledge to identify literals that would appear in
     WHERE clauses and provides synonyms/alternate forms for each.
 
+    Results are memoized in an in-process LRU cache keyed by
+    ``(question.strip(), id(llm))`` so re-entrant callers (notably the
+    dynamic metadata-context ``tc_topup`` pass) don't burn a second
+    identical LLM call. Errors are NEVER cached — only successful LLM
+    invocations (even when the parsed result is empty).
+
     Args:
         question: User's natural language question.
         llm: LLM instance with an .invoke() method. If None, returns [].
         timeout: Timeout in seconds for the LLM call.
 
     Returns:
-        Flat list of candidate literal strings + their synonyms.
-        Returns [] on any failure.
+        Flat list of candidate literal strings + their synonyms. A fresh
+        list copy on every call — safe to mutate. Returns [] on any
+        failure.
     """
     if llm is None:
         return []
@@ -45,15 +78,29 @@ def extract_candidates_with_llm(
     if not question or not question.strip():
         return []
 
+    cache_key = (question.strip(), id(llm))
+    cached = _EXTRACTION_CACHE.get(cache_key)
+    if cached is not None:
+        _EXTRACTION_CACHE.move_to_end(cache_key)
+        return list(cached)
+
     prompt_text = _build_candidate_extraction_prompt(question)
 
     try:
         response_text = _call_llm(llm, prompt_text, timeout=timeout)
     except Exception as e:
         logger.warning("LLM candidate extraction call failed: %s", e)
+        # Intentionally NOT cached — a future retry should re-invoke.
         return []
 
-    return _parse_candidates_response(response_text)
+    result = _parse_candidates_response(response_text)
+    # Cache the successful invocation (empty result still counts as a real
+    # answer for this question — distinct from the error path above).
+    _EXTRACTION_CACHE[cache_key] = list(result)
+    _EXTRACTION_CACHE.move_to_end(cache_key)
+    while len(_EXTRACTION_CACHE) > _CACHE_MAXSIZE:
+        _EXTRACTION_CACHE.popitem(last=False)
+    return list(result)
 
 
 def _build_candidate_extraction_prompt(question: str) -> str:

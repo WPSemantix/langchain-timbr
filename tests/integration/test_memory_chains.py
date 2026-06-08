@@ -296,6 +296,78 @@ class TestMemoryAnswerChainFollowUp:
         messages = _fetch_history(config, conversation_id)
         _assert_parent_hierarchy(messages, expected_depth=5)
 
+    def test_follow_up_reasoning_preserves_inherited_filter(self, config, llm):
+        """
+        Follow-up question with enable_reasoning=True must not strip a filter
+        inherited from the prior turn.
+
+        Setup:
+          1. First Q:  "show me total sales in europe"     (filter set)
+          2. Follow-up: "now break down by status"          (no filter mentioned)
+
+        Without memory-aware reasoning, the reasoner sees the follow-up SQL
+        in isolation, judges the europe filter as unjustified by the bare
+        question ("now break down by status"), labels the assessment as
+        ``partial``, and regenerates without the filter. With note + decision
+        trace + generator reasoning now appended to the reasoning human
+        message, the reasoner has the context to recognize the filter as a
+        carry-over and accept it — so the europe filter survives the
+        reasoning step. This test asserts that survival.
+        """
+        conversation_id = str(uuid6.uuid7())
+
+        chain = GenerateAnswerChain(
+            llm=llm,
+            url=config["timbr_url"],
+            token=config["timbr_token"],
+            ontology=config["timbr_ontology"],
+            verify_ssl=config["verify_ssl"],
+            enable_memory=True,
+            memory_window_size=5,
+            enable_history=True,
+            save_results=True,
+            conversation_id=conversation_id,
+            enable_reasoning=True,
+            reasoning_steps=1,
+        )
+
+        # Turn 1 — establish the europe filter in the conversation.
+        result1 = chain.invoke({
+            "prompt": "show me total sales in europe",
+            "conversation_id": conversation_id,
+        })
+        assert "sql" in result1 and result1["sql"], "Turn 1 produced no SQL"
+        assert "europe" in result1["sql"].lower(), (
+            f"Turn 1 SQL unexpectedly omits the europe filter: {result1['sql']!r}"
+        )
+
+        # Turn 2 — follow-up without restating the filter.
+        result2 = chain.invoke({
+            "prompt": "now break down by status",
+            "conversation_id": conversation_id,
+        })
+        assert "sql" in result2 and result2["sql"], "Turn 2 produced no SQL"
+
+        followup_sql_lower = result2["sql"].lower()
+
+        # Core assertion: the inherited europe filter survives the reasoning step.
+        # Before the appendix changes, the reasoner labelled this as ``partial`` and
+        # regenerated SQL that dropped the filter.
+        assert "europe" in followup_sql_lower, (
+            "Follow-up SQL dropped the inherited europe filter — the reasoning "
+            "step likely regenerated without the memory/decisions context. "
+            f"SQL: {result2['sql']!r}"
+        )
+
+        # Sanity: the follow-up actually addressed the new ask (status breakdown).
+        assert "status" in followup_sql_lower, (
+            f"Follow-up SQL doesn't reference status: {result2['sql']!r}"
+        )
+
+        # Parent hierarchy: turn 2 must link to turn 1 via parent_query_id.
+        messages = _fetch_history(config, conversation_id)
+        _assert_parent_hierarchy(messages, expected_depth=2)
+
     def test_memory_does_not_leak_across_conversations(self, config, llm):
         """
         Two separate conversation_ids should not share memory.

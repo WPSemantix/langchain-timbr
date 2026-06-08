@@ -22,6 +22,7 @@ def classify_semantic_type(
     *,
     free_text_threshold: int = 10000,
     id_unique_ratio: float = 0.95,
+    categorical_enum_max_distinct: int = 500,
 ) -> SemanticType:
     """Classify a column's semantic type based on its SQL type and statistics.
 
@@ -31,6 +32,10 @@ def classify_semantic_type(
         stats: Column statistics (may be None or sentinel with -1 counts).
         free_text_threshold: Distinct count above which → FREE_TEXT.
         id_unique_ratio: Ratio above which → ID.
+        categorical_enum_max_distinct: Absolute distinct_count at or below which
+            a string column is CATEGORICAL_ENUM — wins over the unique-ratio
+            ID check (which misclassifies dimension label columns reached via
+            a relationship, where distinct ≈ non_null ≈ 1.0 by construction).
 
     Returns:
         SemanticType classification.
@@ -56,7 +61,14 @@ def classify_semantic_type(
     if stats is None or stats.distinct_count == -1:
         return SemanticType.CATEGORICAL_TEXT
 
-    # ID detection for strings
+    # Absolute small-cardinality wins over ID / FREE_TEXT / CODE_LIKE / etc.
+    # Ratio-based ID detection misfires when the column is a relationship-joined
+    # dimension label (distinct ≈ non_null ≈ 1.0 by construction); enumerating
+    # the value domain is both correct and cheap here.
+    if 0 < stats.distinct_count <= categorical_enum_max_distinct:
+        return SemanticType.CATEGORICAL_ENUM
+
+    # ID detection for strings (high-cardinality only after the enum gate above)
     if _is_id_like(stats, id_unique_ratio):
         return SemanticType.ID
 

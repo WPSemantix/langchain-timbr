@@ -43,7 +43,7 @@ enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'true'))
 enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'true'))
 history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS', 'false'))
 
-enable_memory = to_boolean(os.environ.get('TIMBR_ENABLE_MEMORY', 'false'))
+enable_memory = to_boolean(os.environ.get('TIMBR_ENABLE_MEMORY', 'true'))
 memory_window_size = to_integer(os.environ.get('TIMBR_MEMORY_WINDOW_SIZE', 3))
 
 enable_technical_context = to_boolean(os.environ.get('ENABLE_TECHNICAL_CONTEXT', 'true'))

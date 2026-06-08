@@ -29,6 +29,7 @@ class ValidateSemanticSqlNode:
         note: Optional[str] = None,
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        max_graph_depth: Optional[int] = config.max_graph_depth,
         agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
@@ -41,6 +42,8 @@ class ValidateSemanticSqlNode:
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
         memory_window_size: Optional[int] = config.memory_window_size,
+        metadata_context_mode: Optional[str] = config.metadata_context_mode,
+        metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
         **kwargs,
     ):
         """
@@ -89,6 +92,7 @@ class ValidateSemanticSqlNode:
             note=note,
             db_is_case_sensitive=db_is_case_sensitive,
             graph_depth=graph_depth,
+            max_graph_depth=max_graph_depth,
             agent=agent,
             verify_ssl=verify_ssl,
             is_jwt=is_jwt,
@@ -101,6 +105,8 @@ class ValidateSemanticSqlNode:
             conversation_id=conversation_id,
             enable_memory=enable_memory,
             memory_window_size=memory_window_size,
+            metadata_context_mode=metadata_context_mode,
+            metadata_context_max_tokens=metadata_context_max_tokens,
             **kwargs,
         )
 

@@ -22,14 +22,26 @@ Mode differences (affect starting K in payload assembly):
 
 from __future__ import annotations
 
-from typing import Literal
+import logging
+from typing import Iterable, Literal
 
 from ..config import TechnicalContextConfig
 from ..types import ColumnPayload, ColumnRef, MatchResult, SemanticType
 from ..statistics_loader.types import ColumnStatistics
 
+logger = logging.getLogger(__name__)
+
 # Number of backup values for unmatched columns in filter_matched mode
 _FILTER_MATCHED_BACKUP_K = 5
+
+# Shape-gate thresholds for the protected ``format_hint="all"`` decision.
+# A column qualifies as "clean" — and so is allowed into the un-trimmable tier —
+# only when its values are short and reasonably uniform in length. A small
+# cardinality alone isn't enough: an enum-like ratio with long/variable text
+# values still bloats the prompt and should remain trimmable.
+_CLEAN_SHAPE_MAX_VALUE_LEN = 64
+_CLEAN_SHAPE_MAX_LEN_VARIANCE_RATIO = 3.0
+_CLEAN_SHAPE_MAX_AVG_TOKENS = 8
 
 
 def assemble_column_payload(
@@ -59,16 +71,14 @@ def assemble_column_payload(
         ColumnPayload or None.
     """
     sem_type = col_ref.semantic_type
-    has_matches = bool(matches)
     matched_value_set = {m.matched_value for m in matches} if matches else set()
 
-    # ID columns: name_only (no annotation unless has matches)
+    # ID columns: name_only (no annotation unless matches exist)
     if sem_type == SemanticType.ID:
-        if has_matches:
-            matched_vals = [m.matched_value for m in matches]
+        if matches:
             return ColumnPayload(
                 format_hint="name_only",
-                values=matched_vals,
+                values=_dedup_preserve_order(m.matched_value for m in matches),
                 matched_values=matched_value_set,
                 distinct_count=stats.distinct_count if stats else -1,
             )
@@ -76,7 +86,10 @@ def assemble_column_payload(
 
     # FREE_TEXT columns: count_only
     if sem_type == SemanticType.FREE_TEXT:
-        values = [m.matched_value for m in matches] if has_matches else []
+        values = (
+            _dedup_preserve_order(m.matched_value for m in matches)
+            if matches else []
+        )
         return ColumnPayload(
             format_hint="count_only",
             values=values,
@@ -87,16 +100,19 @@ def assemble_column_payload(
     # NUMERIC columns: min_max range
     if sem_type == SemanticType.NUMERIC:
         if not stats or (stats.min_value is None and stats.max_value is None):
-            if has_matches:
+            if matches:
                 return ColumnPayload(
                     format_hint="name_only",
-                    values=[m.matched_value for m in matches],
+                    values=_dedup_preserve_order(m.matched_value for m in matches),
                     matched_values=matched_value_set,
                 )
             return None
         return ColumnPayload(
             format_hint="min_max",
-            values=[m.matched_value for m in matches] if has_matches else [],
+            values=(
+                _dedup_preserve_order(m.matched_value for m in matches)
+                if matches else []
+            ),
             matched_values=matched_value_set,
             distinct_count=stats.distinct_count if stats else -1,
             min_value=stats.min_value,
@@ -107,16 +123,19 @@ def assemble_column_payload(
     # DATE columns: min_max range
     if sem_type == SemanticType.DATE:
         if not stats or (stats.min_value is None and stats.max_value is None):
-            if has_matches:
+            if matches:
                 return ColumnPayload(
                     format_hint="name_only",
-                    values=[m.matched_value for m in matches],
+                    values=_dedup_preserve_order(m.matched_value for m in matches),
                     matched_values=matched_value_set,
                 )
             return None
         return ColumnPayload(
             format_hint="min_max",
-            values=[m.matched_value for m in matches] if has_matches else [],
+            values=(
+                _dedup_preserve_order(m.matched_value for m in matches)
+                if matches else []
+            ),
             matched_values=matched_value_set,
             distinct_count=stats.distinct_count if stats else -1,
             min_value=stats.min_value,
@@ -136,39 +155,75 @@ def assemble_column_payload(
             distinct_count=stats.distinct_count if stats else -1,
         )
 
-    # CATEGORICAL_TEXT, CODE_LIKE, BUSINESS_KEY_LIKE: top_k or all
+    # CATEGORICAL_TEXT, CODE_LIKE, BUSINESS_KEY_LIKE, CATEGORICAL_ENUM:
+    # top_k or all, via the same tiering decision.
     if not stats or not stats.top_k:
-        if has_matches:
+        # Visible classifier/stats disagreement: ENUM classification implies
+        # a knowable value domain, so missing top_k means the stats grain or
+        # filter dropped it after classification. Surface it once so we can
+        # spot the misalignment in logs, then keep the existing degradation
+        # behavior (name_only with matches, or None).
+        if sem_type == SemanticType.CATEGORICAL_ENUM:
+            logger.warning(
+                "Column %r classified CATEGORICAL_ENUM but has no top_k stats "
+                "(distinct_count=%s) — classifier/stats disagreement; "
+                "degrading to matched-values-only annotation.",
+                col_ref.name,
+                stats.distinct_count if stats else None,
+            )
+            if matches:
+                return ColumnPayload(
+                    format_hint="name_only",
+                    values=_dedup_preserve_order(m.matched_value for m in matches),
+                    matched_values=matched_value_set,
+                    distinct_count=stats.distinct_count if stats else -1,
+                )
+            return None
+        if matches:
             return ColumnPayload(
                 format_hint="top_k",
-                values=[m.matched_value for m in matches],
+                values=_dedup_preserve_order(m.matched_value for m in matches),
                 matched_values=matched_value_set,
                 distinct_count=stats.distinct_count if stats else -1,
             )
         return None
 
-    # Determine format_hint: "all" if show_all_under tier, else "top_k"
-    is_show_all = stats.distinct_count and stats.distinct_count <= config.show_all_under
+    # Decide format_hint with a TWO-condition gate: cardinality below
+    # ``show_all_under`` AND a clean value shape. Either condition failing
+    # demotes to ``top_k`` so the trimmer can shed values under budget
+    # pressure. Without the shape gate, a low-distinct column with long /
+    # variable text values would be locked into the protected ``all`` tier
+    # and blow up the prompt budget for no good reason.
+    is_show_all = (
+        bool(stats.distinct_count)
+        and stats.distinct_count <= config.show_all_under
+        and _is_clean_shape(stats)
+    )
 
-    # Determine starting K
+    # Determine starting K. CATEGORICAL_ENUM always starts with the full
+    # top_k regardless of mode: the design intent is to let the LLM see the
+    # complete value domain when budget allows, and let the trim_sequence
+    # (200 → 100 → 50 → 20 → 10 → 5) shrink it gracefully under pressure.
     if is_show_all:
+        k = len(stats.top_k)
+    elif sem_type == SemanticType.CATEGORICAL_ENUM:
         k = len(stats.top_k)
     elif sem_type == SemanticType.BUSINESS_KEY_LIKE:
         k = 3
     elif effective_mode == "include_all":
         k = len(stats.top_k)
     elif effective_mode == "filter_matched":
-        k = config.max_values_per_column if has_matches else _FILTER_MATCHED_BACKUP_K
+        k = config.max_values_per_column if matches else _FILTER_MATCHED_BACKUP_K
     else:
         k = config.max_values_per_column
 
-    # Two-threshold ranking: strong matches first, weak second, frequency rest
+    # Two-threshold ranking: strong matches first, weak second, frequency rest.
     all_top_k_values = [str(e.value) for e in stats.top_k]
-    values, strong_count = _order_values_with_matches(
+    values, _strong_count = _order_values_with_matches(
         all_top_k_values, matches, config, sem_type, k, effective_mode,
     )
 
-    if not values and not has_matches:
+    if not values and not matches:
         return None
 
     format_hint: Literal["top_k", "all"] = "all" if is_show_all else "top_k"
@@ -235,9 +290,17 @@ def _order_values_with_matches(
     strong.sort(key=lambda m: -m.score)
     weak.sort(key=lambda m: -m.score)
 
-    matched_values_strong = [m.matched_value for m in strong]
-    matched_values_weak = [m.matched_value for m in weak]
-    matched_set = set(matched_values_strong) | set(matched_values_weak)
+    # Dedup in order — multiple prompt tokens may match the same value
+    # (e.g. "cancelled" and "canceled" both → 'Cancelled'); without this,
+    # the same value would surface twice and the trimmer's per-K slicing
+    # would carry the dupe forward into the prompt.
+    matched_values_strong = _dedup_preserve_order(m.matched_value for m in strong)
+    strong_set = set(matched_values_strong)
+    matched_values_weak = [
+        v for v in _dedup_preserve_order(m.matched_value for m in weak)
+        if v not in strong_set
+    ]
+    matched_set = strong_set | set(matched_values_weak)
 
     # In filter_matched mode, pull strong matches from full top_k even if outside K window
     if effective_mode == "filter_matched":
@@ -351,3 +414,55 @@ def _truncate(value: str, max_chars: int) -> str:
     if len(value) <= max_chars:
         return value
     return value[:max_chars - 3] + "..."
+
+
+def _dedup_preserve_order(items: Iterable[str]) -> list[str]:
+    """Return the unique items in first-seen order."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in items:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def _is_clean_shape(stats: ColumnStatistics | None) -> bool:
+    """Heuristic shape gate for the protected ``format_hint="all"`` tier.
+
+    A column qualifies as "clean" when its values look enum-like:
+      - every value short (≤ _CLEAN_SHAPE_MAX_VALUE_LEN chars), AND
+      - low length variance (max ≤ ratio × mean), AND
+      - low whitespace-token count (mean ≤ _CLEAN_SHAPE_MAX_AVG_TOKENS).
+
+    Without this gate the cardinality check alone would lock long /
+    variable-length values into the un-trimmable tier — a 30-distinct
+    column of paragraph-length descriptions would emit the full set
+    protected from trimming, defeating the budget. Failing the gate
+    just demotes to ``top_k`` so the trimmer can shed values under
+    pressure.
+
+    Returns False when ``stats`` or ``stats.top_k`` is empty/None — no
+    sample means no signal, so we don't lock into the protected tier.
+    """
+    top_k = getattr(stats, "top_k", None) if stats else None
+    if not top_k:
+        return False
+    lengths = [len(str(e.value)) for e in top_k]
+    if not lengths:
+        return False
+    max_len = max(lengths)
+    if max_len > _CLEAN_SHAPE_MAX_VALUE_LEN:
+        return False
+    mean_len = sum(lengths) / len(lengths)
+    if mean_len > 0 and max_len > mean_len * _CLEAN_SHAPE_MAX_LEN_VARIANCE_RATIO:
+        return False
+    # Whitespace-token count proxy (no tokenizer dependency). Long-phrase
+    # values (e.g. product descriptions) hit this even if they squeak under
+    # the char-length cap individually.
+    token_counts = [len(str(e.value).split()) for e in top_k]
+    if token_counts:
+        mean_tokens = sum(token_counts) / len(token_counts)
+        if mean_tokens > _CLEAN_SHAPE_MAX_AVG_TOKENS:
+            return False
+    return True
