@@ -50,3 +50,49 @@ enable_technical_context = to_boolean(os.environ.get('ENABLE_TECHNICAL_CONTEXT',
 technical_context_mode = os.environ.get('TECHNICAL_CONTEXT_MODE', 'auto')
 technical_context_max_tokens = to_integer(os.environ.get('TECHNICAL_CONTEXT_MAX_TOKENS', 3000))
 technical_context_properties = parse_list(os.environ.get('TECHNICAL_CONTEXT_PROPERTIES', ''))
+
+# Dynamic metadata-context assembly (Plan 2). Default 'static' for backward
+# compatibility — the static path is bit-for-bit identical to current behavior.
+# Once shadow-mode telemetry confirms parity, flip the default to 'auto'.
+metadata_context_mode = os.environ.get('METADATA_CONTEXT_MODE', 'static')        # auto | static | dynamic
+
+# SQL-gen metadata budget (final context passed to SQL gen). SOFT cap only —
+# triggers the cascade + waypoint filter to compress when exceeded. There is
+# NO hard ceiling on this budget: per the "dynamic-over-budget is preferred
+# over static-but-much-larger" principle, oversizing past the soft cap is
+# logged but emits the rebuilt strings as-is. The old hard-revert-to-static
+# branch was removed.
+metadata_context_max_tokens = to_integer(os.environ.get('METADATA_CONTEXT_MAX_TOKENS', 12000))    # soft
+
+# DDL prompt budget (filter LLM input — separate from SQL-gen budget). These
+# two knobs are config-only (not exposed at the chain/agent surface) since
+# they are operator-tuning, not application-level concerns.
+metadata_context_filter_max_tokens = to_integer(os.environ.get('METADATA_CONTEXT_FILTER_MAX_TOKENS', 6000))                 # soft
+metadata_context_filter_max_tokens_hard_ceiling = to_integer(os.environ.get('METADATA_CONTEXT_FILTER_MAX_TOKENS_HARD_CEILING', 12000))          # hard (log-only — cascade emits stage-4 without failing)
+
+# Planner retry budget. Config-only (not exposed at the chain/agent surface).
+# When exhausted, the dynamic pipeline returns empty and the wiring layer's
+# outer try/except falls back to static metadata strings. No internal BFS /
+# shortest-path / pre-filter rescue exists (see build_filtered.py).
+metadata_context_dynamic_retry = to_integer(os.environ.get('METADATA_CONTEXT_DYNAMIC_RETRY', 2))
+static_attempt_edge_threshold = to_integer(os.environ.get('STATIC_ATTEMPT_EDGE_THRESHOLD', 100))
+include_logic_concepts = to_boolean(os.environ.get('INCLUDE_LOGIC_CONCEPTS', 'false'))
+
+# Concept pre-filter budget — runs when estimated DDL exceeds metadata_context_filter_max_tokens,
+# narrowing the candidate concept set via an LLM call before serialization.
+max_concept_prefilter_token = to_integer(os.environ.get('MAX_CONCEPT_PREFILTER_TOKEN', 2000))
+
+# Concept pre-filter count trigger — also fires when the detail-band concept
+# count would meet/exceed this number, independent of token size. Demotes the
+# overflow concepts into the menu band (NOT dropped — they remain visible as
+# names the LLM can recover via expand_to).
+max_detail_concepts = to_integer(os.environ.get('MAX_DETAIL_CONCEPTS', 20))
+
+# Menu-band outer bound — the max hop-distance from the anchor that the
+# subgraph BFS will reach. Concepts at hops 1..detail_depth (the per-chain
+# graph_depth) are rendered with full Compact-DDL detail; concepts at
+# detail_depth+1..max_graph_depth are rendered as names-only in the `## REACHABLE`
+# band, recoverable via expand_to. Beyond max_graph_depth is treated as out of
+# scope (the planner can only emit reanchor for those, not expand_to).
+# Validation: callers must satisfy graph_depth < max_graph_depth.
+max_graph_depth = to_integer(os.environ.get('MAX_GRAPH_DEPTH', 3))
