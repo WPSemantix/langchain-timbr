@@ -22,3 +22,5 @@ venv
 env310/
 env311/
 env312/
+/.claude
+CLAUDE.md
