@@ -427,6 +427,8 @@ def create_timbr_sql_agent(
     technical_context_mode: Optional[str] = config.technical_context_mode,
     technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
     technical_context_properties: Optional[Union[list[str], str]] = None,
+    metadata_context_mode: Optional[str] = config.metadata_context_mode,
+    metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
 ) -> TimbrSqlAgent:
     """
     Create and configure a Timbr agent with its executor.
