@@ -40,6 +40,7 @@ class GenerateTimbrSqlChain(Chain):
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        max_graph_depth: Optional[int] = config.max_graph_depth,
         agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
@@ -56,6 +57,8 @@ class GenerateTimbrSqlChain(Chain):
         technical_context_mode: Optional[str] = config.technical_context_mode,
         technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
         technical_context_properties: Optional[Union[list[str], str]] = None,
+        metadata_context_mode: Optional[str] = config.metadata_context_mode,
+        metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
         **kwargs,
     ):
         """
@@ -76,6 +79,7 @@ class GenerateTimbrSqlChain(Chain):
         :param note: Optional additional note to extend our llm prompt
         :param db_is_case_sensitive: Whether the database is case sensitive (default is False).
         :param graph_depth: Maximum number of relationship hops to traverse from the source concept during schema exploration (default is 1).
+        :param max_graph_depth: Outer reachability bound — the max hop-distance the dynamic-mode subgraph BFS will reach. Concepts beyond graph_depth but within max_graph_depth land in the planner's `## REACHABLE` menu band (default from config.max_graph_depth, env MAX_GRAPH_DEPTH=5).
         :param agent: Optional Timbr agent name for options setup.
         :param verify_ssl: Whether to verify SSL certificates (default is True).
         :param is_jwt: Whether to use JWT authentication (default is False).
@@ -159,6 +163,11 @@ class GenerateTimbrSqlChain(Chain):
             self._max_limit = to_integer(agent_options.get("max_limit")) if "max_limit" in agent_options else config.llm_default_limit
             self._db_is_case_sensitive = to_boolean(agent_options.get("db_is_case_sensitive")) if "db_is_case_sensitive" in agent_options else False
             self._graph_depth = to_integer(agent_options.get("graph_depth")) if "graph_depth" in agent_options else 1
+            self._max_graph_depth = (
+                to_integer(agent_options.get("max_graph_depth"))
+                if "max_graph_depth" in agent_options
+                else to_integer(max_graph_depth)
+            )
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
@@ -175,6 +184,17 @@ class GenerateTimbrSqlChain(Chain):
             self._technical_context_mode = agent_options.get("technical_context_mode") if "technical_context_mode" in agent_options else technical_context_mode
             self._technical_context_max_tokens = to_integer(agent_options.get("technical_context_max_tokens")) if "technical_context_max_tokens" in agent_options else to_integer(technical_context_max_tokens)
             self._technical_context_properties = parse_list(agent_options.get("technical_context_properties")) if "technical_context_properties" in agent_options else parse_list(technical_context_properties)
+            # Plan 2 — dynamic metadata-context kwargs (resolution: agent_options > kwarg > config default).
+            self._metadata_context_mode = (
+                agent_options.get("metadata_context_mode")
+                if "metadata_context_mode" in agent_options
+                else metadata_context_mode
+            )
+            self._metadata_context_max_tokens = (
+                to_integer(agent_options.get("metadata_context_max_tokens"))
+                if "metadata_context_max_tokens" in agent_options
+                else to_integer(metadata_context_max_tokens)
+            )
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -189,6 +209,7 @@ class GenerateTimbrSqlChain(Chain):
             self._max_limit = to_integer(max_limit)
             self._db_is_case_sensitive = to_boolean(db_is_case_sensitive)
             self._graph_depth = to_integer(graph_depth)
+            self._max_graph_depth = to_integer(max_graph_depth)
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
             self._note = note
@@ -199,6 +220,9 @@ class GenerateTimbrSqlChain(Chain):
             self._technical_context_mode = technical_context_mode
             self._technical_context_max_tokens = to_integer(technical_context_max_tokens)
             self._technical_context_properties = parse_list(technical_context_properties)
+            # Plan 2 — dynamic metadata-context kwargs (no agent → kwargs win, with config defaults).
+            self._metadata_context_mode = metadata_context_mode
+            self._metadata_context_max_tokens = to_integer(metadata_context_max_tokens)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -311,6 +335,7 @@ class GenerateTimbrSqlChain(Chain):
                 note=self._note,
                 db_is_case_sensitive=self._db_is_case_sensitive,
                 graph_depth=self._graph_depth,
+                max_graph_depth=self._max_graph_depth,
                 enable_reasoning=self._enable_reasoning,
                 reasoning_steps=self._reasoning_steps,
                 debug=self._debug,
@@ -319,6 +344,8 @@ class GenerateTimbrSqlChain(Chain):
                 technical_context_mode=self._technical_context_mode,
                 technical_context_max_tokens=self._technical_context_max_tokens,
                 technical_context_properties=self._technical_context_properties,
+                metadata_context_mode=self._metadata_context_mode,
+                metadata_context_max_tokens=self._metadata_context_max_tokens,
             )
         except Exception as exc:
             error = str(exc)

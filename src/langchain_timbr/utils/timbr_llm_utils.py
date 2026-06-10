@@ -4,6 +4,7 @@ from datetime import datetime
 import concurrent.futures
 import contextvars
 import json
+import re
 
 try:
     from langsmith import traceable as ls_traceable
@@ -481,6 +482,126 @@ def determine_concept(
     }
 
 
+def _segments_from_prefix(
+    prefix: str, anchor: str,
+) -> list[tuple[str, str, str]]:
+    """Parse a column-name prefix like ``rel1[t1].rel2[t2*4]`` into a
+    walked chain of ``(from_concept, rel_name, target_concept)`` triples
+    starting from ``anchor``.
+
+    Returns ``[]`` when the prefix is empty or malformed — caller falls
+    back to leaving description unchanged. The transitivity marker
+    (``*N``) on the target is stripped so the returned target_concept is
+    just the concept name.
+    """
+    if not prefix:
+        return []
+    out: list[tuple[str, str, str]] = []
+    current_from = anchor
+    for segment in prefix.split('.'):
+        # Each segment is ``rel_name[target]`` or ``rel_name[target*N]``.
+        if '[' not in segment or not segment.endswith(']'):
+            return []   # malformed — bail out
+        rel_name, rest = segment.split('[', 1)
+        target = rest[:-1]   # strip trailing ']'
+        if '*' in target:
+            target = target.split('*', 1)[0]
+        if not rel_name or not target:
+            return []
+        out.append((current_from, rel_name, target))
+        current_from = target
+    return out
+
+
+def _partition_static_relationships_by_prefix(
+    top_level_dict: dict, *, ontology, anchor: str,
+) -> dict:
+    """Re-key the static ``relationships`` dict by FULL per-hop prefix.
+
+    Where the input today looks like ``{'of_customer': {columns: [...all
+    50 across hops...], measures: [...]}}``, the output is keyed by every
+    distinct prefix the items reference:
+
+        {'of_customer[customer]':
+           {description: '<of_customer desc> (cardinality: 1:N)',
+            columns: [<customer's direct cols>],
+            measures: [<customer's native measures>],
+            is_transitive: False},
+         'of_customer[customer].received_shipment[shipment]':
+           {description: '<received_shipment desc> (cardinality: 1:N)',
+            columns: [<shipment cols>], measures: [<shipment measures>],
+            is_transitive: False}}
+
+    The renderer (`_build_rel_columns_str`) iterates dict.items() and
+    emits one column block + one measure block per key. Measures get
+    their ``measure.`` prefix stripped before the ``rsplit('.', 1)``
+    grouping step so a column and a measure of the same hop land in
+    the same bucket.
+
+    Description + cardinality come from the LAST segment of each prefix
+    (the hop owning that bucket's columns/measures), via the existing
+    ``_lookup_relationship_description`` and ``_safe_cardinality_of``
+    helpers shared with the dynamic rebuild — no logic duplication.
+    """
+    from ..ontology_context.context_builder.rebuild import (
+        compose_rel_description_with_cardinality,
+        _lookup_relationship_description,
+        _safe_cardinality_of,
+    )
+
+    new_dict: dict = {}
+    transitivity_map: dict = {}   # prefix -> is_transitive
+
+    def _bucket(prefix: str) -> dict:
+        if prefix not in new_dict:
+            new_dict[prefix] = {
+                "description": "",
+                "columns": [],
+                "measures": [],
+                "is_transitive": "*" in prefix,
+            }
+        return new_dict[prefix]
+
+    for _top_rel, top_bucket in top_level_dict.items():
+        for col in top_bucket.get("columns", []) or []:
+            name = col.get("name") or col.get("col_name", "")
+            if "." not in name:
+                continue
+            prefix = name.rsplit(".", 1)[0]
+            if not prefix:
+                continue
+            _bucket(prefix)["columns"].append(col)
+        for meas in top_bucket.get("measures", []) or []:
+            name = meas.get("name") or meas.get("col_name", "")
+            # Strip leading ``measure.`` so the prefix-by-rsplit matches
+            # the column-side prefix for the same hop.
+            if name.startswith("measure."):
+                name = name[len("measure."):]
+            if "." not in name:
+                continue
+            prefix = name.rsplit(".", 1)[0]
+            if not prefix:
+                continue
+            _bucket(prefix)["measures"].append(meas)
+
+    # Resolve description + cardinality per prefix via the last hop's
+    # (from_concept, rel_name) — same helpers the dynamic rebuild uses.
+    for prefix, bucket in new_dict.items():
+        chain = _segments_from_prefix(prefix, anchor)
+        if not chain:
+            continue
+        from_concept, rel_name, _target = chain[-1]
+        raw_desc = _lookup_relationship_description(
+            ontology, from_concept, rel_name,
+        )
+        card = _safe_cardinality_of(ontology, from_concept, rel_name)
+        bucket["description"] = compose_rel_description_with_cardinality(
+            raw_desc, card,
+        )
+
+    return new_dict
+
+
 def _build_columns_str(
     columns: list[dict],
     columns_tags: Optional[dict] = {},
@@ -549,20 +670,31 @@ def _build_rel_columns_str(relationships: list[dict], columns_tags: Optional[dic
 
 def _parse_sql_and_reason_from_llm_response(response: Any) -> dict:
     """
-    Parse SQL & reason from LLM response. Handles both plain SQL strings and JSON format with 'result' and 'reason' keys.
-    
+    Parse SQL, reason, and (optionally) decisions from LLM response.
+    Handles plain SQL strings, 2-field JSON (legacy: result+reason),
+    and 3-field JSON (new: reason+decisions+result).
+
     Returns:
-        dict with 'sql' and 'reason' keys (reason may be None if not provided)
+        dict with keys:
+            'sql'       — always present
+            'reason'    — None if not provided
+            'decisions' — None if not provided (legacy API or LLM omitted it);
+                          also None if present but malformed (non-list)
     """
     # Try to parse as JSON first
     try:
         parsed_json = _parse_json_from_llm_response(response)
-        
-        # Extract SQL from 'result' key and reason from 'reason' key
+
         if isinstance(parsed_json, dict) and 'result' in parsed_json:
             sql = parsed_json.get('result', '')
             reason = parsed_json.get('reason', None)
-            
+            decisions = parsed_json.get('decisions', None)
+
+            # Drop malformed decisions rather than failing the whole parse —
+            # SQL is still valid output and shouldn't be discarded over a bad trace.
+            if decisions is not None and not isinstance(decisions, list):
+                decisions = None
+
             # Clean the SQL
             sql = (sql
                    .replace("```sql", "")
@@ -570,12 +702,12 @@ def _parse_sql_and_reason_from_llm_response(response: Any) -> dict:
                    .replace('SELECT \n', 'SELECT ')
                    .replace(';', '')
                    .strip())
-            
-            return {'sql': sql, 'reason': reason}
+
+            return {'sql': sql, 'reason': reason, 'decisions': decisions}
     except (json.JSONDecodeError, ValueError):
         # If not JSON, treat as plain SQL string (backwards compatibility)
         pass
-    
+
     # Fallback to plain text parsing
     response_text = _get_response_text(response)
     sql = (response_text
@@ -584,8 +716,8 @@ def _parse_sql_and_reason_from_llm_response(response: Any) -> dict:
            .replace('SELECT \n', 'SELECT ')
            .replace(';', '')
            .strip())
-    
-    return {'sql': sql, 'reason': None}
+
+    return {'sql': sql, 'reason': None, 'decisions': None}
 
 
 def _get_active_datasource(conn_params: dict) -> dict:
@@ -625,16 +757,77 @@ def _parse_json_from_llm_response(response: Any) -> dict:
     return json.loads(content)
 
 
+def _append_reasoning_context_blocks(
+    prompt: Any,
+    note: Optional[str] = None,
+    generate_sql_reason: Optional[str] = None,
+    decisions: Optional[list] = None,
+) -> None:
+    """
+    Append context blocks (note, generator reasoning, decision trace) to the
+    trailing HumanMessage of a rendered reasoning prompt, in place.
+
+    Conversation memory is intentionally NOT a separate block here — by the
+    time we reach the reasoning step, ``note`` already carries the memory
+    block (merged in at the top of ``generate_sql`` via
+    ``format_memory_note_for_sql``). Adding it again would duplicate it.
+
+    Performed AFTER the template substitutes its own placeholders so it
+    works against any version of the reasoning template — no new
+    placeholders required server-side.
+    """
+    blocks: list[str] = []
+
+    if note and note.strip():
+        blocks.append(f"**Additional Notes:**\n{note.strip()}")
+
+    if generate_sql_reason:
+        blocks.append(f"**Generated SQL Reasoning:**\n{generate_sql_reason}")
+
+    if decisions:
+        # decisions is a list (parser already validated shape)
+        decisions_str = json.dumps(decisions, indent=2)
+        blocks.append(f"**Generated SQL Decision Trace:**\n{decisions_str}")
+
+    if not blocks:
+        return
+
+    if not isinstance(prompt, list) or not prompt:
+        return
+
+    # Find trailing HumanMessage and append
+    human_msg = None
+    for msg in reversed(prompt):
+        if getattr(msg, "type", None) == "human":
+            human_msg = msg
+            break
+    if human_msg is None:
+        human_msg = prompt[-1]
+
+    appendix = "\n\n" + "\n\n".join(blocks)
+    if hasattr(human_msg, "content"):
+        human_msg.content = (human_msg.content or "") + appendix
+
+
 def _evaluate_sql_enable_reasoning(
     question: str,
     sql_query: str,
     llm: LLM,
     conn_params: dict,
     timeout: int,
+    note: Optional[str] = None,
+    generate_sql_reason: Optional[str] = None,
+    decisions: Optional[list] = None,
 ) -> dict:
     """
     Evaluate if the generated SQL correctly answers the business question.
-    
+
+    The reasoning human message is rendered from the API-hosted template,
+    then context blocks (note, generator reasoning, decision trace) are
+    appended on the client side before sending to the LLM. This decouples
+    the client from the reasoning template's structure — no server-side
+    placeholders are needed.
+
     Returns:
         dict with 'assessment' ('correct'|'partial'|'incorrect') and 'reasoning'
     """
@@ -644,10 +837,17 @@ def _evaluate_sql_enable_reasoning(
         sql_query=sql_query.strip(),
     )
 
+    _append_reasoning_context_blocks(
+        prompt,
+        note=note,
+        generate_sql_reason=generate_sql_reason,
+        decisions=decisions,
+    )
+
     apx_token_count = _calculate_token_count(llm, prompt)
     if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
         _clean_snowflake_prompt(prompt)
-    
+
     response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
     
     # Parse JSON response
@@ -658,6 +858,516 @@ def _evaluate_sql_enable_reasoning(
         "apx_token_count": apx_token_count,
         "usage_metadata": _extract_usage_metadata(response),
     }
+
+
+# Matches the ``*N`` transitive-depth marker that ``build_relationships_from_paths``
+# bakes into a rebuilt column name (e.g. ``has_acquired[company*3].name``). The
+# marker is positional only — stats are keyed by terminal concept + final
+# property and are identical across depths — so it must be stripped before
+# matching a rebuilt name against a TC annotation key or feeding it to the
+# statistics loader (whose ``parse_column_path`` would otherwise mis-read
+# ``company*3`` as a concept name).
+_TRANSITIVITY_MARKER_RE = re.compile(r"\*\d+(?=\])")
+
+
+def _strip_transitivity_marker(name: Optional[str]) -> Optional[str]:
+    """Drop the ``*N`` depth marker so a name matches regardless of transitive
+    depth. ``rel[c*3].p`` and ``rel[c].p`` share one annotation (same concept,
+    same property, same stats)."""
+    if not name:
+        return name
+    return _TRANSITIVITY_MARKER_RE.sub("", name)
+
+
+def _inject_tc_annotations_into_rebuild(
+    filtered_relationships: dict,
+    tc_annotations: dict,
+) -> None:
+    """Mutate ``filtered_relationships`` in place, copying TC annotation strings
+    from ``tc_annotations`` onto each column/measure dict by name.
+
+    The technical_context pipeline runs once upstream against the static
+    column dicts (mutating them in place). The dynamic rebuild then discards
+    those static relationship dicts and constructs fresh ones via
+    ``build_relationships_from_paths`` — which means the rebuilt nested
+    columns arrive at the SQL-gen prompt with no statistics block, even
+    though stats were loaded and an annotation was computed. This pass
+    re-keys the annotations onto the rebuilt dicts so they reach the prompt.
+
+    Matching is transitivity-marker-insensitive: the constructor bakes a
+    ``*N`` depth marker into rebuilt names (``has_acquired[company*3].name``)
+    that the static TC keys don't carry (``has_acquired[company].name``). An
+    exact match wins first; otherwise the marker is stripped from both sides.
+    This is safe because two names that normalize together differ only in
+    transitive depth — same concept, same property, same stats. Columns the
+    TC pipeline never saw at all (a concept deeper than the static
+    ``graph_depth``) are handled separately by the top-up pass in
+    ``_apply_dynamic_metadata_context``.
+    """
+    normalized = {
+        _strip_transitivity_marker(k): v for k, v in tc_annotations.items()
+    }
+    for rel_data in filtered_relationships.values():
+        if not isinstance(rel_data, dict):
+            continue
+        for entries_field in ("columns", "measures"):
+            entries = rel_data.get(entries_field)
+            if not isinstance(entries, list):
+                continue
+            for col in entries:
+                if not isinstance(col, dict):
+                    continue
+                name = col.get("name")
+                if not name:
+                    continue
+                annotation = tc_annotations.get(name)
+                if annotation is None:
+                    annotation = normalized.get(_strip_transitivity_marker(name))
+                if annotation is not None:
+                    col["technical_context"] = annotation
+
+
+def _inject_descriptions_into_flat(columns: list, properties_desc: dict | None) -> None:
+    """Fill each flat column/measure dict's ``description`` from ``properties_desc``
+    (the SYS_PROPERTIES source the static path uses), keyed by bare property name
+    (``col_name``). Only overrides when properties_desc has a value, so any
+    existing (ontology) description stays as a fallback. Used for the reanchored
+    anchor block, whose columns were freshly built from ontology metadata."""
+    if not properties_desc:
+        return
+    for col in columns or []:
+        if not isinstance(col, dict):
+            continue
+        desc = properties_desc.get(col.get("col_name"))
+        if desc:
+            col["description"] = desc
+
+
+def _inject_descriptions_into_rebuild(
+    filtered_relationships: dict,
+    properties_desc: dict | None,
+) -> None:
+    """Mutate ``filtered_relationships`` in place, filling each rebuilt
+    relationship column/measure ``description`` from ``properties_desc``.
+
+    ``build_relationships_from_paths`` seeds descriptions from the ontology's
+    ``describe concept`` comments, which are often empty — the static path
+    instead pulls richer descriptions from ``properties_desc`` (SYS_PROPERTIES)
+    and bakes them onto both flat and relationship columns. This pass brings the
+    rebuilt relationship columns to parity. Keyed by bare property name
+    (``col_name``); no transitivity-marker handling is needed because markers
+    only appear in ``name``, never ``col_name``."""
+    if not properties_desc:
+        return
+    for rel_data in filtered_relationships.values():
+        if not isinstance(rel_data, dict):
+            continue
+        for entries_field in ("columns", "measures"):
+            entries = rel_data.get(entries_field)
+            if not isinstance(entries, list):
+                continue
+            _inject_descriptions_into_flat(entries, properties_desc)
+
+
+def _apply_dynamic_metadata_context(
+    *,
+    mode: str,
+    question: str,
+    anchor: str,
+    conn_params: dict,
+    graph_depth: int,
+    columns: list,
+    measures: list,
+    tags,
+    exclude_properties,
+    static_columns_str: str,
+    static_measures_str: str,
+    static_rel_prop_str: str,
+    llm,
+    config_overrides: dict,
+    note: str = "",
+    tc_annotations: dict | None = None,
+    tc_topup=None,
+    tc_seen_names: set | None = None,
+    properties_desc: dict | None = None,
+) -> tuple[str, str, str, str | None]:
+    """Decide static vs dynamic and return possibly-rebuilt context strings.
+
+    Returns ``(columns_str, measures_str, rel_prop_str, effective_anchor)``.
+    ``effective_anchor`` is non-None only when Tier 2 anchor re-evaluation
+    swapped the anchor and the caller MUST use it in the SQL FROM clause.
+    On any failure or when the dynamic pipeline is not triggered, returns the
+    static strings unchanged and ``effective_anchor=None`` (backward-compat).
+    """
+    from ..ontology_context import (
+        EdgeIndex,
+        MetadataContextConfig,
+        build_filtered_metadata,
+        config_from_module,
+        get_shared_ontology,
+        should_skip_static_build,
+    )
+    from ..ontology_context.context_builder.rebuild import (
+        apply_transitivity_overrides,
+        build_relationships_from_paths,
+        filter_columns_for_concepts,
+    )
+
+    cfg: MetadataContextConfig = config_from_module(
+        mode=mode, **{k: v for k, v in config_overrides.items() if v is not None}
+    )
+
+    # Trigger decision -----------------------------------------------------
+    static_token_count = _count_metadata_tokens(
+        static_columns_str, static_measures_str, static_rel_prop_str
+    )
+
+    should_run_dynamic = False
+    if mode == "dynamic":
+        should_run_dynamic = True
+    elif mode == "auto":
+        # Fast-path heuristic uses the edge_index, which requires an Ontology.
+        # Build lazily; only construct if either trigger might fire.
+        if static_token_count > cfg.metadata_context_max_tokens:
+            should_run_dynamic = True
+        elif graph_depth >= 3:
+            try:
+                ontology = get_shared_ontology(conn_params)
+                edge_index = EdgeIndex(ontology)
+                if should_skip_static_build(graph_depth, anchor, edge_index, cfg):
+                    should_run_dynamic = True
+            except Exception:
+                # Fast-path probe failed — keep static.
+                pass
+
+    if not should_run_dynamic:
+        return static_columns_str, static_measures_str, static_rel_prop_str, None
+
+    # Memoize the entire pipeline result for this (question, anchor, graph_depth)
+    # within the lifetime of the shared Ontology. This prevents the Step 1 LLM
+    # filter call from running twice when handle_validate_generate_sql retries
+    # SQL generation: both invocations of _build_sql_generation_context use the
+    # same question + anchor, so the second call reuses the cached rebuild.
+    # The cache is automatically invalidated by Ontology when version_id changes.
+    ontology = get_shared_ontology(conn_params)
+    cache_key = (
+        "dynamic_rebuild_v1",
+        question,
+        anchor,
+        graph_depth,
+        cfg.mode,
+        # Bind the cache to the static strings so a different pre-state never
+        # serves a stale rebuilt output. Hashing the lengths is enough — the
+        # static strings are deterministic for a given (ontology_version,
+        # concept, graph_depth) tuple.
+        len(static_columns_str or ""),
+        len(static_measures_str or ""),
+        len(static_rel_prop_str or ""),
+    )
+    cached = ontology.get_filtered_cache(cache_key)
+    if cached is not None:
+        # Cache entry shape evolved (Part 3): older entries are 3-tuples;
+        # newer ones are 4-tuples that include effective_anchor.
+        if len(cached) == 4:
+            return cached  # type: ignore[return-value]
+        cached_cols, cached_meas, cached_rels = cached
+        return cached_cols, cached_meas, cached_rels, None
+
+    # Run the dynamic pipeline -------------------------------------------
+    result = build_filtered_metadata(
+        question=question,
+        anchor=anchor,
+        ontology=ontology,
+        llm=llm,
+        config=cfg,
+        graph_depth=graph_depth,
+        note=note,
+    )
+    # Helper to apply overrides to whichever strings we end up returning. The
+    # override is question-driven (depth requested by user) and should ALWAYS
+    # apply when the LLM emitted valid overrides — even on static-fallback paths.
+    def _with_overrides(cols: str, meas: str, rels: str):
+        if result.accepted_overrides:
+            cols = apply_transitivity_overrides(cols, result.accepted_overrides)
+            meas = apply_transitivity_overrides(meas, result.accepted_overrides)
+            rels = apply_transitivity_overrides(rels, result.accepted_overrides)
+        return cols, meas, rels
+
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # Only fall back to STATIC when the pipeline genuinely failed. The
+    # anchor-only, BFS-rescue, and depth-capped branches all own their own
+    # rebuilds (with possibly-empty validated_paths in the anchor-only case);
+    # only the last-resort 'empty' enum value — anchor with no neighbors at
+    # the depth cap — routes here. See .claude/plans/retry-fallback-redesign.md.
+    resolved_by = (result.stats or {}).get("resolved_by")
+    if result.error or resolved_by == "empty":
+        # Pipeline failed or anchor was truly disconnected — fall back to
+        # static, but still apply any LLM-emitted overrides (depth
+        # requirements survive fallback).
+        _log.warning(
+            "Dynamic metadata-context falling back to STATIC: error=%r "
+            "resolved_by=%r validated_paths=%d. SQL-gen will see the full "
+            "unfiltered relationships — expect a large prompt.",
+            result.error,
+            resolved_by,
+            len(result.validated_paths or []),
+        )
+        cols, meas, rels = _with_overrides(
+            static_columns_str, static_measures_str, static_rel_prop_str
+        )
+        entry = (cols, meas, rels, result.effective_anchor)
+        ontology.set_filtered_cache(cache_key, entry)
+        return entry
+
+    # Rebuild filtered strings ----------------------------------------------
+    # ALL direct properties + measures for the anchor (flat columns/measures
+    # list). Non-anchor concept properties are emitted by the constructor
+    # below, which walks ONLY the validated paths — off-path chains can't
+    # appear in the output by construction (so the over-expansion bug that
+    # the upstream `relationships` dict carries is sidestepped entirely).
+    # Anchor for normalization: Tier 2 may have swapped it, in which case the
+    # walk must be rooted at the new anchor so the rebuilt prefixes match the
+    # SQL FROM clause downstream.
+    effective_anchor_for_rebuild = result.effective_anchor or anchor
+    # Reanchor refresh: the flat columns/measures passed in were loaded for the
+    # ORIGINAL anchor. When Tier 2 swapped the anchor, re-source the NEW
+    # anchor's DIRECT props/measures from the ontology so the flat block matches
+    # the SQL FROM root (stats are topped up below). Without this the SQL-gen
+    # prompt shows the pre-reanchor anchor's columns under the new FROM table.
+    reanchored = bool(result.effective_anchor and result.effective_anchor != anchor)
+    if reanchored:
+        from ..ontology_context.context_builder.rebuild import build_anchor_columns
+        columns, measures = build_anchor_columns(ontology, effective_anchor_for_rebuild)
+    filtered_columns = filter_columns_for_concepts(columns, result.filtered_concepts)
+    filtered_measures = filter_columns_for_concepts(measures, result.filtered_concepts)
+    filtered_relationships = build_relationships_from_paths(
+        result.validated_paths, ontology, anchor=effective_anchor_for_rebuild,
+    )
+
+    # Top-up TC for columns the upstream (static-depth) pipeline never saw.
+    # The static pass only loaded stats for columns within the configured
+    # graph_depth; a validated path that reaches a concept deeper than that
+    # has rebuilt columns the static pass never processed (and the
+    # marker-insensitive inject below can't recover what was never computed).
+    # Gather those columns, strip transitivity markers so the statistics
+    # loader can resolve them, and run a targeted second TC pass.
+    #
+    # ``tc_seen_names`` (normalized names the static pass actually processed)
+    # is the right "already covered" set — NOT the annotation keys. A column
+    # the static pass saw but that had no stats produces no annotation key,
+    # yet must not be re-topped-up (that would fire a needless LLM call every
+    # rebuild). Genuinely-new deeper columns are absent from tc_seen_names.
+    if tc_topup is not None:
+        seen = set(tc_seen_names or ())
+        missing: dict[str, str] = {}  # normalized name -> data_type
+        for rel_data in filtered_relationships.values():
+            if not isinstance(rel_data, dict):
+                continue
+            for entries_field in ("columns", "measures"):
+                for col in rel_data.get(entries_field, []) or []:
+                    if not isinstance(col, dict):
+                        continue
+                    name = col.get("name")
+                    norm = _strip_transitivity_marker(name)
+                    if norm and norm not in seen and norm not in missing:
+                        missing[norm] = col.get("data_type", "")
+        # Reanchored flat columns are new to TC too (the static pass processed
+        # the OLD anchor's columns). Gather them so they get stats as well.
+        if reanchored:
+            for col in list(filtered_columns) + list(filtered_measures):
+                if not isinstance(col, dict):
+                    continue
+                norm = _strip_transitivity_marker(col.get("name"))
+                if norm and norm not in seen and norm not in missing:
+                    missing[norm] = col.get("data_type", "")
+        if missing:
+            try:
+                # After a reanchor, bare direct columns of the new anchor must
+                # resolve their stats against IT (the original concept the
+                # closure captured is wrong for them). Relationship columns in
+                # the same batch resolve via their prefix regardless.
+                extra = tc_topup(
+                    [{"name": n, "type": t} for n, t in missing.items()],
+                    bound_concept=effective_anchor_for_rebuild if reanchored else None,
+                )
+                if extra:
+                    tc_annotations = {**(tc_annotations or {}), **extra}
+            except Exception:
+                # TC must never break SQL generation.
+                pass
+
+    # Re-inject technical_context annotations onto the freshly-constructed
+    # relationship column dicts. See _inject_tc_annotations_into_rebuild for
+    # the why.
+    if tc_annotations:
+        _inject_tc_annotations_into_rebuild(filtered_relationships, tc_annotations)
+        # The reanchored flat columns were built fresh here (not by the caller),
+        # so inject their annotations too. Flat names carry no transitivity
+        # markers, so an exact name match against tc_annotations is correct.
+        if reanchored:
+            for col in list(filtered_columns) + list(filtered_measures):
+                if not isinstance(col, dict):
+                    continue
+                name = col.get("name")
+                if name and name in tc_annotations:
+                    col["technical_context"] = tc_annotations[name]
+
+    # Parity with the static path's descriptions (properties_desc / SYS_PROPERTIES);
+    # the constructor only had the ontology's describe-concept comments, often
+    # empty. Tags already apply at render via the bare-name columns_tags lookup.
+    _inject_descriptions_into_rebuild(filtered_relationships, properties_desc)
+    if reanchored:
+        _inject_descriptions_into_flat(filtered_columns, properties_desc)
+        _inject_descriptions_into_flat(filtered_measures, properties_desc)
+
+    new_columns_str = _build_columns_str(
+        filtered_columns, columns_tags=tags, exclude=exclude_properties
+    )
+    new_measures_str = _build_columns_str(
+        filtered_measures, tags, exclude=exclude_properties
+    )
+    new_rel_prop_str = _build_rel_columns_str(
+        filtered_relationships,
+        columns_tags=tags,
+        exclude_properties=exclude_properties,
+    )
+
+    # Empty-rebuild safety net: with the constructor approach, the only way
+    # filtered_relationships is empty is if every validated path had zero
+    # segments (defense-in-depth; the upstream `not validated_paths` guard
+    # already covers the normal cases). Fall back to static if static had
+    # content to offer.
+    if not filtered_relationships and (static_rel_prop_str or "").strip():
+        _log.warning(
+            "Dynamic metadata-context falling back to STATIC (constructor "
+            "produced empty rebuild). validated_paths=%d path_rel_keys=%s",
+            len(result.validated_paths),
+            sorted({rel for _f, rel, _t in result.path_rel_keys}),
+        )
+        cols, meas, rels = _with_overrides(
+            static_columns_str, static_measures_str, static_rel_prop_str
+        )
+        entry = (cols, meas, rels, result.effective_anchor)
+        ontology.set_filtered_cache(cache_key, entry)
+        return entry
+
+    # Apply LLM-chosen transitivity overrides to ALL three strings BEFORE the
+    # hard-ceiling check. Bakes the requested depth into the SQL-gen prompt.
+    new_columns_str, new_measures_str, new_rel_prop_str = _with_overrides(
+        new_columns_str, new_measures_str, new_rel_prop_str
+    )
+
+    # ---- Waypoint filter: threshold-gated, precondition-protected ---------
+    # Only applies when (1) the rendered columns/measures block exceeds the
+    # soft budget, AND (2) the path-selection prompt was served with FULL
+    # visibility (no cascade trimming on any concept). Both gates are
+    # required — the LLM's is_intermediate flags are only meaningful when
+    # it could see every concept's full props/measures/descriptions.
+    from ..ontology_context.context_builder.rebuild import (
+        compute_waypoint_strip_set,
+        is_path_prompt_degraded,
+        strip_waypoint_columns,
+    )
+
+    soft_size = _count_metadata_tokens(
+        new_columns_str, new_measures_str, new_rel_prop_str
+    )
+    if soft_size > cfg.metadata_context_max_tokens:
+        if is_path_prompt_degraded(result.compact_ddl or ""):
+            _log.info(
+                "waypoint filter skipped: degraded prompt (cascade markers "
+                "present in DDL). size=%d threshold=%d",
+                soft_size, cfg.metadata_context_max_tokens,
+            )
+        else:
+            keep_set, strip_set = compute_waypoint_strip_set(
+                result.validated_paths, effective_anchor_for_rebuild,
+            )
+            # Surface anchor/terminal-override conflicts the spec calls out.
+            for path in result.validated_paths or []:
+                segs = getattr(path, "segments", []) or []
+                if not segs:
+                    continue
+                last_seg = segs[-1]
+                if getattr(last_seg, "is_intermediate", False):
+                    _log.warning(
+                        "Path %s terminal %r marked is_intermediate=True; "
+                        "override ignored (terminals are never stripped).",
+                        getattr(path, "path_id", "?"), last_seg.to_concept,
+                    )
+            if strip_set:
+                filtered_relationships = strip_waypoint_columns(
+                    filtered_relationships, strip_set,
+                )
+                # Re-render the relationships block + re-apply overrides.
+                new_rel_prop_str = _build_rel_columns_str(
+                    filtered_relationships,
+                    columns_tags=tags,
+                    exclude_properties=exclude_properties,
+                )
+                new_rel_prop_str = apply_transitivity_overrides(
+                    new_rel_prop_str, result.accepted_overrides,
+                )
+                post_size = _count_metadata_tokens(
+                    new_columns_str, new_measures_str, new_rel_prop_str
+                )
+                if post_size > cfg.metadata_context_max_tokens:
+                    _log.warning(
+                        "waypoint filter applied but output still over "
+                        "threshold: %d > %d. Stripped %d concept(s): %s.",
+                        post_size, cfg.metadata_context_max_tokens,
+                        len(strip_set), sorted(strip_set),
+                    )
+            else:
+                _log.warning(
+                    "waypoint filter could not reduce: no intermediate-only "
+                    "concepts marked (size=%d, threshold=%d).",
+                    soft_size, cfg.metadata_context_max_tokens,
+                )
+
+    # Per the "dynamic-over-budget is preferred over static-but-much-larger"
+    # principle (see .claude/plans/budget-knobs-cleanup.md): there is NO hard-
+    # revert to static when the rebuilt output is still over the soft cap
+    # after cascade + waypoint filter. Log a warning and emit the rebuilt
+    # strings as-is — the SQL-gen prompt is still SMALLER than the static
+    # alternative would have been on a graph_depth-3 ontology.
+    new_token_count = _count_metadata_tokens(
+        new_columns_str, new_measures_str, new_rel_prop_str
+    )
+    if new_token_count > cfg.metadata_context_max_tokens:
+        _log.warning(
+            "Dynamic metadata-context still over soft cap after cascade + "
+            "waypoint filter (%d > %d). Emitting rebuilt strings as-is — "
+            "no revert to static. resolved_by=%s, validated_paths=%d.",
+            new_token_count,
+            cfg.metadata_context_max_tokens,
+            (result.stats or {}).get("resolved_by"),
+            len(result.validated_paths or []),
+        )
+
+    entry = (
+        new_columns_str,
+        new_measures_str,
+        new_rel_prop_str,
+        result.effective_anchor,
+    )
+    ontology.set_filtered_cache(cache_key, entry)
+    return entry
+
+
+def _count_metadata_tokens(*parts: str) -> int:
+    """Count tiktoken-cl100k tokens for the concatenated metadata strings.
+
+    Falls back to a coarse chars/4 estimate when tiktoken is unavailable.
+    """
+    text = "\n".join(p or "" for p in parts)
+    try:
+        import tiktoken
+        return len(tiktoken.get_encoding("cl100k_base").encode(text))
+    except Exception:
+        return max(1, len(text) // 4)
 
 
 def _build_sql_generation_context(
@@ -676,6 +1386,21 @@ def _build_sql_generation_context(
     technical_context_mode: str = "auto",
     technical_context_max_tokens: int = 3000,
     technical_context_properties: Optional[list] = None,
+    # Plan 2 — dynamic metadata-context. Defaults preserve current behavior.
+    # NOTE: The DDL prompt budget knobs (metadata_context_filter_max_tokens,
+    # metadata_context_filter_max_tokens_hard_ceiling) and the planner retry
+    # budget (metadata_context_dynamic_retry) are config-only — they're read
+    # from langchain_timbr.config inside _apply_dynamic_metadata_context, not
+    # plumbed through chain constructors. See .claude/plans/budget-knobs-cleanup.md.
+    metadata_context_mode: Optional[str] = None,
+    metadata_context_max_tokens: Optional[int] = None,
+    max_graph_depth: Optional[int] = None,
+    include_logic_concepts: Optional[bool] = None,
+    # Conversation memory (follow-up context) + caller-supplied notes,
+    # plumbed verbatim into the dynamic context_builder LLM prompts so the
+    # filter / pre-filter / anchor-reeval / not_needed-verifier all see the
+    # same prior-turn context the SQL-gen prompt sees.
+    note: Optional[str] = None,
 ) -> dict:
     """
     Prepare the complete SQL generation context by gathering all necessary metadata.
@@ -708,7 +1433,31 @@ def _build_sql_generation_context(
     relationships = concept_properties_metadata.get('relationships', {})
     tags = get_tags(conn_params=conn_params, include_tags=include_tags).get('property_tags')
 
+    # Per-hop relationship partition. The static ``get_concept_properties``
+    # returns a single bucket per top-level rel — every column from every
+    # nested concept on the chain piles into the same bucket. We re-key
+    # by FULL prefix (``of_customer[customer]`` / ``of_customer[customer]
+    # .received_shipment[shipment]`` / ...) so the SQL-gen prompt emits
+    # one block per hop, each carrying its OWN description + cardinality.
+    # Defensive: failures here must NOT break SQL gen.
+    if relationships:
+        try:
+            from ..ontology_context.ontology.shared import get_shared_ontology
+            _shared_ont = get_shared_ontology(conn_params)
+            relationships = _partition_static_relationships_by_prefix(
+                relationships, ontology=_shared_ont, anchor=concept,
+            )
+        except Exception:
+            # Never abort SQL gen over a partition failure — fall back to
+            # the original top-level-keyed dict shape.
+            pass
+
     # Enrich column dicts with technical context annotations (stats + question matching)
+    tc_annotations: dict[str, str] = {}
+    # Closure the dynamic rebuild uses to top-up TC for columns the static-depth
+    # pass never saw (concepts deeper than graph_depth). None when TC is off.
+    tc_topup = None
+    tc_seen_names: set | None = None
     if enable_technical_context:
         try:
             import copy
@@ -722,12 +1471,40 @@ def _build_sql_generation_context(
             for rel in relationships.values():
                 all_col_dicts += rel.get('columns', []) + rel.get('measures', [])
             tc_columns = [{"name": c.get("name") or c.get("col_name", ""), "type": c.get("data_type", "")} for c in all_col_dicts]
+            # Normalized names the static pass processes — the "already covered"
+            # set the dynamic top-up uses to detect genuinely-new deeper columns.
+            tc_seen_names = {
+                _strip_transitivity_marker(c["name"]) for c in tc_columns if c["name"]
+            }
             tc_config = TechnicalContextConfig(
                 mode=technical_context_mode,
                 max_tokens=technical_context_max_tokens,
                 technical_context_properties=technical_context_properties or [],
                 exclude_properties=exclude_properties or [],
             )
+
+            def tc_topup(topup_columns, bound_concept=None):
+                """Run a targeted TC pass for newly-revealed columns and return
+                their annotations. Reuses the configured mode (so matched-value
+                ranking is preserved), at the cost of a second candidate
+                extraction when the mode is LLM-backed.
+
+                A reanchor swaps the SQL FROM root: BARE direct columns of the new
+                anchor must resolve their stats against IT, so the caller passes
+                the effective anchor as ``bound_concept``. Relationship columns
+                resolve via their prefix regardless of the bound concept, so a
+                mixed batch is safe."""
+                r = build_technical_context(
+                    question=question,
+                    columns=topup_columns,
+                    schema=schema,
+                    concept=bound_concept or concept,
+                    conn_params=conn_params,
+                    config=tc_config,
+                    llm=llm,
+                )
+                return dict(r.column_annotations or {})
+
             tc_result = build_technical_context(
                 question=question,
                 columns=tc_columns,
@@ -737,16 +1514,82 @@ def _build_sql_generation_context(
                 config=tc_config,
                 llm=llm,
             )
+            tc_annotations = dict(tc_result.column_annotations or {})
             for c in all_col_dicts:
                 name = c.get('name') or c.get('col_name', '')
-                if name and name in tc_result.column_annotations:
-                    c['technical_context'] = tc_result.column_annotations[name]
+                if name and name in tc_annotations:
+                    c['technical_context'] = tc_annotations[name]
         except Exception:
             pass  # Technical context failure must not break SQL generation
 
     columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties)
     measures_str = _build_columns_str(measures, tags, exclude=exclude_properties)
     rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties)
+
+    # --- Plan 2 — dynamic metadata-context (safe, opt-in) -----------------
+    # Schema gate: dtimbr only; non-dtimbr schemas (vtimbr views/cubes) skip.
+    # Mode gate: 'static' is a strict no-op (initial release default).
+    # Errors anywhere inside this block fall back to the static strings above.
+    _dynamic_mode = (metadata_context_mode or config.metadata_context_mode or 'static').lower()
+    if schema == 'dtimbr' and _dynamic_mode in ('auto', 'dynamic'):
+        try:
+            (
+                _new_columns_str,
+                _new_measures_str,
+                _new_rel_prop_str,
+                _effective_anchor,
+            ) = _apply_dynamic_metadata_context(
+                mode=_dynamic_mode,
+                question=question,
+                anchor=concept,
+                conn_params=conn_params,
+                graph_depth=graph_depth,
+                columns=columns,
+                measures=measures,
+                tags=tags,
+                exclude_properties=exclude_properties,
+                static_columns_str=columns_str,
+                static_measures_str=measures_str,
+                static_rel_prop_str=rel_prop_str,
+                llm=llm,
+                note=note or '',
+                tc_annotations=tc_annotations,
+                tc_topup=tc_topup,
+                tc_seen_names=tc_seen_names,
+                properties_desc=properties_desc,
+                config_overrides=dict(
+                    metadata_context_max_tokens=metadata_context_max_tokens,
+                    max_graph_depth=max_graph_depth,
+                    include_logic_concepts=include_logic_concepts,
+                ),
+            )
+            columns_str = _new_columns_str
+            measures_str = _new_measures_str
+            rel_prop_str = _new_rel_prop_str
+            # Tier 2 anchor re-evaluation may have swapped the anchor — propagate
+            # it downstream so the SQL FROM clause references the new concept.
+            if _effective_anchor and _effective_anchor != concept:
+                concept = _effective_anchor
+                # Refresh the anchor-derived description/tags for the new FROM
+                # root — concept_metadata was loaded for the pre-reanchor
+                # concept, so leaving it stale shows the OLD concept's
+                # description under the new table.
+                try:
+                    from ..ontology_context.ontology.shared import get_shared_ontology
+                    _new_meta = get_shared_ontology(conn_params).get_concept_metadata(concept)
+                    concept_metadata = {
+                        **(concept_metadata or {}),
+                        "description": getattr(_new_meta, "description", None),
+                        "tags": getattr(_new_meta, "tags", None),
+                    }
+                except Exception:
+                    pass
+        except Exception as _dyn_exc:  # noqa: BLE001 — backward-compat fallback
+            import logging
+            logging.getLogger(__name__).warning(
+                "Dynamic metadata-context failed (%s); falling back to static.",
+                _dyn_exc,
+            )
 
     if rel_prop_str:
         measures_str += f"\n{rel_prop_str}"
@@ -832,6 +1675,7 @@ def _generate_sql_with_llm(
     result = {
         "sql": parsed_response['sql'],
         "generate_sql_reason": parsed_response['reason'],
+        "decisions": parsed_response['decisions'],
         "apx_token_count": apx_token_count,
         "usage_metadata": _extract_usage_metadata(response),
         "is_valid": True,
@@ -867,6 +1711,13 @@ def handle_generate_sql_reasoning(
     technical_context_mode: str = "auto",
     technical_context_max_tokens: int = 3000,
     technical_context_properties: Optional[list] = None,
+    generate_sql_reason: Optional[str] = None,
+    decisions: Optional[list] = None,
+    # Plan 2 — dynamic metadata-context propagation (None ⇒ inherit from config)
+    metadata_context_mode: Optional[str] = None,
+    metadata_context_max_tokens: Optional[int] = None,
+    max_graph_depth: Optional[int] = None,
+    include_logic_concepts: Optional[bool] = None,
 ) -> tuple[str, int, str, int]:
     import time as _time
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params)
@@ -876,13 +1727,19 @@ def handle_generate_sql_reasoning(
     _reasoning_start = _time.monotonic()
     for step in range(reasoning_steps):
         try:
-            # Step 1: Evaluate the current SQL
+            # Step 1: Evaluate the current SQL.
+            # `note` already carries the conversation-memory block (merged in
+            # by generate_sql via format_memory_note_for_sql), so memory flows
+            # into the reasoning appendix through the note channel.
             eval_result = _evaluate_sql_enable_reasoning(
                 question=question,
                 sql_query=reasoned_sql,
                 llm=llm,
                 conn_params=conn_params,
                 timeout=timeout,
+                note=note,
+                generate_sql_reason=generate_sql_reason,
+                decisions=decisions,
             )
             
             usage_metadata[f'sql_reasoning_step_{step + 1}'] = {
@@ -927,15 +1784,25 @@ def handle_generate_sql_reasoning(
                     technical_context_mode=technical_context_mode,
                     technical_context_max_tokens=technical_context_max_tokens,
                     technical_context_properties=technical_context_properties,
+                    metadata_context_mode=metadata_context_mode,
+                    metadata_context_max_tokens=metadata_context_max_tokens,
+                    max_graph_depth=max_graph_depth,
+                    include_logic_concepts=include_logic_concepts,
+                    note=evaluation_note,
                 ),
                 note=evaluation_note,
                 timeout=timeout,
                 debug=debug,
             )
-            
+
             reasoned_sql = regen_result['sql']
             reasoned_sql_reason = regen_result['generate_sql_reason']
             error = regen_result['error']
+
+            # Refresh generator reason + decision trace so the next iteration's
+            # evaluator sees the freshest plan + trace for the SQL it evaluates.
+            generate_sql_reason = regen_result.get('generate_sql_reason')
+            decisions = regen_result.get('decisions')
 
             step_key = f'generate_sql_reasoning_step_{step + 1}'
             usage_metadata[step_key] = {
@@ -981,6 +1848,15 @@ def handle_validate_generate_sql(
     technical_context_mode: str = "auto",
     technical_context_max_tokens: int = 3000,
     technical_context_properties: Optional[list] = None,
+    # Plan 2 — dynamic metadata-context. None ⇒ inherit from config.
+    metadata_context_mode: Optional[str] = None,
+    metadata_context_max_tokens: Optional[int] = None,
+    max_graph_depth: Optional[int] = None,
+    include_logic_concepts: Optional[bool] = None,
+    # Conversation memory + caller notes — forwarded to context_builder LLM
+    # prompts so the validation-retry regeneration sees the same prior-turn
+    # context the original generate_sql call did.
+    note: Optional[str] = None,
 ) -> tuple[bool, str, str]:
     is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
     validation_attempt = 0
@@ -1009,6 +1885,11 @@ def handle_validate_generate_sql(
                 technical_context_mode=technical_context_mode,
                 technical_context_max_tokens=technical_context_max_tokens,
                 technical_context_properties=technical_context_properties,
+                metadata_context_mode=metadata_context_mode,
+                metadata_context_max_tokens=metadata_context_max_tokens,
+                max_graph_depth=max_graph_depth,
+                include_logic_concepts=include_logic_concepts,
+                note=note,
             ),
             note=validation_err_txt,
             timeout=timeout,
@@ -1060,6 +1941,10 @@ def generate_sql(
         technical_context_mode: Optional[str] = None,
         technical_context_max_tokens: Optional[int] = None,
         technical_context_properties: Optional[list] = None,
+        # Plan 2 — dynamic metadata-context (None ⇒ inherit from config)
+        metadata_context_mode: Optional[str] = None,
+        metadata_context_max_tokens: Optional[int] = None,
+        max_graph_depth: Optional[int] = None,
     ) -> dict[str, str]:
     usage_metadata = {}
     concept_metadata = None
@@ -1138,12 +2023,17 @@ def generate_sql(
                 technical_context_mode=technical_context_mode or config.technical_context_mode,
                 technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
                 technical_context_properties=technical_context_properties,
+                metadata_context_mode=metadata_context_mode,
+                metadata_context_max_tokens=metadata_context_max_tokens,
+                max_graph_depth=max_graph_depth,
+                include_logic_concepts=include_logic_concepts,
+                note=note,
             ),
             note=note,
             timeout=timeout,
             debug=debug,
         )
-        
+
         usage_metadata['generate_sql'] = {
             "approximate": result['apx_token_count'],
             **result['usage_metadata'],
@@ -1153,11 +2043,12 @@ def generate_sql(
         
         sql_query = result['sql']
         generate_sql_reason = result.get('generate_sql_reason', None)
+        decisions = result.get('decisions', None)
         error = result['error']
 
         if error:
             raise Exception(error)
-        
+
         if enable_reasoning and sql_query is not None:
             sql_query, graph_depth, generate_sql_reason, reasoning_duration = handle_generate_sql_reasoning(
                 sql_query=sql_query,
@@ -1182,6 +2073,12 @@ def generate_sql(
                 technical_context_mode=technical_context_mode or config.technical_context_mode,
                 technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
                 technical_context_properties=technical_context_properties,
+                generate_sql_reason=generate_sql_reason,
+                decisions=decisions,
+                metadata_context_mode=metadata_context_mode,
+                metadata_context_max_tokens=metadata_context_max_tokens,
+                max_graph_depth=max_graph_depth,
+                include_logic_concepts=include_logic_concepts,
             )
 
         if should_validate_sql or enable_reasoning:
@@ -1209,6 +2106,11 @@ def generate_sql(
                 technical_context_mode=technical_context_mode or config.technical_context_mode,
                 technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
                 technical_context_properties=technical_context_properties,
+                metadata_context_mode=metadata_context_mode,
+                metadata_context_max_tokens=metadata_context_max_tokens,
+                max_graph_depth=max_graph_depth,
+                include_logic_concepts=include_logic_concepts,
+                note=note,
             )
     except TimeoutError as e:
         error = f"LLM call timed out: {str(e)}"

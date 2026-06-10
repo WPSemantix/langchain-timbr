@@ -287,14 +287,20 @@ def pop_param_value(
 
     Returns:
         The value corresponding to the first found key, or default if none found.
+        All matching keys are removed from params_dict.
     """
     if isinstance(opt_keys, str):
         opt_keys = [opt_keys]
 
+    found = False
+    result = default
     for key in opt_keys:
         if key in params_dict:
-            return params_dict.pop(key)
-    return default
+            value = params_dict.pop(key)
+            if not found:
+                result = value
+                found = True
+    return result
 
 
 def sanitize_results(output_keys: list, result: dict) -> dict:

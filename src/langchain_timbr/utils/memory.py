@@ -35,7 +35,7 @@ _SOFT_QA_CONTEXT_LIMIT = 15
 """Soft cap applied after classification on Q&A pairs included in the
 answer chain context.  Same override semantics as *_SOFT_SQL_CONTEXT_LIMIT*."""
 
-_HISTORY_FETCH_TIMEOUT = 5
+_HISTORY_FETCH_TIMEOUT = 15
 """Timeout in seconds for the conversation-history HTTP call."""
 
 
@@ -199,7 +199,7 @@ def fetch_conversation_history(
         logger.debug("Memory: no base URL configured, skipping history fetch")
         return None
 
-    url = f"{base_url}/timbr/api/fetch_conversation_history"
+    url = f"{base_url}/timbr/api/fetch_conversation_history/"
     headers = _build_auth_headers(conn_params)
     params = {"conversation_id": conversation_id, "top": top}
 

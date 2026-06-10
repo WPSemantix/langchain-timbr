@@ -24,3 +24,6 @@ env311/
 env312/
 /.claude
 CLAUDE.md
+
+# private benchmark
+tests/.benchmarks/

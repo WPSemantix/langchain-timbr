@@ -21,6 +21,12 @@ class TechnicalContextConfig:
     # Tier classification thresholds
     free_text_distinct_threshold: int = 10000
     id_unique_ratio_threshold: float = 0.95
+    # Absolute distinct_count at or below which a string column is classified
+    # CATEGORICAL_ENUM and gets its full value domain emitted. Wins over the
+    # ID / FREE_TEXT / CODE_LIKE classifications — the unique-ratio signal is
+    # grain-dependent and unreliable for relationship-joined dimension label
+    # columns (distinct ≈ non_null ≈ 1.0 by construction).
+    categorical_enum_max_distinct: int = 500
 
     # Matching thresholds (two-tier: surface = strong match, sort = weak match)
     fuzzy_threshold_default: int = 88       # surface threshold for categorical_text
@@ -57,6 +63,12 @@ class TechnicalContextConfig:
             raise ValueError("fuzzy_sort_gap must be in [0, fuzzy_threshold_default)")
         if self.free_text_distinct_threshold <= 0:
             raise ValueError("free_text_distinct_threshold must be > 0")
+        if self.categorical_enum_max_distinct <= 0:
+            raise ValueError("categorical_enum_max_distinct must be > 0")
+        if self.categorical_enum_max_distinct >= self.free_text_distinct_threshold:
+            raise ValueError(
+                "categorical_enum_max_distinct must be < free_text_distinct_threshold"
+            )
         if self.mode not in ("include_all", "filter_matched", "auto"):
             raise ValueError(f"mode must be include_all, filter_matched, or auto; got {self.mode}")
         if not self.trim_sequence:
