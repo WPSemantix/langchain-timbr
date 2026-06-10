@@ -927,6 +927,48 @@ def _inject_tc_annotations_into_rebuild(
                     col["technical_context"] = annotation
 
 
+def _inject_descriptions_into_flat(columns: list, properties_desc: dict | None) -> None:
+    """Fill each flat column/measure dict's ``description`` from ``properties_desc``
+    (the SYS_PROPERTIES source the static path uses), keyed by bare property name
+    (``col_name``). Only overrides when properties_desc has a value, so any
+    existing (ontology) description stays as a fallback. Used for the reanchored
+    anchor block, whose columns were freshly built from ontology metadata."""
+    if not properties_desc:
+        return
+    for col in columns or []:
+        if not isinstance(col, dict):
+            continue
+        desc = properties_desc.get(col.get("col_name"))
+        if desc:
+            col["description"] = desc
+
+
+def _inject_descriptions_into_rebuild(
+    filtered_relationships: dict,
+    properties_desc: dict | None,
+) -> None:
+    """Mutate ``filtered_relationships`` in place, filling each rebuilt
+    relationship column/measure ``description`` from ``properties_desc``.
+
+    ``build_relationships_from_paths`` seeds descriptions from the ontology's
+    ``describe concept`` comments, which are often empty — the static path
+    instead pulls richer descriptions from ``properties_desc`` (SYS_PROPERTIES)
+    and bakes them onto both flat and relationship columns. This pass brings the
+    rebuilt relationship columns to parity. Keyed by bare property name
+    (``col_name``); no transitivity-marker handling is needed because markers
+    only appear in ``name``, never ``col_name``."""
+    if not properties_desc:
+        return
+    for rel_data in filtered_relationships.values():
+        if not isinstance(rel_data, dict):
+            continue
+        for entries_field in ("columns", "measures"):
+            entries = rel_data.get(entries_field)
+            if not isinstance(entries, list):
+                continue
+            _inject_descriptions_into_flat(entries, properties_desc)
+
+
 def _apply_dynamic_metadata_context(
     *,
     mode: str,
@@ -947,6 +989,7 @@ def _apply_dynamic_metadata_context(
     tc_annotations: dict | None = None,
     tc_topup=None,
     tc_seen_names: set | None = None,
+    properties_desc: dict | None = None,
 ) -> tuple[str, str, str, str | None]:
     """Decide static vs dynamic and return possibly-rebuilt context strings.
 
@@ -1084,12 +1127,21 @@ def _apply_dynamic_metadata_context(
     # below, which walks ONLY the validated paths — off-path chains can't
     # appear in the output by construction (so the over-expansion bug that
     # the upstream `relationships` dict carries is sidestepped entirely).
-    filtered_columns = filter_columns_for_concepts(columns, result.filtered_concepts)
-    filtered_measures = filter_columns_for_concepts(measures, result.filtered_concepts)
     # Anchor for normalization: Tier 2 may have swapped it, in which case the
     # walk must be rooted at the new anchor so the rebuilt prefixes match the
     # SQL FROM clause downstream.
     effective_anchor_for_rebuild = result.effective_anchor or anchor
+    # Reanchor refresh: the flat columns/measures passed in were loaded for the
+    # ORIGINAL anchor. When Tier 2 swapped the anchor, re-source the NEW
+    # anchor's DIRECT props/measures from the ontology so the flat block matches
+    # the SQL FROM root (stats are topped up below). Without this the SQL-gen
+    # prompt shows the pre-reanchor anchor's columns under the new FROM table.
+    reanchored = bool(result.effective_anchor and result.effective_anchor != anchor)
+    if reanchored:
+        from ..ontology_context.context_builder.rebuild import build_anchor_columns
+        columns, measures = build_anchor_columns(ontology, effective_anchor_for_rebuild)
+    filtered_columns = filter_columns_for_concepts(columns, result.filtered_concepts)
+    filtered_measures = filter_columns_for_concepts(measures, result.filtered_concepts)
     filtered_relationships = build_relationships_from_paths(
         result.validated_paths, ontology, anchor=effective_anchor_for_rebuild,
     )
@@ -1121,10 +1173,24 @@ def _apply_dynamic_metadata_context(
                     norm = _strip_transitivity_marker(name)
                     if norm and norm not in seen and norm not in missing:
                         missing[norm] = col.get("data_type", "")
+        # Reanchored flat columns are new to TC too (the static pass processed
+        # the OLD anchor's columns). Gather them so they get stats as well.
+        if reanchored:
+            for col in list(filtered_columns) + list(filtered_measures):
+                if not isinstance(col, dict):
+                    continue
+                norm = _strip_transitivity_marker(col.get("name"))
+                if norm and norm not in seen and norm not in missing:
+                    missing[norm] = col.get("data_type", "")
         if missing:
             try:
+                # After a reanchor, bare direct columns of the new anchor must
+                # resolve their stats against IT (the original concept the
+                # closure captured is wrong for them). Relationship columns in
+                # the same batch resolve via their prefix regardless.
                 extra = tc_topup(
-                    [{"name": n, "type": t} for n, t in missing.items()]
+                    [{"name": n, "type": t} for n, t in missing.items()],
+                    bound_concept=effective_anchor_for_rebuild if reanchored else None,
                 )
                 if extra:
                     tc_annotations = {**(tc_annotations or {}), **extra}
@@ -1137,6 +1203,24 @@ def _apply_dynamic_metadata_context(
     # the why.
     if tc_annotations:
         _inject_tc_annotations_into_rebuild(filtered_relationships, tc_annotations)
+        # The reanchored flat columns were built fresh here (not by the caller),
+        # so inject their annotations too. Flat names carry no transitivity
+        # markers, so an exact name match against tc_annotations is correct.
+        if reanchored:
+            for col in list(filtered_columns) + list(filtered_measures):
+                if not isinstance(col, dict):
+                    continue
+                name = col.get("name")
+                if name and name in tc_annotations:
+                    col["technical_context"] = tc_annotations[name]
+
+    # Parity with the static path's descriptions (properties_desc / SYS_PROPERTIES);
+    # the constructor only had the ontology's describe-concept comments, often
+    # empty. Tags already apply at render via the bare-name columns_tags lookup.
+    _inject_descriptions_into_rebuild(filtered_relationships, properties_desc)
+    if reanchored:
+        _inject_descriptions_into_flat(filtered_columns, properties_desc)
+        _inject_descriptions_into_flat(filtered_measures, properties_desc)
 
     new_columns_str = _build_columns_str(
         filtered_columns, columns_tags=tags, exclude=exclude_properties
@@ -1399,16 +1483,22 @@ def _build_sql_generation_context(
                 exclude_properties=exclude_properties or [],
             )
 
-            def tc_topup(topup_columns):
+            def tc_topup(topup_columns, bound_concept=None):
                 """Run a targeted TC pass for newly-revealed columns and return
                 their annotations. Reuses the configured mode (so matched-value
                 ranking is preserved), at the cost of a second candidate
-                extraction when the mode is LLM-backed."""
+                extraction when the mode is LLM-backed.
+
+                A reanchor swaps the SQL FROM root: BARE direct columns of the new
+                anchor must resolve their stats against IT, so the caller passes
+                the effective anchor as ``bound_concept``. Relationship columns
+                resolve via their prefix regardless of the bound concept, so a
+                mixed batch is safe."""
                 r = build_technical_context(
                     question=question,
                     columns=topup_columns,
                     schema=schema,
-                    concept=concept,
+                    concept=bound_concept or concept,
                     conn_params=conn_params,
                     config=tc_config,
                     llm=llm,
@@ -1466,6 +1556,7 @@ def _build_sql_generation_context(
                 tc_annotations=tc_annotations,
                 tc_topup=tc_topup,
                 tc_seen_names=tc_seen_names,
+                properties_desc=properties_desc,
                 config_overrides=dict(
                     metadata_context_max_tokens=metadata_context_max_tokens,
                     max_graph_depth=max_graph_depth,
@@ -1479,6 +1570,20 @@ def _build_sql_generation_context(
             # it downstream so the SQL FROM clause references the new concept.
             if _effective_anchor and _effective_anchor != concept:
                 concept = _effective_anchor
+                # Refresh the anchor-derived description/tags for the new FROM
+                # root — concept_metadata was loaded for the pre-reanchor
+                # concept, so leaving it stale shows the OLD concept's
+                # description under the new table.
+                try:
+                    from ..ontology_context.ontology.shared import get_shared_ontology
+                    _new_meta = get_shared_ontology(conn_params).get_concept_metadata(concept)
+                    concept_metadata = {
+                        **(concept_metadata or {}),
+                        "description": getattr(_new_meta, "description", None),
+                        "tags": getattr(_new_meta, "tags", None),
+                    }
+                except Exception:
+                    pass
         except Exception as _dyn_exc:  # noqa: BLE001 — backward-compat fallback
             import logging
             logging.getLogger(__name__).warning(

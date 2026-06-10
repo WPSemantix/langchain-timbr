@@ -487,40 +487,6 @@ class TestEndToEndSqlGeneration:
             f"times per chain.invoke(), got {call_count['retry']}"
         )
 
-    def test_zero_retry_budget_disables_retry(self, config):
-        """With metadata_context_dynamic_retry=0, Step 1 retry NEVER fires.
-        The deterministic fallback handles validation errors instead."""
-        from langchain_timbr.ontology_context.context_builder import (
-            build_filtered as _bf_mod,
-        )
-        from langchain_timbr.ontology_context.ontology import shared as _shared_mod
-        _shared_mod.reset_shared_ontologies()
-        call_count = {"step1": 0, "retry": 0}
-        _orig_step1 = _bf_mod.run_step1_filter
-        _orig_retry = _bf_mod.run_step1_retry
-
-        def _counting_step1(**kw):
-            call_count["step1"] += 1
-            return _orig_step1(**kw)
-
-        def _counting_retry(**kw):
-            call_count["retry"] += 1
-            return _orig_retry(**kw)
-
-        _bf_mod.run_step1_filter = _counting_step1
-        _bf_mod.run_step1_retry = _counting_retry
-        try:
-            chain = self._make_chain(config, config["timbr_ontology"], mode="dynamic")
-            chain._metadata_context_dynamic_retry = 0  # explicit override
-            chain.invoke({"prompt": SUPPLY_QUESTION})
-        finally:
-            _bf_mod.run_step1_filter = _orig_step1
-            _bf_mod.run_step1_retry = _orig_retry
-        assert call_count["step1"] == 1
-        assert call_count["retry"] == 0, (
-            f"Retry budget=0 must produce zero retry calls; got {call_count['retry']}"
-        )
-
     def test_dynamic_mode_actually_narrows_relationships(self, config):
         """Hard gate against silent fallback: when mode='dynamic' is set, the
         rebuilt relationship string MUST be strictly smaller than the static

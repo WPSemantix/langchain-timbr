@@ -81,6 +81,87 @@ def _topological_sort_paths(
     return ordered + remaining, reachable
 
 
+def _linear_runs(segments: List) -> List[List]:
+    """Split a segment list into maximal linear runs at continuity breaks.
+
+    A break is any point where ``segments[i].from != segments[i-1].to``. Each
+    returned run is internally continuous (a valid linear chain).
+    """
+    runs: List[List] = []
+    cur: List = [segments[0]]
+    for prev, seg in zip(segments, segments[1:]):
+        if prev.to_concept == seg.from_concept:
+            cur.append(seg)
+        else:
+            runs.append(cur)
+            cur = [seg]
+    runs.append(cur)
+    return runs
+
+
+def split_branching_paths(
+    paths: Iterable[SelectedPath],
+    anchor: str,
+) -> List[SelectedPath]:
+    """Split a fork that was mis-packed into one ``path_id`` into separate
+    linear paths.
+
+    A ``SelectedPath`` must be a single linear chain (each segment's ``to`` is
+    the next segment's ``from``) — the rebuild pipeline assumes this. LLMs
+    sometimes pack a fork (two branches from a shared concept) into one
+    ``path_id``, which would otherwise fail Rule 3 (BROKEN_CHAIN). This pass
+    rewrites such a path into one linear path per branch BEFORE validation, so
+    both validation and rebuild see clean linear chains.
+
+    Conservative by design: a split is committed only when EVERY resulting run
+    provably starts at a reachable concept — the anchor, or the terminal of an
+    earlier run / earlier path. That is exactly the start set recognized by
+    Rule 1 and by rebuild's ``_normalize_paths_to_anchor`` (both key off a
+    prior path's *terminal*, never an intermediate). If a run would start at a
+    non-reachable concept (e.g. a branch off a sibling run's intermediate), the
+    path is left intact and the existing validator + retry path handles it —
+    we never emit confusing synthetic-id errors.
+
+    A legitimate waypoint full-chain (``a -> b -> c``) has no continuity break,
+    so it is returned unchanged. Split path_ids are derived as ``<path_id>.<k>``
+    to preserve traceability back to the LLM's original ``path_id``.
+    """
+    out: List[SelectedPath] = []
+    reachable = {anchor}
+    for path in paths:
+        segments = list(path.segments)
+        if not segments:
+            out.append(path)
+            continue
+        runs = _linear_runs(segments)
+        if len(runs) == 1:
+            out.append(path)
+            reachable.add(segments[-1].to_concept)
+            continue
+        # Only commit the split if every run starts at a reachable concept,
+        # simulating the reachable set growing run-by-run.
+        sim = set(reachable)
+        startable = True
+        for run in runs:
+            if run[0].from_concept not in sim:
+                startable = False
+                break
+            sim.add(run[-1].to_concept)
+        if not startable:
+            out.append(path)
+            reachable.add(segments[-1].to_concept)
+            continue
+        for k, run in enumerate(runs, 1):
+            out.append(SelectedPath(
+                path_id=f"{path.path_id}.{k}",
+                purpose=path.purpose,
+                segments=run,
+                is_recursive=path.is_recursive,
+            ))
+            reachable.add(run[-1].to_concept)
+    return out
+
+
 def validate_paths(
     paths: Iterable[SelectedPath],
     anchor: str,
@@ -151,8 +232,10 @@ def validate_paths(
                     segment_index=i,
                     reason_code=REASON_BROKEN_CHAIN,
                     detail=(
-                        f"Segment {i-1} ends at {segments[i-1].to_concept!r}, "
-                        f"segment {i} starts at {seg.from_concept!r}"
+                        f"Segment {i-1} ends at {segments[i-1].to_concept!r} but "
+                        f"segment {i} starts at {seg.from_concept!r}. Each path_id "
+                        f"must be ONE linear chain. If this is a fork from a shared "
+                        f"concept, split it into separate path_ids — one linear chain each"
                     ),
                 ))
 

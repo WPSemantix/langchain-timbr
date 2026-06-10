@@ -53,7 +53,7 @@ from .metadata_types import (
 )
 from .rebuild import collect_path_concepts, collect_path_relationships
 from .subgraph import retrieve_subgraph, serialize_compact_ddl
-from .validator import validate_overrides, validate_paths
+from .validator import split_branching_paths, validate_overrides, validate_paths
 
 # Per-request caps on the planner's non-build_path actions. Enforced via
 # grammar narrowing — when a cap is hit, the next planner call's prompt
@@ -778,6 +778,10 @@ def _step1_with_validation_retries(
     if action != "build_path":
         return step1, []
 
+    # Split any fork mis-packed into one path_id into separate linear paths so
+    # both validation and rebuild see clean linear chains (see split_branching_paths).
+    step1.selected_paths = split_branching_paths(step1.selected_paths, anchor)
+
     errors = validate_paths(
         step1.selected_paths,
         anchor=anchor,
@@ -807,6 +811,7 @@ def _step1_with_validation_retries(
             # planner switches to expand_to/reanchor on retry, propagate that.
             if getattr(step1, "action", "build_path") != "build_path":
                 return step1, []
+            step1.selected_paths = split_branching_paths(step1.selected_paths, anchor)
             errors = validate_paths(
                 step1.selected_paths,
                 anchor=anchor,

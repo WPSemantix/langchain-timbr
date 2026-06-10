@@ -17,6 +17,7 @@ from langchain_timbr.ontology_context.context_builder.metadata_types import (
 )
 from langchain_timbr.ontology_context.context_builder.rebuild import (
     apply_transitivity_overrides,
+    build_anchor_columns,
     build_relationships_from_paths,
     collect_path_concepts,
     collect_path_relationships,
@@ -1620,3 +1621,43 @@ class TestBuildRelationshipsFromPathsMultiHop:
             "relAB[B].relBC[C].relCD[D].relDE[E].E_id"
             in col_blocks[3]
         )
+
+
+class TestBuildAnchorColumns:
+    """build_anchor_columns returns the anchor's DIRECT props/measures as flat
+    column dicts — used to refresh the flat block after a reanchor."""
+
+    def _ontology(self):
+        material = _FakeConcept(
+            name="material",
+            properties={
+                "material_name": _FakeProp("material_name", "varchar", "name of the material"),
+                "supplier_name": _FakeProp("supplier_name", "varchar"),
+            },
+            measures={
+                "total_price_per_1_kg": _FakeMeasure("total_price_per_1_kg", "double"),
+                # scoped (reached via a rel) — must be excluded from the flat block.
+                "count_of_product": _FakeMeasure(
+                    "count_of_product", "bigint", scoped_to_relationship="used_in",
+                ),
+            },
+        )
+        return _FakeOntology({"material": material})
+
+    def test_returns_direct_props_and_measures(self):
+        columns, measures = build_anchor_columns(self._ontology(), "material")
+        assert [c["col_name"] for c in columns] == ["material_name", "supplier_name"]
+        assert columns[0] == {
+            "name": "material_name", "col_name": "material_name",
+            "data_type": "varchar", "description": "name of the material",
+        }
+
+    def test_excludes_scoped_measures_and_prefixes_measure_name(self):
+        _columns, measures = build_anchor_columns(self._ontology(), "material")
+        # Only the direct measure; scoped_to_relationship measure dropped.
+        assert [m["col_name"] for m in measures] == ["total_price_per_1_kg"]
+        # Flat measure name carries the `measure.` prefix (no rel prefix).
+        assert measures[0]["name"] == "measure.total_price_per_1_kg"
+
+    def test_unknown_anchor_returns_empty(self):
+        assert build_anchor_columns(self._ontology(), "ghost") == ([], [])

@@ -264,6 +264,46 @@ def _safe_get_concept_metadata(ontology, concept: str):
         return None
 
 
+def build_anchor_columns(ontology, anchor: str) -> Tuple[List[dict], List[dict]]:
+    """Return ``(columns, measures)`` flat dicts for the anchor's DIRECT
+    properties/measures, sourced from the ontology metadata.
+
+    Mirrors the column-dict shape ``build_relationships_from_paths`` emits and
+    that ``_build_columns_str`` consumes (``name`` / ``col_name`` /
+    ``data_type`` / ``description``). Used to refresh the flat anchor block when
+    a reanchor swapped the SQL FROM root — the upstream static fetch only loaded
+    the ORIGINAL anchor's columns, so the new anchor's own columns would
+    otherwise be missing. Stats are added separately (technical-context top-up).
+
+    Only DIRECT measures are returned; ``scoped_to_relationship`` measures
+    belong to other concepts (reached via a relationship) and are skipped, the
+    same filter ``build_relationships_from_paths`` applies.
+    """
+    meta = _safe_get_concept_metadata(ontology, anchor)
+    if meta is None:
+        return [], []
+    columns = [
+        {
+            "name": prop.name,
+            "col_name": prop.name,
+            "data_type": prop.data_type,
+            "description": prop.description,
+        }
+        for prop in meta.properties.values()
+    ]
+    measures = [
+        {
+            "name": f"measure.{measure.name}",
+            "col_name": measure.name,
+            "data_type": measure.data_type,
+            "description": measure.description,
+        }
+        for measure in meta.measures.values()
+        if getattr(measure, "scoped_to_relationship", None) is None
+    ]
+    return columns, measures
+
+
 def _lookup_transitivity(ontology, from_concept: str, rel_name: str) -> int:
     """Return the declared transitivity (depth) for a relationship, or 1.
 

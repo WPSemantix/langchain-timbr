@@ -82,10 +82,31 @@ Field guidance for build_path:
 - `transitivity_overrides`: depth on a transitive/recursive relationship. One entry per (rel, target).
 
 Path-construction rules:
+- Each `path_id` is ONE linear chain: `to` of each segment is the `from` of the next. To reach two DIFFERENT targets from a shared concept (a FORK), emit SEPARATE `path_id`s — one linear chain each. NEVER put two branches inside one `path_id`.
 - Each path's first segment must start from the anchor OR a concept reached by a prior path in this response.
-- Single-hop style (chained by order) and full-chain style both accepted. Prefer single-hop.
-- `to` of one segment must equal `from` of the next.
-- Use exact names from the subgraph. Prefer shorter paths when both reach the same target."""
+- Prefer single-hop chaining, EXCEPT when a concept is only a routing waypoint to a deeper target you actually want: keep that waypoint as a NON-TERMINAL hop inside one longer chain and set `is_intermediate: true` on the segment ending at it. Splitting a path at a waypoint makes it a terminal, and terminals are always treated as result data.
+- Use exact names from the subgraph. Prefer shorter paths when both reach the same target.
+
+Example — a question that forks from anchor `a` to `b` AND to `d` (reached through waypoint `c`):
+```json
+{
+  "action": "build_path",
+  "selected_concepts": ["a", "b", "c", "d"],
+  "selected_properties": ["b.b_name", "d.d_name"],
+  "selected_measures": [],
+  "selected_paths": [
+    { "path_id": "P1", "purpose": "a's b data (one branch of the fork)",
+      "segments": [ { "from": "a", "rel": "has_b", "to": "b", "is_intermediate": false } ],
+      "is_recursive": false },
+    { "path_id": "P2", "purpose": "d reached through waypoint c (other branch)",
+      "segments": [ { "from": "a", "rel": "has_c", "to": "c", "is_intermediate": true },
+                    { "from": "c", "rel": "has_d", "to": "d", "is_intermediate": false } ],
+      "is_recursive": false }
+  ],
+  "transitivity_overrides": []
+}
+```
+Why: the fork is emitted as TWO `path_id`s, not two branches in one. In P2, `c` is only a waypoint to `d`, so it stays a NON-TERMINAL hop with `is_intermediate: true` (it is NOT split into its own path_id, which would make it a terminal). Terminals `b` and `d` are never intermediate."""
 
 
 _EXPAND_TO_VARIANT = """### Action: `expand_to`
