@@ -135,6 +135,50 @@ chain = ExecuteTimbrQueryChain(
 
 
 
+## Metadata Context
+
+Metadata context is the slice of your ontology (columns, measures, relationships) that gets put into the Data Agent context. Bigger slices give the LLM more to work with but cost more tokens.
+
+- **`METADATA_CONTEXT_MODE`**
+  - `static` (default) - Send the full pre-computed ontology slice. Fast, predictable, but can be large.
+  - `dynamic` - Identify the relevant concepts and paths and rebuilds a leaner slice. Smaller prompt, but adds more steps.
+  - `auto` - Start with static; switch to dynamic only when needed (the static slice exceeds the token budget, or the graph is deep enough that static would be too noisy). Best of both worlds for most workloads.
+- **`METADATA_CONTEXT_MAX_TOKENS`** - Token budget for the metadata slice. In `auto` mode this is what triggers the switch to dynamic. In `dynamic` mode it's a soft cap — the pipeline trims the rebuilt slice to fit, but emits over-budget rather than failing.
+
+### Graph Depth
+
+How many relationship hops the Data Agent is allowed to traverse from the root concept (e.g. `customer → order → product` is 2 hops).
+
+- **`MAX_GRAPH_DEPTH`** - The hard upper bound for the dynamic pipeline's reachability search (default: `3`). Sets the ceiling for max graph traversals.
+- `graph_depth` - The default graph traversals level - starting point (default: `1`).
+
+These options can also be passed directly to chain/node constructors:
+
+```python
+from langchain_timbr import ExecuteTimbrQueryChain
+
+chain = ExecuteTimbrQueryChain(
+    llm=llm,
+    url="https://your-timbr-server",
+    token="your-token",
+    ontology="your_ontology",
+    concepts_list="organization",
+    metadata_context_mode="auto",
+    metadata_context_max_tokens=12000,
+    graph_depth=1,
+    max_graph_depth=3,
+)
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `metadata_context_mode` | `Optional[str]` | `"static"` | How the ontology slice is chosen (`static`, `dynamic`, `auto`) |
+| `metadata_context_max_tokens` | `Optional[int]` | `12000` | Token budget for the metadata slice (trigger in `auto`, soft cap in `dynamic`) |
+| `graph_depth` | `Optional[int]` | `1` | Default relationship hops to traverse per query |
+| `max_graph_depth` | `Optional[int]` | `3` | Hard upper bound on hops the dynamic pipeline may explore |
+
+
+
 ## Monitoring & History
 
 - **`TIMBR_ENABLE_TRACE`** - Enable detailed trace logging for agent/chain execution (true/false, default: `false`)

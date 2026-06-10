@@ -29,6 +29,7 @@ class GenerateTimbrSqlNode:
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        max_graph_depth: Optional[int] = config.max_graph_depth,
         agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
@@ -45,6 +46,8 @@ class GenerateTimbrSqlNode:
         technical_context_mode: Optional[str] = config.technical_context_mode,
         technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
         technical_context_properties: Optional[Union[list[str], str]] = None,
+        metadata_context_mode: Optional[str] = config.metadata_context_mode,
+        metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
         **kwargs,
     ):
         """
@@ -95,6 +98,7 @@ class GenerateTimbrSqlNode:
             note=note,
             db_is_case_sensitive=db_is_case_sensitive,
             graph_depth=graph_depth,
+            max_graph_depth=max_graph_depth,
             agent=agent,
             verify_ssl=verify_ssl,
             is_jwt=is_jwt,
@@ -111,6 +115,8 @@ class GenerateTimbrSqlNode:
             technical_context_mode=technical_context_mode,
             technical_context_max_tokens=technical_context_max_tokens,
             technical_context_properties=technical_context_properties,
+            metadata_context_mode=metadata_context_mode,
+            metadata_context_max_tokens=metadata_context_max_tokens,
             **kwargs,
         )
 

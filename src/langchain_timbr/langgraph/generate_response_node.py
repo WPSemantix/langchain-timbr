@@ -32,6 +32,7 @@ class GenerateResponseNode:
         no_results_max_retries: Optional[int] = 2,
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        max_graph_depth: Optional[int] = config.max_graph_depth,
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         note: Optional[str] = '',
@@ -47,6 +48,8 @@ class GenerateResponseNode:
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
         memory_window_size: Optional[int] = config.memory_window_size,
+        metadata_context_mode: Optional[str] = config.metadata_context_mode,
+        metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
         **kwargs,
     ):
         """
@@ -102,6 +105,7 @@ class GenerateResponseNode:
             no_results_max_retries=no_results_max_retries,
             db_is_case_sensitive=db_is_case_sensitive,
             graph_depth=graph_depth,
+            max_graph_depth=max_graph_depth,
             enable_reasoning=enable_reasoning,
             reasoning_steps=reasoning_steps,
             note=note,
@@ -117,6 +121,8 @@ class GenerateResponseNode:
             conversation_id=conversation_id,
             enable_memory=enable_memory,
             memory_window_size=memory_window_size,
+            metadata_context_mode=metadata_context_mode,
+            metadata_context_max_tokens=metadata_context_max_tokens,
             **kwargs,
         )
 

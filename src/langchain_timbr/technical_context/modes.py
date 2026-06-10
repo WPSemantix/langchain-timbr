@@ -111,6 +111,15 @@ def _project_annotation_text(
         # surrogate_id_like: name + type only (no values)
         return ""
 
+    if sem_type == SemanticType.CATEGORICAL_ENUM:
+        # Small-cardinality enum: project the full value domain (matches the
+        # CATEGORICAL_ENUM branch in assemble_column_payload).
+        if not stats.top_k:
+            return ""
+        values = [str(e.value) for e in stats.top_k]
+        formatted = [f"'{v}'" for v in values]
+        return f"known values: [{', '.join(formatted)}]"
+
     if sem_type == SemanticType.FREE_TEXT:
         # free_text: count note only
         if stats.distinct_count:

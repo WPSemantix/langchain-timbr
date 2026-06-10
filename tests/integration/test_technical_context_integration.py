@@ -386,7 +386,7 @@ class TestTechnicalContextQueryExecution:
             technical_context_max_tokens=3000,
         )
 
-        result = chain.invoke({"prompt": "Count person that are PHD candidate"})
+        result = chain.invoke({"prompt": "Count person that are PHD candidates (not PHD yet)"})
         print(f"[mode={mode}] PhD candidate result:", result)
 
         assert "rows" in result, "Result should contain 'rows'"

@@ -43,6 +43,7 @@ class GenerateAnswerChain(Chain):
         no_results_max_retries: Optional[int] = 2,
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        max_graph_depth: Optional[int] = config.max_graph_depth,
         enable_reasoning: Optional[bool] = None,
         reasoning_steps: Optional[int] = None,
         note: Optional[str] = '',
@@ -62,6 +63,8 @@ class GenerateAnswerChain(Chain):
         technical_context_mode: Optional[str] = config.technical_context_mode,
         technical_context_max_tokens: Optional[int] = config.technical_context_max_tokens,
         technical_context_properties: Optional[Union[list[str], str]] = None,
+        metadata_context_mode: Optional[str] = config.metadata_context_mode,
+        metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
         **kwargs,
     ):
         """
@@ -83,6 +86,7 @@ class GenerateAnswerChain(Chain):
         :param no_results_max_retries: Number of retry attempts when query returns no rows.
         :param db_is_case_sensitive: Whether the database is case sensitive (default is False).
         :param graph_depth: Maximum number of relationship hops to traverse from the source concept (default is 1).
+        :param max_graph_depth: Upper bound for the reachability graph used by dynamic metadata-context building (default from config.max_graph_depth).
         :param enable_reasoning: Whether to enable reasoning during SQL generation.
         :param reasoning_steps: Number of reasoning steps to perform if reasoning is enabled.
         :param note: Optional additional note to extend our llm prompt
@@ -160,6 +164,16 @@ class GenerateAnswerChain(Chain):
             self._technical_context_mode = agent_options.get("technical_context_mode") if "technical_context_mode" in agent_options else technical_context_mode
             self._technical_context_max_tokens = to_integer(agent_options.get("technical_context_max_tokens")) if "technical_context_max_tokens" in agent_options else to_integer(technical_context_max_tokens)
             self._technical_context_properties = parse_list(agent_options.get("technical_context_properties")) if "technical_context_properties" in agent_options else parse_list(technical_context_properties)
+            self._metadata_context_mode = (
+                agent_options.get("metadata_context_mode")
+                if "metadata_context_mode" in agent_options
+                else metadata_context_mode
+            )
+            self._metadata_context_max_tokens = (
+                to_integer(agent_options.get("metadata_context_max_tokens"))
+                if "metadata_context_max_tokens" in agent_options
+                else to_integer(metadata_context_max_tokens)
+            )
         else:
             self._note = note
             self._enable_trace = to_boolean(enable_trace)
@@ -174,6 +188,8 @@ class GenerateAnswerChain(Chain):
             self._technical_context_mode = technical_context_mode
             self._technical_context_max_tokens = to_integer(technical_context_max_tokens)
             self._technical_context_properties = parse_list(technical_context_properties)
+            self._metadata_context_mode = metadata_context_mode
+            self._metadata_context_max_tokens = to_integer(metadata_context_max_tokens)
 
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
@@ -199,6 +215,7 @@ class GenerateAnswerChain(Chain):
             note=self._note,
             db_is_case_sensitive=to_boolean(db_is_case_sensitive),
             graph_depth=to_integer(graph_depth),
+            max_graph_depth=to_integer(max_graph_depth),
             agent=agent,
             verify_ssl=self._verify_ssl,
             is_jwt=self._is_jwt,
@@ -215,6 +232,8 @@ class GenerateAnswerChain(Chain):
             technical_context_mode=self._technical_context_mode,
             technical_context_max_tokens=self._technical_context_max_tokens,
             technical_context_properties=self._technical_context_properties,
+            metadata_context_mode=self._metadata_context_mode,
+            metadata_context_max_tokens=self._metadata_context_max_tokens,
         )
 
 

@@ -40,6 +40,7 @@ class ValidateTimbrSqlChain(Chain):
         note: Optional[str] = '',
         db_is_case_sensitive: Optional[bool] = False,
         graph_depth: Optional[int] = 1,
+        max_graph_depth: Optional[int] = config.max_graph_depth,
         agent: Optional[str] = None,
         verify_ssl: Optional[bool] = True,
         is_jwt: Optional[bool] = False,
@@ -52,6 +53,8 @@ class ValidateTimbrSqlChain(Chain):
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
         memory_window_size: Optional[int] = config.memory_window_size,
+        metadata_context_mode: Optional[str] = config.metadata_context_mode,
+        metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
         **kwargs,
     ):
         """
@@ -150,6 +153,11 @@ class ValidateTimbrSqlChain(Chain):
             self._max_limit = to_integer(agent_options.get("max_limit")) if "max_limit" in agent_options else config.llm_default_limit
             self._db_is_case_sensitive = to_boolean(agent_options.get("db_is_case_sensitive")) if "db_is_case_sensitive" in agent_options else False
             self._graph_depth = to_integer(agent_options.get("graph_depth")) if "graph_depth" in agent_options else 1
+            self._max_graph_depth = (
+                to_integer(agent_options.get("max_graph_depth"))
+                if "max_graph_depth" in agent_options
+                else to_integer(max_graph_depth)
+            )
             self._note = agent_options.get("note") if "note" in agent_options else ''
             if note:
                 self._note = ((self._note + '\n') if self._note else '') + note
@@ -162,6 +170,16 @@ class ValidateTimbrSqlChain(Chain):
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
             self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
             self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
+            self._metadata_context_mode = (
+                agent_options.get("metadata_context_mode")
+                if "metadata_context_mode" in agent_options
+                else metadata_context_mode
+            )
+            self._metadata_context_max_tokens = (
+                to_integer(agent_options.get("metadata_context_max_tokens"))
+                if "metadata_context_max_tokens" in agent_options
+                else to_integer(metadata_context_max_tokens)
+            )
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -175,12 +193,15 @@ class ValidateTimbrSqlChain(Chain):
             self._max_limit = to_integer(max_limit)
             self._db_is_case_sensitive = to_boolean(db_is_case_sensitive)
             self._graph_depth = to_integer(graph_depth)
+            self._max_graph_depth = to_integer(max_graph_depth)
             self._note = note
             self._enable_reasoning = to_boolean(enable_reasoning) if enable_reasoning is not None else config.enable_reasoning
             self._reasoning_steps = to_integer(reasoning_steps) if reasoning_steps is not None else config.reasoning_steps
             self._enable_trace = to_boolean(enable_trace)
             self._enable_memory = to_boolean(enable_memory)
             self._memory_window_size = to_integer(memory_window_size)
+            self._metadata_context_mode = metadata_context_mode
+            self._metadata_context_max_tokens = to_integer(metadata_context_max_tokens)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -292,9 +313,12 @@ class ValidateTimbrSqlChain(Chain):
                 note=f"{prompt_extension}The original SQL query (`{sql}`) was invalid with this error from query {error}. Please take this in consideration while generating the query.",
                 db_is_case_sensitive=self._db_is_case_sensitive,
                 graph_depth=self._graph_depth,
+                max_graph_depth=self._max_graph_depth,
                 enable_reasoning=self._enable_reasoning,
                 reasoning_steps=self._reasoning_steps,
                 debug=self._debug,
+                metadata_context_mode=self._metadata_context_mode,
+                metadata_context_max_tokens=self._metadata_context_max_tokens,
             )
             sql = generate_res.get("sql", "")
             schema = generate_res.get("schema", self._schema)

@@ -18,6 +18,11 @@ class SemanticType(Enum):
     CODE_LIKE = "code_like"
     BUSINESS_KEY_LIKE = "business_key_like"
     CATEGORICAL_TEXT = "categorical_text"
+    # Small-cardinality string enum (e.g. status, country, segment). Triggered
+    # by absolute distinct_count <= config.categorical_enum_max_distinct,
+    # which is grain-independent and so doesn't misfire on relationship-joined
+    # dimension label columns the way the unique-ratio ID check does.
+    CATEGORICAL_ENUM = "categorical_enum"
 
 
 @dataclass
