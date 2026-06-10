@@ -380,7 +380,8 @@ class TestCountTrigger:
             should_trigger_concept_prefilter,
         )
         # Token budget so tight even 3 concepts overflow.
-        cfg = MetadataContextConfig(max_detail_concepts=10, metadata_context_filter_max_tokens=10)
+        cfg = MetadataContextConfig(max_detail_concepts=10, metadata_context_filter_max_tokens=10, metadata_context_filter_max_tokens_hard_ceiling=10)
+
         concepts = ["a", "b", "c"]
         ontology = FakeOntology({"a": "", "b": "", "c": ""})
         fire, reason = should_trigger_concept_prefilter(

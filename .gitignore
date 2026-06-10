@@ -26,4 +26,4 @@ env312/
 CLAUDE.md
 
 # private benchmark
-tests/bench_dynamic_paths_test/
+tests/.benchmarks/
