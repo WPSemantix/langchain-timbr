@@ -6,10 +6,31 @@ module defaults with optional per-call overrides.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Literal
 
 from ... import config as _config
+
+
+def normalize_mode(mode: str | None) -> str:
+    """Normalize a metadata-context mode string.
+
+    ``auto`` was retired; it is coerced to ``dynamic`` with a
+    ``DeprecationWarning`` for backward compatibility with existing configs.
+    Other values pass through unchanged (validation happens in
+    ``MetadataContextConfig.__post_init__``).
+    """
+    resolved = (mode or "static").lower()
+    if resolved == "auto":
+        warnings.warn(
+            "METADATA_CONTEXT_MODE='auto' is deprecated and now treated as "
+            "'dynamic'. Set the mode to 'static' or 'dynamic' explicitly.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return "dynamic"
+    return resolved
 
 
 @dataclass(frozen=True)
@@ -19,7 +40,7 @@ class MetadataContextConfig:
     All fields default to the env-backed values from `langchain_timbr.config`.
     Callers may override per-invocation; the orchestrator does not mutate this.
     """
-    mode: Literal["auto", "static", "dynamic"] = "static"
+    mode: Literal["static", "dynamic"] = "static"
 
     # SQL-gen metadata budget — SOFT cap only. There is NO hard ceiling: per
     # "dynamic-over-budget is preferred over static-but-much-larger",
@@ -60,9 +81,9 @@ class MetadataContextConfig:
     enable_fanout_hints: bool = True
 
     def __post_init__(self):
-        if self.mode not in ("auto", "static", "dynamic"):
+        if self.mode not in ("static", "dynamic"):
             raise ValueError(
-                f"mode must be 'auto', 'static', or 'dynamic'; got {self.mode!r}"
+                f"mode must be 'static' or 'dynamic'; got {self.mode!r}"
             )
         if self.metadata_context_max_tokens <= 0:
             raise ValueError("metadata_context_max_tokens must be > 0")
@@ -95,7 +116,7 @@ def config_from_module(**overrides) -> MetadataContextConfig:
     Unknown override keys are ignored (defensive — kwargs may include unrelated fields).
     """
     base = dict(
-        mode=getattr(_config, "metadata_context_mode", "static") or "static",
+        mode=normalize_mode(getattr(_config, "metadata_context_mode", "static")),
         metadata_context_max_tokens=getattr(_config, "metadata_context_max_tokens", 12_000),
         metadata_context_filter_max_tokens=getattr(_config, "metadata_context_filter_max_tokens", 6_000),
         metadata_context_filter_max_tokens_hard_ceiling=getattr(
@@ -112,4 +133,5 @@ def config_from_module(**overrides) -> MetadataContextConfig:
     for k, v in overrides.items():
         if k in valid_keys and v is not None:
             base[k] = v
+    base["mode"] = normalize_mode(base["mode"])
     return MetadataContextConfig(**base)

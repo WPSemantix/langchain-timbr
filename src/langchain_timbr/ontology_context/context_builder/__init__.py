@@ -24,7 +24,7 @@ from .concept_prefilter import (
 )
 from .edge_index import EdgeIndex
 from .fallback import generate_fallback_paths
-from .metadata_config import MetadataContextConfig, config_from_module
+from .metadata_config import MetadataContextConfig, config_from_module, normalize_mode
 from .metadata_types import (
     EdgeMeta,
     PathSegment,
@@ -51,6 +51,7 @@ from .validator import validate_overrides, validate_paths
 __all__ = [
     "MetadataContextConfig",
     "config_from_module",
+    "normalize_mode",
     "EdgeMeta",
     "PathSegment",
     "SelectedPath",

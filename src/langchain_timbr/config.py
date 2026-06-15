@@ -53,8 +53,7 @@ technical_context_properties = parse_list(os.environ.get('TECHNICAL_CONTEXT_PROP
 
 # Dynamic metadata-context assembly (Plan 2). Default 'static' for backward
 # compatibility — the static path is bit-for-bit identical to current behavior.
-# Once shadow-mode telemetry confirms parity, flip the default to 'auto'.
-metadata_context_mode = os.environ.get('METADATA_CONTEXT_MODE', 'static')        # auto | static | dynamic
+metadata_context_mode = os.environ.get('METADATA_CONTEXT_MODE', 'static')        # static | dynamic
 
 # SQL-gen metadata budget (final context passed to SQL gen). SOFT cap only —
 # triggers the cascade + waypoint filter to compress when exceeded. There is

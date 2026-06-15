@@ -55,6 +55,7 @@ from .context_builder import (
     estimate_subgraph_edge_count,
     filter_columns_for_concepts,
     generate_fallback_paths,
+    normalize_mode,
     retrieve_subgraph,
     serialize_compact_ddl,
     should_skip_static_build,
@@ -83,6 +84,7 @@ __all__ = [
     # Plan 2
     "MetadataContextConfig",
     "config_from_module",
+    "normalize_mode",
     "EdgeMeta",
     "PathSegment",
     "SelectedPath",

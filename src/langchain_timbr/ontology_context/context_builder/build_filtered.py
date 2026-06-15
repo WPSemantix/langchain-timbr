@@ -51,7 +51,11 @@ from .metadata_types import (
     TransitivityOverride,
     ValidationError,
 )
-from .rebuild import collect_path_concepts, collect_path_relationships
+from .rebuild import (
+    collect_path_concepts,
+    collect_path_relationships,
+    is_path_prompt_degraded,
+)
 from .subgraph import retrieve_subgraph, serialize_compact_ddl
 from .validator import split_branching_paths, validate_overrides, validate_paths
 
@@ -400,15 +404,15 @@ def build_filtered_metadata(
         # Branch 2 — anchor-only intentional. Planner returned an empty
         # selected_paths list AND validation produced no errors (because
         # there was nothing to validate). The planner is telling us no
-        # joins are needed; honor it with a lean anchor-only rebuild
-        # instead of falling back to the full static prompt.
+        # joins are needed; honor it via the no-paths fallback (which trusts
+        # the planner when its prompt was un-trimmed and otherwise emits a
+        # 1-hop safety net) instead of falling back to the full static prompt.
         if stats.get("first_pass_valid") and not step1.selected_paths:
-            stats["resolved_by"] = "llm_paths_anchor_only"
-            return _assemble_result(
-                anchor=current_anchor, valid_paths=[],
+            return _resolve_no_paths_fallback(
+                anchor=current_anchor, edge_index=edge_index, config=config,
                 compact_ddl=compact_ddl, accepted_overrides=accepted_overrides,
-                stats=stats, warnings=warnings,
-                effective_anchor=effective_anchor,
+                stats=stats, warnings=warnings, effective_anchor=effective_anchor,
+                anchor_only_resolved_by="llm_paths_anchor_only",
             )
 
         # Branch 3 — retry exhausted with paths-that-kept-failing. If the
@@ -437,39 +441,33 @@ def build_filtered_metadata(
                         stats=stats, warnings=warnings,
                         effective_anchor=effective_anchor,
                     )
-                # Rescue ran but found zero paths despite the planner
-                # naming concepts. Treat as anchor-only (lean rebuild) and
-                # flag the case in stats for operator visibility — flip the
-                # routing to depth_capped_static here if the user later
-                # decides rescue-empty should fall through instead.
-                stats["resolved_by"] = "llm_paths_anchor_only"
+                # Rescue ran but found zero paths despite the planner naming
+                # concepts. Route through the no-paths fallback and flag the
+                # case in stats for operator visibility.
                 stats["bfs_rescue_empty"] = True
-                return _assemble_result(
-                    anchor=current_anchor, valid_paths=[],
+                return _resolve_no_paths_fallback(
+                    anchor=current_anchor, edge_index=edge_index, config=config,
                     compact_ddl=compact_ddl,
                     accepted_overrides=accepted_overrides,
                     stats=stats, warnings=warnings,
                     effective_anchor=effective_anchor,
+                    anchor_only_resolved_by="llm_paths_anchor_only",
                 )
             except Exception as rescue_exc:
                 logger.warning(
-                    "BFS rescue raised: %s — routing to depth_capped_static",
+                    "BFS rescue raised: %s — routing to no-paths fallback",
                     rescue_exc,
                 )
                 stats["bfs_rescue_failed"] = True
                 warnings.append(f"bfs_rescue_error: {rescue_exc}")
                 # Fall through to Branch 4.
 
-        # Branch 4 — depth-capped dynamic rebuild. Either selected_concepts
-        # was empty, or the rescue raised. Cap depth at 2 unless the
-        # caller's graph_depth is already 1.
-        gd = graph_depth or 1
-        capped_depth = min(2, gd) if gd > 1 else 1
-        return _build_depth_capped_result(
+        # Branch 4 — no usable LLM paths. Either selected_concepts was empty,
+        # or the rescue raised. Resolve via the no-paths fallback.
+        return _resolve_no_paths_fallback(
             anchor=current_anchor, edge_index=edge_index, config=config,
-            capped_depth=capped_depth, compact_ddl=compact_ddl,
-            accepted_overrides=accepted_overrides, stats=stats,
-            warnings=warnings, effective_anchor=effective_anchor,
+            compact_ddl=compact_ddl, accepted_overrides=accepted_overrides,
+            stats=stats, warnings=warnings, effective_anchor=effective_anchor,
         )
     except Exception as exc:
         stats["metadata_context_dynamic_failed"] = True
@@ -501,16 +499,20 @@ def _make_stats() -> Dict[str, Any]:
         # .claude/plans/retry-fallback-redesign.md):
         #   'llm_paths'             — planner emitted validated paths.
         #   'llm_paths_anchor_only' — planner intentionally returned
-        #                             selected_paths=[]; lean rebuild
-        #                             using only the anchor's properties.
+        #                             selected_paths=[] with a NON-degraded
+        #                             prompt; lean anchor-only (no rels).
+        #   'anchor_only'           — retry exhausted with a NON-degraded
+        #                             prompt and no usable paths; lean
+        #                             anchor-only (no rels).
         #   'bfs_selected_concepts' — retry exhausted; rescue DFS over
         #                             selected_concepts produced paths.
-        #   'depth_capped_static'   — no selected_concepts (or rescue
-        #                             raised); emit a 1- or 2-hop
-        #                             anchor-rooted subgraph.
+        #   'depth_capped_static'   — no usable LLM paths AND the prompt was
+        #                             DEGRADED (cascade-trimmed); emit a 1-hop
+        #                             anchor-rooted subgraph (token-gated by
+        #                             the wiring layer).
         #   'empty'                 — anchor has no neighbors at the cap;
-        #                             wiring layer falls back to the
-        #                             unfiltered STATIC strings.
+        #                             wiring layer emits anchor-only (no rels).
+        #                             It never reverts to the static strings.
         "resolved_by": None,
         "original_anchor": None,
         # Concept pre-filter telemetry — populated only when the pre-filter
@@ -885,12 +887,14 @@ def _build_depth_capped_result(
 ) -> DynamicMetadataResult:
     """Last-resort dynamic rebuild bounded by ``capped_depth`` hops from anchor.
 
-    Fires when the BFS rescue cannot run (no ``selected_concepts``) or
-    raises. Synthesizes single-segment paths from the retained edges so
-    downstream assembly walks every relationship in the depth-capped
-    neighborhood. If even this produces nothing (anchor has zero outbound
-    edges), routes to ``resolved_by="empty"`` and lets the wiring layer
-    fall back to the unfiltered static strings.
+    Fires from the no-paths fallback when the Step-1 path-selection prompt was
+    DEGRADED (cascade-trimmed) — the planner chose without full visibility, so
+    a 1-hop safety net is emitted. Synthesizes single-segment paths from the
+    retained edges so downstream assembly walks every relationship in the
+    depth-capped neighborhood. If even this produces nothing (anchor has zero
+    outbound edges), routes to ``resolved_by="empty"``; the wiring layer then
+    emits the anchor's columns/measures with an empty relationships block (it
+    never reverts to the unfiltered static strings).
     """
     concepts, _preds, edges = retrieve_subgraph(
         anchor=anchor, edge_index=edge_index, config=config, max_hop=capped_depth,
@@ -900,7 +904,7 @@ def _build_depth_capped_result(
         stats["fallback_empty"] = True
         warnings.append(
             f"depth_capped_static found no edges within {capped_depth} hop(s) "
-            f"of {anchor!r}; routing to STATIC fallback"
+            f"of {anchor!r}; emitting anchor-only (no relationships)"
         )
         return _assemble_result(
             anchor=anchor, valid_paths=[], compact_ddl=compact_ddl,
@@ -943,6 +947,50 @@ def _assemble_result(
         error=None,
         accepted_overrides=accepted_overrides,
         effective_anchor=effective_anchor,
+    )
+
+
+def _resolve_no_paths_fallback(
+    *,
+    anchor: str,
+    edge_index: EdgeIndex,
+    config: MetadataContextConfig,
+    compact_ddl: str,
+    accepted_overrides: List[TransitivityOverride],
+    stats: Dict[str, Any],
+    warnings: List[str],
+    effective_anchor: Optional[str] = None,
+    anchor_only_resolved_by: str = "anchor_only",
+) -> DynamicMetadataResult:
+    """Resolve an outcome where the planner produced no validated LLM paths.
+
+    Governed by whether the Step-1 path-selection prompt was trimmed by the
+    cascade (``is_path_prompt_degraded``):
+
+      - NOT degraded → the planner saw every concept's full props/measures and
+        still chose no joins; trust it. Returns a lean anchor-only result (no
+        relationships); the wiring layer emits the anchor's columns/measures
+        with an empty relationships block.
+      - DEGRADED → the planner chose without full visibility. Emit a 1-hop
+        safety net (``_build_depth_capped_result`` with ``capped_depth=1``);
+        the wiring layer token-gates it, dropping the relationships if the
+        rendered slice exceeds ``metadata_context_max_tokens``.
+
+    Either way the pipeline stays dynamic — it never reverts to static.
+    """
+    if is_path_prompt_degraded(compact_ddl):
+        stats["fallback_degraded"] = True
+        return _build_depth_capped_result(
+            anchor=anchor, edge_index=edge_index, config=config,
+            capped_depth=1, compact_ddl=compact_ddl,
+            accepted_overrides=accepted_overrides, stats=stats,
+            warnings=warnings, effective_anchor=effective_anchor,
+        )
+    stats["resolved_by"] = anchor_only_resolved_by
+    return _assemble_result(
+        anchor=anchor, valid_paths=[], compact_ddl=compact_ddl,
+        accepted_overrides=accepted_overrides, stats=stats,
+        warnings=warnings, effective_anchor=effective_anchor,
     )
 
 

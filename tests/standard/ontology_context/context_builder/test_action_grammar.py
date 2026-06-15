@@ -657,9 +657,36 @@ class TestRetryFallbackCascade:
         assert result.filtered_concepts == {"customer"}
         assert result.stats["first_pass_valid"] is True
 
-    def test_retry_exhausted_no_concepts_routes_to_depth_capped(self):
-        """Retry exhausted AND selected_concepts is empty → depth-capped
-        rebuild from anchor's depth-2 neighborhood."""
+    def test_retry_exhausted_no_concepts_not_degraded_routes_to_anchor_only(self):
+        """Retry exhausted AND selected_concepts empty, with a NON-degraded
+        prompt → lean anchor-only (no relationships). The planner saw the full
+        DDL and produced nothing usable, so we trust it and emit no joins."""
+        ontology = _simple_ontology()
+        cfg = self._cfg()
+        llm = ScriptedLLM([
+            _build_path_payload(
+                selected_concepts=[],
+                segments=[
+                    {"from": "customer", "rel": "nonexistent_rel", "to": "order"},
+                ],
+            ),
+        ])
+        result = _bf.build_filtered_metadata(
+            question="any",
+            anchor="customer",
+            ontology=ontology,
+            llm=llm,
+            config=cfg,
+            graph_depth=2,
+        )
+        assert result.stats["resolved_by"] == "anchor_only"
+        assert result.validated_paths == []
+        assert result.filtered_concepts == {"customer"}
+
+    def test_retry_exhausted_no_concepts_degraded_routes_to_depth_capped(self, monkeypatch):
+        """Same setup but with a DEGRADED (cascade-trimmed) prompt → a 1-hop
+        safety net (depth-capped at 1, regardless of graph_depth)."""
+        monkeypatch.setattr(_bf, "is_path_prompt_degraded", lambda _ddl: True)
         ontology = _simple_ontology()
         cfg = self._cfg()
         llm = ScriptedLLM([
@@ -679,15 +706,15 @@ class TestRetryFallbackCascade:
             graph_depth=2,
         )
         assert result.stats["resolved_by"] == "depth_capped_static"
-        assert result.stats["depth_capped_at"] == 2
-        # _simple_ontology: customer -> order -> product (2 hops).
+        # Depth is uniformly capped at 1 now ("1 graph depth from root").
+        assert result.stats["depth_capped_at"] == 1
         assert "customer" in result.filtered_concepts
         assert "order" in result.filtered_concepts
         assert result.stats["depth_capped_edge_count"] >= 1
 
-    def test_bfs_rescue_exception_routes_to_depth_capped(self, monkeypatch):
-        """If the rescue helper raises, route to depth-capped with the
-        bfs_rescue_failed stat flagged."""
+    def test_bfs_rescue_exception_routes_to_no_paths_fallback(self, monkeypatch):
+        """If the rescue helper raises, flow through to the no-paths fallback
+        (anchor-only on a non-degraded prompt) with bfs_rescue_failed flagged."""
         ontology = _simple_ontology()
         cfg = self._cfg()
         llm = ScriptedLLM([
@@ -711,13 +738,14 @@ class TestRetryFallbackCascade:
             config=cfg,
             graph_depth=2,
         )
-        assert result.stats["resolved_by"] == "depth_capped_static"
+        assert result.stats["resolved_by"] == "anchor_only"
         assert result.stats["bfs_rescue_failed"] is True
         assert any("bfs_rescue_error" in w for w in result.warnings)
 
-    def test_depth_cap_is_1_when_graph_depth_is_1(self):
-        """graph_depth=1 → capped_depth=1, so the rebuild covers only the
-        anchor's immediate neighbors."""
+    def test_degraded_depth_cap_is_1_excludes_two_hop_concepts(self, monkeypatch):
+        """The degraded safety net is capped at 1 hop, so a 2-hop concept
+        (product) is excluded while the 1-hop neighbor (order) is included."""
+        monkeypatch.setattr(_bf, "is_path_prompt_degraded", lambda _ddl: True)
         ontology = _simple_ontology()
         cfg = self._cfg()
         llm = ScriptedLLM([
@@ -734,7 +762,7 @@ class TestRetryFallbackCascade:
             ontology=ontology,
             llm=llm,
             config=cfg,
-            graph_depth=1,
+            graph_depth=2,
         )
         assert result.stats["resolved_by"] == "depth_capped_static"
         assert result.stats["depth_capped_at"] == 1

@@ -1000,12 +1000,10 @@ def _apply_dynamic_metadata_context(
     static strings unchanged and ``effective_anchor=None`` (backward-compat).
     """
     from ..ontology_context import (
-        EdgeIndex,
         MetadataContextConfig,
         build_filtered_metadata,
         config_from_module,
         get_shared_ontology,
-        should_skip_static_build,
     )
     from ..ontology_context.context_builder.rebuild import (
         apply_transitivity_overrides,
@@ -1018,29 +1016,10 @@ def _apply_dynamic_metadata_context(
     )
 
     # Trigger decision -----------------------------------------------------
-    static_token_count = _count_metadata_tokens(
-        static_columns_str, static_measures_str, static_rel_prop_str
-    )
-
-    should_run_dynamic = False
-    if mode == "dynamic":
-        should_run_dynamic = True
-    elif mode == "auto":
-        # Fast-path heuristic uses the edge_index, which requires an Ontology.
-        # Build lazily; only construct if either trigger might fire.
-        if static_token_count > cfg.metadata_context_max_tokens:
-            should_run_dynamic = True
-        elif graph_depth >= 3:
-            try:
-                ontology = get_shared_ontology(conn_params)
-                edge_index = EdgeIndex(ontology)
-                if should_skip_static_build(graph_depth, anchor, edge_index, cfg):
-                    should_run_dynamic = True
-            except Exception:
-                # Fast-path probe failed — keep static.
-                pass
-
-    if not should_run_dynamic:
+    # Only 'dynamic' runs the pipeline; 'static' is a strict no-op that returns
+    # the pre-computed strings unchanged. cfg.mode is already normalized by
+    # config_from_module (the retired 'auto' value is coerced to 'dynamic').
+    if cfg.mode != "dynamic":
         return static_columns_str, static_measures_str, static_rel_prop_str, None
 
     # Memoize the entire pipeline result for this (question, anchor, graph_depth)
@@ -1085,7 +1064,7 @@ def _apply_dynamic_metadata_context(
     )
     # Helper to apply overrides to whichever strings we end up returning. The
     # override is question-driven (depth requested by user) and should ALWAYS
-    # apply when the LLM emitted valid overrides — even on static-fallback paths.
+    # apply when the LLM emitted valid overrides.
     def _with_overrides(cols: str, meas: str, rels: str):
         if result.accepted_overrides:
             cols = apply_transitivity_overrides(cols, result.accepted_overrides)
@@ -1096,30 +1075,22 @@ def _apply_dynamic_metadata_context(
     import logging as _logging
     _log = _logging.getLogger(__name__)
 
-    # Only fall back to STATIC when the pipeline genuinely failed. The
-    # anchor-only, BFS-rescue, and depth-capped branches all own their own
-    # rebuilds (with possibly-empty validated_paths in the anchor-only case);
-    # only the last-resort 'empty' enum value — anchor with no neighbors at
-    # the depth cap — routes here. See .claude/plans/retry-fallback-redesign.md.
+    # In dynamic mode the pipeline NEVER reverts to the static (full,
+    # unfiltered) strings. Every no-validated-paths outcome — anchor-only,
+    # depth-capped, disconnected anchor ('empty'), or a handled pipeline error
+    # — flows through the rebuild below, which emits the anchor's
+    # columns/measures with a relationships block that is either empty (the
+    # prompt was NOT cascade-trimmed, so we trust the planner's "no joins")
+    # or a token-gated 1-hop safety net (the prompt WAS trimmed — see the
+    # depth-1 gate near the end). The only static path left is the call-site
+    # crash guard for an unexpected Python exception.
     resolved_by = (result.stats or {}).get("resolved_by")
-    if result.error or resolved_by == "empty":
-        # Pipeline failed or anchor was truly disconnected — fall back to
-        # static, but still apply any LLM-emitted overrides (depth
-        # requirements survive fallback).
+    if result.error:
         _log.warning(
-            "Dynamic metadata-context falling back to STATIC: error=%r "
-            "resolved_by=%r validated_paths=%d. SQL-gen will see the full "
-            "unfiltered relationships — expect a large prompt.",
+            "Dynamic metadata-context pipeline error (%r); emitting lean "
+            "anchor-only output (no relationships), NOT static.",
             result.error,
-            resolved_by,
-            len(result.validated_paths or []),
         )
-        cols, meas, rels = _with_overrides(
-            static_columns_str, static_measures_str, static_rel_prop_str
-        )
-        entry = (cols, meas, rels, result.effective_anchor)
-        ontology.set_filtered_cache(cache_key, entry)
-        return entry
 
     # Rebuild filtered strings ----------------------------------------------
     # ALL direct properties + measures for the anchor (flat columns/measures
@@ -1140,8 +1111,13 @@ def _apply_dynamic_metadata_context(
     if reanchored:
         from ..ontology_context.context_builder.rebuild import build_anchor_columns
         columns, measures = build_anchor_columns(ontology, effective_anchor_for_rebuild)
-    filtered_columns = filter_columns_for_concepts(columns, result.filtered_concepts)
-    filtered_measures = filter_columns_for_concepts(measures, result.filtered_concepts)
+    # Always keep the anchor's columns/measures. On a hard pipeline error
+    # filtered_concepts is empty; fall back to the anchor so its flat columns
+    # survive (an empty set would otherwise rely on filter_columns_for_concepts'
+    # pass-through behavior — make the intent explicit and future-proof).
+    concepts_for_filter = result.filtered_concepts or {effective_anchor_for_rebuild}
+    filtered_columns = filter_columns_for_concepts(columns, concepts_for_filter)
+    filtered_measures = filter_columns_for_concepts(measures, concepts_for_filter)
     filtered_relationships = build_relationships_from_paths(
         result.validated_paths, ontology, anchor=effective_anchor_for_rebuild,
     )
@@ -1234,24 +1210,11 @@ def _apply_dynamic_metadata_context(
         exclude_properties=exclude_properties,
     )
 
-    # Empty-rebuild safety net: with the constructor approach, the only way
-    # filtered_relationships is empty is if every validated path had zero
-    # segments (defense-in-depth; the upstream `not validated_paths` guard
-    # already covers the normal cases). Fall back to static if static had
-    # content to offer.
-    if not filtered_relationships and (static_rel_prop_str or "").strip():
-        _log.warning(
-            "Dynamic metadata-context falling back to STATIC (constructor "
-            "produced empty rebuild). validated_paths=%d path_rel_keys=%s",
-            len(result.validated_paths),
-            sorted({rel for _f, rel, _t in result.path_rel_keys}),
-        )
-        cols, meas, rels = _with_overrides(
-            static_columns_str, static_measures_str, static_rel_prop_str
-        )
-        entry = (cols, meas, rels, result.effective_anchor)
-        ontology.set_filtered_cache(cache_key, entry)
-        return entry
+    # Empty filtered_relationships is now an INTENDED output (anchor-only when
+    # the planner chose no joins, or the degraded 1-hop safety net dropped by
+    # the token gate below). It is NOT a failure — emit the anchor's
+    # columns/measures with an empty relationships block; never revert to
+    # static. (Previously a safety net reverted to static here.)
 
     # Apply LLM-chosen transitivity overrides to ALL three strings BEFORE the
     # hard-ceiling check. Bakes the requested depth into the SQL-gen prompt.
@@ -1327,25 +1290,38 @@ def _apply_dynamic_metadata_context(
                     soft_size, cfg.metadata_context_max_tokens,
                 )
 
-    # Per the "dynamic-over-budget is preferred over static-but-much-larger"
-    # principle (see .claude/plans/budget-knobs-cleanup.md): there is NO hard-
-    # revert to static when the rebuilt output is still over the soft cap
-    # after cascade + waypoint filter. Log a warning and emit the rebuilt
-    # strings as-is — the SQL-gen prompt is still SMALLER than the static
-    # alternative would have been on a graph_depth-3 ontology.
     new_token_count = _count_metadata_tokens(
         new_columns_str, new_measures_str, new_rel_prop_str
     )
     if new_token_count > cfg.metadata_context_max_tokens:
-        _log.warning(
-            "Dynamic metadata-context still over soft cap after cascade + "
-            "waypoint filter (%d > %d). Emitting rebuilt strings as-is — "
-            "no revert to static. resolved_by=%s, validated_paths=%d.",
-            new_token_count,
-            cfg.metadata_context_max_tokens,
-            (result.stats or {}).get("resolved_by"),
-            len(result.validated_paths or []),
-        )
+        if resolved_by == "depth_capped_static":
+            # Degraded no-paths safety net: the planner chose no joins from a
+            # cascade-trimmed prompt, so we synthesized a 1-hop slice. It does
+            # NOT fit the budget — drop the relationships entirely and keep
+            # only the anchor's columns/measures. (Still never static.)
+            _log.info(
+                "Dynamic metadata-context: degraded 1-hop safety net over "
+                "budget (%d > %d) — dropping relationships, keeping anchor "
+                "columns/measures.",
+                new_token_count, cfg.metadata_context_max_tokens,
+            )
+            new_rel_prop_str = ""
+        else:
+            # Principle: dynamic-over-budget is preferred over static-but-much-larger
+            # (see .claude/plans/budget-knobs-cleanup.md). There is NO hard-revert
+            # to static for the real-paths case when the rebuilt output is still
+            # over the soft cap after cascade + waypoint filter. Log and emit the
+            # rebuilt strings as-is — the SQL-gen prompt is still SMALLER than the
+            # static alternative.
+            _log.warning(
+                "Dynamic metadata-context still over soft cap after cascade + "
+                "waypoint filter (%d > %d). Emitting rebuilt strings as-is — "
+                "no revert to static. resolved_by=%s, validated_paths=%d.",
+                new_token_count,
+                cfg.metadata_context_max_tokens,
+                resolved_by,
+                len(result.validated_paths or []),
+            )
 
     entry = (
         new_columns_str,
@@ -1530,8 +1506,9 @@ def _build_sql_generation_context(
     # Schema gate: dtimbr only; non-dtimbr schemas (vtimbr views/cubes) skip.
     # Mode gate: 'static' is a strict no-op (initial release default).
     # Errors anywhere inside this block fall back to the static strings above.
-    _dynamic_mode = (metadata_context_mode or config.metadata_context_mode or 'static').lower()
-    if schema == 'dtimbr' and _dynamic_mode in ('auto', 'dynamic'):
+    from ..ontology_context import normalize_mode
+    _dynamic_mode = normalize_mode(metadata_context_mode or config.metadata_context_mode)
+    if schema == 'dtimbr' and _dynamic_mode == 'dynamic':
         try:
             (
                 _new_columns_str,

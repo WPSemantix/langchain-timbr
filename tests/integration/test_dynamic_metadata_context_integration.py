@@ -464,7 +464,7 @@ class TestEndToEndSqlGeneration:
         _bf_mod.run_step1_retry = _counting_retry
         try:
             chain = self._make_chain(config, config["timbr_ontology"], mode="dynamic")
-            chain.invoke({"prompt": SUPPLY_QUESTION})
+            chain.invoke({"prompt": "count order"})
         finally:
             _bf_mod.run_step1_filter = _orig_step1
             _bf_mod.run_step1_retry = _orig_retry
