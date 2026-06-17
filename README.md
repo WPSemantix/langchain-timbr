@@ -137,13 +137,12 @@ chain = ExecuteTimbrQueryChain(
 
 ## Metadata Context
 
-Metadata context is the slice of your ontology (columns, measures, relationships) that gets put into the Data Agent context. Bigger slices give the LLM more to work with but cost more tokens.
+Metadata context is the sub-graph of your ontology (concepts, properties, measures, relationships) that gets put into the Data Agent context. Bigger sub-graph give the LLM more to work with but cost more tokens.
 
 - **`METADATA_CONTEXT_MODE`**
-  - `static` (default) - Send the full pre-computed ontology slice. Fast, predictable, but can be large.
-  - `dynamic` - Identify the relevant concepts and paths and rebuilds a leaner slice. Smaller prompt, but adds more steps.
-  - `auto` - Start with static; switch to dynamic only when needed (the static slice exceeds the token budget, or the graph is deep enough that static would be too noisy). Best of both worlds for most workloads.
-- **`METADATA_CONTEXT_MAX_TOKENS`** - Token budget for the metadata slice. In `auto` mode this is what triggers the switch to dynamic. In `dynamic` mode it's a soft cap — the pipeline trims the rebuilt slice to fit, but emits over-budget rather than failing.
+  - `static` (default) - Send the pre-computed ontology sub-graph. Fast, predictable, but can be large.
+  - `dynamic` -  Identify the relevant concepts and paths and rebuilds a leaner sub-graph. Smaller prompt, but adds more steps.
+- **`METADATA_CONTEXT_MAX_TOKENS`** - Token budget for the metadata sub-graph. In `dynamic` mode it's a soft cap — the pipeline trims the rebuilt sub-graph to fit, but emits over-budget rather than failing.
 
 ### Graph Depth
 
@@ -163,7 +162,7 @@ chain = ExecuteTimbrQueryChain(
     token="your-token",
     ontology="your_ontology",
     concepts_list="organization",
-    metadata_context_mode="auto",
+    metadata_context_mode="dynamic",
     metadata_context_max_tokens=12000,
     graph_depth=1,
     max_graph_depth=3,
@@ -172,8 +171,8 @@ chain = ExecuteTimbrQueryChain(
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `metadata_context_mode` | `Optional[str]` | `"static"` | How the ontology slice is chosen (`static`, `dynamic`, `auto`) |
-| `metadata_context_max_tokens` | `Optional[int]` | `12000` | Token budget for the metadata slice (trigger in `auto`, soft cap in `dynamic`) |
+| `metadata_context_mode` | `Optional[str]` | `"static"` | How the ontology sub-graph is chosen (`static`, `dynamic`) |
+| `metadata_context_max_tokens` | `Optional[int]` | `12000` | Token budget for the metadata sub-graph (soft cap in `dynamic`) |
 | `graph_depth` | `Optional[int]` | `1` | Default relationship hops to traverse per query |
 | `max_graph_depth` | `Optional[int]` | `3` | Hard upper bound on hops the dynamic pipeline may explore |
 

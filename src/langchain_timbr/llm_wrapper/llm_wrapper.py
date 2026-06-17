@@ -47,11 +47,20 @@ class LlmWrapper(LLM):
       selected_llm_type = llm_type or config.llm_type
       selected_api_key = api_key or config.llm_api_key or config.llm_client_secret
       selected_model = model or config.llm_model
-      selected_additional_params = llm_params.pop('additional_params', None)
+      selected_additional_params = llm_params.pop('additional_params', llm_params)
 
       # Parse additional parameters from init params or config and merge with provided params
-      default_additional_params = parse_additional_params(selected_additional_params or
-                                                          config.llm_additional_params if config.llm_type == llm_type else {})
+      same_llm_type = (
+      config.llm_type is not None
+      and llm_type is not None
+      and config.llm_type.casefold() == llm_type.casefold()
+      )
+
+      default_additional_params = parse_additional_params(
+          selected_additional_params
+          if selected_additional_params
+          else config.llm_additional_params if same_llm_type else {}
+      )
       additional_llm_params = {**default_additional_params, **llm_params}
       
       # Validation: Ensure we have the required parameters

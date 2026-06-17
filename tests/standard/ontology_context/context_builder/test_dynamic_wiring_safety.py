@@ -1,13 +1,14 @@
 """Backward-compatibility regression for Plan 2 wiring.
 
 Ensures that ``_apply_dynamic_metadata_context`` returns the static
-strings unchanged in every safe scenario:
+strings unchanged in the only safe no-op scenario:
   - schema gate (non-dtimbr) — covered upstream by _build_sql_generation_context
   - mode='static' — returns static strings, never touches Ontology / LLM
-  - mode='auto' under-threshold + low graph_depth — returns static strings
 
-Also exercises the fallback paths:
-  - dynamic pipeline raising → returns static strings (try/except guard)
+And locks the new dynamic-never-static contract: in ``dynamic`` mode the
+wiring layer no longer reverts to the full static strings on
+error / empty / empty-rebuild outcomes (those now emit a lean anchor-only
+slice). 'auto' was retired and is coerced to 'dynamic' upstream.
 """
 
 from __future__ import annotations
@@ -43,30 +44,6 @@ class TestStaticModeIsNoOp:
             static_measures_str=STATIC_MEASURES,
             static_rel_prop_str=STATIC_RELS,
             llm=None,         # Never used
-            config_overrides={},
-        )
-        assert a == STATIC_COLUMNS
-        assert b == STATIC_MEASURES
-        assert c == STATIC_RELS
-
-
-class TestAutoModeUnderThreshold:
-    def test_auto_mode_low_tokens_returns_static(self):
-        # Static strings are tiny → well under default 12K threshold AND graph_depth<3.
-        a, b, c, anchor = _apply_dynamic_metadata_context(
-            mode="auto",
-            question="any",
-            anchor="x",
-            conn_params={},   # Won't be touched (no trigger)
-            graph_depth=1,
-            columns=[],
-            measures=[],
-            tags=None,
-            exclude_properties=None,
-            static_columns_str=STATIC_COLUMNS,
-            static_measures_str=STATIC_MEASURES,
-            static_rel_prop_str=STATIC_RELS,
-            llm=None,
             config_overrides={},
         )
         assert a == STATIC_COLUMNS
@@ -130,35 +107,173 @@ class TestCountMetadataTokens:
         assert n >= 1
 
 
-class TestStaticFallbackGate:
-    """Locks the new wiring-layer gate from retry-fallback-redesign.md:
-    STATIC fallback fires only on ``result.error`` or
-    ``resolved_by == 'empty'``. Anchor-only / BFS-rescue / depth-capped
-    outcomes (which may carry empty validated_paths intentionally) MUST
-    bypass the fallback and reach the rebuild block."""
+class TestNoStaticRevertInDynamicMode:
+    """Locks the dynamic-never-static contract. In ``dynamic`` mode the wiring
+    layer no longer reverts to the full static strings on error / empty /
+    empty-rebuild outcomes — those emit a lean anchor-only slice instead."""
 
-    def test_gate_predicate_is_resolved_by_empty(self):
-        """Inspect the source to confirm the gate checks resolved_by, not
-        the old `not result.validated_paths` predicate. Locks against
-        silent regressions to the pre-redesign behavior."""
+    def test_removed_static_fallback_predicates_gone_from_source(self):
+        # The two removed static-fallback sites had these signature strings.
+        # Their absence locks against a silent regression.
         import inspect
         src = inspect.getsource(_apply_dynamic_metadata_context)
-        # Old predicate must be GONE from the gate position.
-        assert "not result.validated_paths" not in src, (
-            "Wiring layer still treats empty validated_paths as failure — "
-            "this regresses the anchor-only / BFS-rescue / depth-capped "
-            "branches into the static fallback."
+        assert 'resolved_by == "empty"' not in src
+        assert "produced empty rebuild" not in src
+        assert "falling back to STATIC" not in src
+
+
+# --- Behavioral tests for the no-paths / token-gate routing -----------------
+
+_ANCHOR_COLUMNS = [{"name": "acol", "col_name": "acol", "data_type": "varchar"}]
+_ANCHOR_MEASURES = [{"name": "ameas", "col_name": "ameas", "data_type": "bigint"}]
+_STATIC_SENTINEL = "STATIC_SENTINEL_STRING"
+
+
+class _FakeOntology:
+    def __init__(self):
+        self._cache = {}
+
+    def get_filtered_cache(self, key):
+        return self._cache.get(key)
+
+    def set_filtered_cache(self, key, val):
+        self._cache[key] = val
+
+
+def _run_dynamic(result, *, config_overrides=None, rels_stub=None):
+    import contextlib
+    from unittest.mock import patch
+
+    onto = _FakeOntology()
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(patch(
+            "langchain_timbr.ontology_context.get_shared_ontology",
+            return_value=onto,
+        ))
+        stack.enter_context(patch(
+            "langchain_timbr.ontology_context.build_filtered_metadata",
+            return_value=result,
+        ))
+        if rels_stub is not None:
+            stack.enter_context(patch(
+                "langchain_timbr.ontology_context.context_builder.rebuild."
+                "build_relationships_from_paths",
+                return_value=rels_stub,
+            ))
+        return _apply_dynamic_metadata_context(
+            mode="dynamic",
+            question="q",
+            anchor="a",
+            conn_params={"x": 1},
+            graph_depth=1,
+            columns=list(_ANCHOR_COLUMNS),
+            measures=list(_ANCHOR_MEASURES),
+            tags={},
+            exclude_properties=None,
+            static_columns_str=_STATIC_SENTINEL,
+            static_measures_str=_STATIC_SENTINEL,
+            static_rel_prop_str=_STATIC_SENTINEL,
+            llm=None,
+            config_overrides=config_overrides or {},
+            tc_annotations=None,
+            tc_topup=None,
+            tc_seen_names=None,
+            properties_desc=None,
         )
-        # New predicate must be present.
-        assert 'resolved_by == "empty"' in src
-        # And the resolved_by variable must come from result.stats.
-        assert "result.stats" in src
 
-    def test_no_static_fallback_for_anchor_only_outcome(self):
-        """Same idea, narrower: confirm the warning log message lists
-        resolved_by so operators can tell anchor-only from genuine empty."""
-        import inspect
-        src = inspect.getsource(_apply_dynamic_metadata_context)
-        # The warning that fires on genuine empty must surface resolved_by
-        # so operators know WHY they got static (not just THAT they did).
-        assert "resolved_by=%r" in src
+
+def _result(**kw):
+    from langchain_timbr.ontology_context import DynamicMetadataResult
+    base = dict(
+        filtered_concepts={"a"},
+        path_rel_keys=set(),
+        validated_paths=[],
+        compact_ddl="schema with full visibility",
+    )
+    base.update(kw)
+    return DynamicMetadataResult(**base)
+
+
+_DEGRADED_DDL = "schema ... props: [hidden by cascade — assume present] ..."
+_DEPTH1_RELS = {
+    "rel1": {
+        "columns": [{"name": "rel1[c].x", "col_name": "x", "data_type": "varchar"}],
+        "measures": [],
+        "description": "",
+    }
+}
+
+
+class TestNoPathsRouting:
+    def test_hard_error_emits_anchor_columns_not_static(self):
+        cols, meas, rels, anchor = _run_dynamic(
+            _result(filtered_concepts=set(), compact_ddl="", error="boom")
+        )
+        assert "acol" in cols          # anchor columns rebuilt
+        assert _STATIC_SENTINEL not in cols
+        assert rels == ""              # no relationships, NOT the static rels
+
+    def test_anchor_only_not_degraded_emits_no_relationships(self):
+        cols, meas, rels, _ = _run_dynamic(
+            _result(stats={"resolved_by": "llm_paths_anchor_only"})
+        )
+        assert "acol" in cols
+        assert _STATIC_SENTINEL not in cols
+        assert rels == ""
+
+    def test_empty_resolved_by_emits_anchor_only_not_static(self):
+        cols, meas, rels, _ = _run_dynamic(
+            _result(stats={"resolved_by": "empty"})
+        )
+        assert "acol" in cols
+        assert _STATIC_SENTINEL not in cols
+        assert rels == ""
+
+
+class TestDegradedDepth1TokenGate:
+    def test_under_budget_includes_relationships(self):
+        cols, meas, rels, _ = _run_dynamic(
+            _result(compact_ddl=_DEGRADED_DDL,
+                    stats={"resolved_by": "depth_capped_static"}),
+            rels_stub=_DEPTH1_RELS,
+        )
+        assert "rel1" in rels          # 1-hop safety net included
+        assert _STATIC_SENTINEL not in rels
+
+    def test_over_budget_drops_relationships(self):
+        cols, meas, rels, _ = _run_dynamic(
+            _result(compact_ddl=_DEGRADED_DDL,
+                    stats={"resolved_by": "depth_capped_static"}),
+            rels_stub=_DEPTH1_RELS,
+            config_overrides={"metadata_context_max_tokens": 1},
+        )
+        assert rels == ""              # dropped — NOT reverted to static
+        assert _STATIC_SENTINEL not in rels
+        assert "acol" in cols          # anchor columns still present
+
+    def test_token_gate_boundary_is_strict_greater_than(self):
+        # Render once under a generous budget to learn the exact token count.
+        cols, meas, rels, _ = _run_dynamic(
+            _result(compact_ddl=_DEGRADED_DDL,
+                    stats={"resolved_by": "depth_capped_static"}),
+            rels_stub=_DEPTH1_RELS,
+        )
+        n = _count_metadata_tokens(cols, meas, rels)
+
+        # budget == n → kept (gate is strict ``>``)
+        _, _, rels_eq, _ = _run_dynamic(
+            _result(compact_ddl=_DEGRADED_DDL,
+                    stats={"resolved_by": "depth_capped_static"}),
+            rels_stub=_DEPTH1_RELS,
+            config_overrides={"metadata_context_max_tokens": n},
+        )
+        assert "rel1" in rels_eq
+
+        # budget == n-1 → dropped
+        _, _, rels_lt, _ = _run_dynamic(
+            _result(compact_ddl=_DEGRADED_DDL,
+                    stats={"resolved_by": "depth_capped_static"}),
+            rels_stub=_DEPTH1_RELS,
+            config_overrides={"metadata_context_max_tokens": max(1, n - 1)},
+        )
+        assert rels_lt == ""

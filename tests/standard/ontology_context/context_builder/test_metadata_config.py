@@ -7,6 +7,7 @@ import pytest
 from langchain_timbr.ontology_context.context_builder.metadata_config import (
     MetadataContextConfig,
     config_from_module,
+    normalize_mode,
 )
 
 
@@ -33,6 +34,12 @@ class TestMetadataContextConfig:
     def test_invalid_mode_raises(self):
         with pytest.raises(ValueError):
             MetadataContextConfig(mode="invalid")  # type: ignore[arg-type]
+
+    def test_auto_mode_rejected_by_dataclass(self):
+        # 'auto' was retired — the dataclass no longer accepts it. Coercion to
+        # 'dynamic' happens upstream in normalize_mode / config_from_module.
+        with pytest.raises(ValueError):
+            MetadataContextConfig(mode="auto")  # type: ignore[arg-type]
 
     def test_ddl_hard_under_soft_raises(self):
         with pytest.raises(ValueError):
@@ -62,12 +69,33 @@ class TestConfigFromModule:
         assert cfg.metadata_context_max_tokens == 8_000
 
     def test_none_overrides_ignored(self):
-        cfg = config_from_module(mode="auto", metadata_context_max_tokens=None)
-        assert cfg.mode == "auto"
+        cfg = config_from_module(mode="dynamic", metadata_context_max_tokens=None)
+        assert cfg.mode == "dynamic"
         # None overrides fall back to module/config default.
         assert cfg.metadata_context_max_tokens == 12_000
 
     def test_unknown_keys_silently_ignored(self):
         # Defensive: orchestrators pass mixed kwargs; unknown keys must not raise.
-        cfg = config_from_module(mode="auto", banana="yellow")  # type: ignore[arg-type]
-        assert cfg.mode == "auto"
+        cfg = config_from_module(mode="dynamic", banana="yellow")  # type: ignore[arg-type]
+        assert cfg.mode == "dynamic"
+
+    def test_auto_mode_coerced_to_dynamic(self):
+        # 'auto' is deprecated; config_from_module coerces it to 'dynamic' and
+        # emits a DeprecationWarning.
+        with pytest.warns(DeprecationWarning):
+            cfg = config_from_module(mode="auto")  # type: ignore[arg-type]
+        assert cfg.mode == "dynamic"
+
+
+class TestNormalizeMode:
+    def test_auto_coerced_to_dynamic_with_warning(self):
+        with pytest.warns(DeprecationWarning):
+            assert normalize_mode("auto") == "dynamic"
+
+    def test_passthrough_values(self):
+        assert normalize_mode("static") == "static"
+        assert normalize_mode("dynamic") == "dynamic"
+        assert normalize_mode("STATIC") == "static"
+
+    def test_none_defaults_to_static(self):
+        assert normalize_mode(None) == "static"
