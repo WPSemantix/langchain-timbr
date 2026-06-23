@@ -84,10 +84,77 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`LLM_SCOPE`** - LLM provider authentication scope
 
 
+## Authentication & User Context
+
+All chains, agents, and nodes accept the same authentication and user-context parameters: `token`, `is_jwt`, `jwt_tenant_id`, and `conn_params`.
+
+### JWT authentication
+
+To authenticate with a JWT access token (for example, one obtained from Azure AD / OAuth), pass the token as `token` and set `is_jwt=True`. In multi-tenant environments also pass `jwt_tenant_id` (these can also be set via the `IS_JWT` and `JWT_TENANT_ID` environment variables):
+
+```python
+from langchain_timbr import create_timbr_sql_agent
+
+agent_executor = create_timbr_sql_agent(
+    llm=llm,
+    url="https://your-timbr-server",
+    token="eyJhbGciOiJSUzI1NiIsInR5cCI6...",  # the JWT access token
+    is_jwt=True,                              # treat the token as a JWT
+    jwt_tenant_id="tenant-5",                 # optional: for multi-tenant environments
+    ontology="your_ontology",
+)
+
+result = agent_executor.invoke("What are the total sales for last month?")
+```
+
+### Impersonating a user
+
+To run queries on behalf of another Timbr user (using that user's permissions), pass the `x-api-impersonate-user` header through `conn_params`. The value is the username or email of the user to impersonate:
+
+```python
+from langchain_timbr import ExecuteTimbrQueryChain
+
+chain = ExecuteTimbrQueryChain(
+    llm=llm,
+    url="https://your-timbr-server",
+    token="your-token",
+    ontology="your_ontology",
+    conn_params={"x-api-impersonate-user": "user@example.com"},
+)
+
+result = chain.invoke({"prompt": "What are the total sales for last month?"})
+```
+
+`conn_params` accepts any extra Timbr connection headers and is supported on every chain, agent, and node. It can be combined with JWT authentication.
+
+
 ## Conversation Memory
 
 - **`TIMBR_ENABLE_MEMORY`** - Enable conversation memory for follow-up question detection (true/false, default: false)
 - **`TIMBR_MEMORY_WINDOW_SIZE`** - Number of past conversation turns to consider when detecting follow-ups (default: 3)
+
+Enable memory (via `TIMBR_ENABLE_MEMORY=true` or by passing `enable_memory=True`) and call the agent with the **same** `conversation_id` across turns so follow-up questions are resolved against the prior context:
+
+```python
+from langchain_timbr import create_timbr_sql_agent
+
+agent_executor = create_timbr_sql_agent(
+    llm=llm,
+    url="https://your-timbr-server",
+    token="your-token",
+    ontology="your_ontology",
+    enable_memory=True,             # or set TIMBR_ENABLE_MEMORY=true
+    conversation_id="conv-123",     # reuse the same id across turns
+)
+
+# First turn
+agent_executor.invoke("What were the total sales last month?")
+
+# Follow-up turn — resolved against the previous question using the same conversation_id
+agent_executor.invoke("And how does that compare to the previous month?")
+```
+
+See the [`conversation_id` parameter](#monitoring--history) for grouping multiple agent calls under one conversation.
 
 
 ## Technical Context
