@@ -33,7 +33,7 @@ dependencies = [
   "langgraph~=1.2.5",
   "langgraph-checkpoint~=4.1.0",
   "cryptography~=48.0.1",
-  "pyOpenSSL~=26.3.0",
+  "pyOpenSSL~=26.2.0",
   "transformers~=5.0.0",
   "uuid6~=2025.0.1",
   "rapidfuzz~=3.12",
@@ -63,6 +63,7 @@ vertex_ai = [
   "google-cloud-aiplatform==1.140",
   "google-generativeai~=0.8.6",
   "langchain-google-vertexai~=3.2.4",
+  "pyarrow~=23.0.1",
 ]
 snowflake = [
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
@@ -74,6 +75,7 @@ snowflake = [
 databricks = [
   "databricks-langchain~=0.7.1",
   "databricks-sdk~=0.64.0",
+  "pyarrow~=23.0.1",
 ]
 bedrock = [
   "langchain-aws~=1.2.5",
@@ -107,6 +109,7 @@ all = [
   "openai~=2.26.0",
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
   "opentelemetry-sdk~=1.38.0; python_version<'3.12'",
+  "pyarrow~=23.0.1",
   "pytest~=9.0.3",
   "pytest-rerunfailures~=15.0",
   "snowflake~=1.8.0",
