@@ -27,12 +27,14 @@ dependencies = [
   "tiktoken~=0.8.0",
   "uvicorn~=0.35.0",
   "pytimbr-api~=2.1.1",
-  "langchain~=1.2.10",
-  "langchain-core~=1.3.3",
+  "pytimbr~=2.1.1",
+  "langchain~=1.3.11",
+  "langchain-core~=1.4.7",
   "langchain-community~=0.3.30",
-  "langgraph~=1.1.0",
-  "langgraph-checkpoint~=4.0.0",
-  "cryptography~=46.0.7",
+  "langgraph~=1.2.5",
+  "langgraph-checkpoint~=4.1.0",
+  "cryptography~=49.0.0",
+  "pyOpenSSL~=26.3.0",
   "transformers~=5.0.0",
   "uuid6~=2025.0.1",
   "rapidfuzz~=3.12",
@@ -61,14 +63,14 @@ google = [
 vertex_ai = [
   "google-cloud-aiplatform==1.140",
   "google-generativeai~=0.8.6",
-  "langchain-google-vertexai~=2.1.2",
+  "langchain-google-vertexai~=3.2.4",
 ]
 snowflake = [
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
   "opentelemetry-sdk~=1.38.0; python_version<'3.12'",
   "snowflake~=1.8.0",
   "snowflake-snowpark-python~=1.45.0",
-  "snowflake-connector-python[pandas]~=4.3.0",
+  "snowflake-connector-python[pandas]~=4.6.0",
 ]
 databricks = [
   "databricks-langchain~=0.7.1",
@@ -83,7 +85,9 @@ tracing = [
 
 # Development and testing
 dev = [
+  "langchain-tests~=1.1.9",
   "pytest~=9.0.3",
+  "pytest-rerunfailures~=15.0",
 ]
 
 # All optional dependencies
@@ -92,21 +96,23 @@ all = [
   "azure-identity~=1.25.0",
   "databricks-langchain~=0.7.1",
   "databricks-sdk~=0.64.0",
-  "google-generativeai~=0.8.4",
+  "google-generativeai~=0.8.6",
   "jiter~=0.11.1",
   "langchain-anthropic~=1.3.3",
   "langchain-aws~=1.2.5",
   "langchain-google-genai~=4.2.0",
-  "langchain-google-vertexai~=2.1.2",
+  "langchain-google-vertexai~=3.2.4",
   "langchain-openai~=1.1.14",
+  "langchain-tests~=1.1.9",
   "langsmith>=0.8.0",
   "openai~=2.26.0",
   "opentelemetry-api~=1.38.0; python_version<'3.12'",
   "opentelemetry-sdk~=1.38.0; python_version<'3.12'",
   "pytest~=9.0.3",
+  "pytest-rerunfailures~=15.0",
   "snowflake~=1.8.0",
   "snowflake-snowpark-python~=1.45.0",
-  "snowflake-connector-python[pandas]~=4.3.0",
+  "snowflake-connector-python[pandas]~=4.6.0",
 ]
 
 [project.urls]
