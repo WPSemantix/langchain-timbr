@@ -27,7 +27,6 @@ dependencies = [
   "tiktoken~=0.8.0",
   "uvicorn~=0.35.0",
   "pytimbr-api~=2.1.1",
-  "pytimbr~=2.1.1",
   "langchain~=1.3.11",
   "langchain-core~=1.4.7",
   "langchain-community~=0.3.30",
