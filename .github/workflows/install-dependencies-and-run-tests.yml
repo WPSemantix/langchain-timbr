@@ -45,7 +45,7 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --reruns 3 --maxfail 1 --disable-warnings -q
+        python -m pytest tests/standard -v --reruns 3 --maxfail 1 --disable-warnings -q
 
   test-python-311:
     runs-on: ubuntu-latest
@@ -67,7 +67,7 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --maxfail 1 --reruns 3 --disable-warnings -q
+        python -m pytest tests/standard -v --maxfail 1 --reruns 3 --disable-warnings -q
 
   test-python-312:
     runs-on: ubuntu-latest
@@ -89,7 +89,7 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --reruns 3 --maxfail 1 --disable-warnings -q
+        python -m pytest tests/standard -v --reruns 3 --maxfail 1 --disable-warnings -q
 
   test-python-313:
     runs-on: ubuntu-latest
@@ -111,4 +111,4 @@ jobs:
         
     - name: Run tests
       run: |
-        python -m pytest -v --reruns 3 --maxfail 1 --disable-warnings -q
+        python -m pytest tests/standard -v --reruns 3 --maxfail 1 --disable-warnings -q
