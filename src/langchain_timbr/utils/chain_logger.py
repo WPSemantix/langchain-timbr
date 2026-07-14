@@ -38,6 +38,7 @@ class AgentLogContext:
     conversation_id: Optional[str] = None
     is_follow_up: Optional[bool] = None
     parent_query_id: Optional[str] = None
+    verify_ssl: bool = True
 
 
 def new_query_id() -> str:
@@ -63,15 +64,15 @@ def _clean(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in payload.items() if v is not None}
 
 
-def _safe_post(url: str, token: str, endpoint_path: str, payload: Dict[str, Any]) -> None:
+def _safe_post(url: str, token: str, endpoint_path: str, payload: Dict[str, Any], verify_ssl: bool = True) -> None:
     """Fire-and-forget HTTP POST. Never raises; logs failures at WARNING level."""
     try:
         endpoint = f"{url.rstrip('/')}{endpoint_path}"
-        response = requests.post(endpoint, json=payload, auth=("token", token), timeout=5)
+        response = requests.post(endpoint, json=payload, auth=("token", token), timeout=5, verify=verify_ssl)
         if not response.ok:
             logger.warning(
                 "Chain log request to %s returned %s: %s",
-                endpoint_path, response.status_code, response.text[:200],
+                endpoint_path, response.status_code, response.text[:1000],
             )
     except Exception as exc:
         logger.warning("Chain log request to %s failed: %s", endpoint_path, exc)
@@ -98,7 +99,7 @@ def log_agent_start(
         "concept":                ctx.concept,
         "conversation_id":        ctx.conversation_id,
         "additional_options":     additional_options,
-    }))
+    }), verify_ssl=ctx.verify_ssl)
 
 
 def log_agent_step(ctx: AgentLogContext) -> None:
@@ -111,7 +112,7 @@ def log_agent_step(ctx: AgentLogContext) -> None:
         "retry_count":            ctx.retry_count,
         "no_results_retry_count": ctx.no_results_retry_count,
         "concept":                ctx.concept,
-    }))
+    }), verify_ssl=ctx.verify_ssl)
 
 
 def log_agent_history(
@@ -199,7 +200,7 @@ def log_agent_history(
     if has_results and results is not None:
         post_params["results"] = results
 
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean(post_params))
+    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean(post_params), verify_ssl=ctx.verify_ssl)
 
 
 def log_chain_trace(
@@ -258,7 +259,7 @@ def log_chain_trace(
     })
     threading.Thread(
         target=_safe_post,
-        args=(ctx.url, ctx.token, "/timbr-server/log_agent/trace", payload),
+        args=(ctx.url, ctx.token, "/timbr-server/log_agent/trace", payload, ctx.verify_ssl),
         daemon=True,
     ).start()
 

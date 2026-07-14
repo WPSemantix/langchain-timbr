@@ -5,7 +5,8 @@ from langchain_core.language_models.llms import LLM
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
-from ..utils.timbr_utils import run_query, validate_sql, build_server_url
+from ..utils.timbr_utils import run_query, validate_sql, build_server_url, _get_ontology_version
+from .. import ontology_metadata
 from ..utils.timbr_llm_utils import generate_sql
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -61,6 +62,7 @@ class ExecuteTimbrQueryChain(Chain):
         technical_context_properties: Optional[Union[list[str], str]] = None,
         metadata_context_mode: Optional[str] = config.metadata_context_mode,
         metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
+        enable_ontology_questions: Optional[bool] = config.enable_ontology_questions,
         **kwargs,
     ):
         """
@@ -171,7 +173,7 @@ class ExecuteTimbrQueryChain(Chain):
                 else to_integer(max_graph_depth)
             )
             self._note = agent_options.get("note") if "note" in agent_options else ''
-            if note:
+            if note and note != self._note:
                 self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_reasoning = to_boolean(agent_options.get("enable_reasoning")) if "enable_reasoning" in agent_options else config.enable_reasoning
             if enable_reasoning is not None and enable_reasoning != self._enable_reasoning:
@@ -196,6 +198,7 @@ class ExecuteTimbrQueryChain(Chain):
                 if "metadata_context_max_tokens" in agent_options
                 else to_integer(metadata_context_max_tokens)
             )
+            self._enable_ontology_questions = to_boolean(agent_options.get("enable_ontology_questions")) if "enable_ontology_questions" in agent_options else to_boolean(enable_ontology_questions)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -225,6 +228,7 @@ class ExecuteTimbrQueryChain(Chain):
             self._technical_context_properties = parse_list(technical_context_properties)
             self._metadata_context_mode = metadata_context_mode
             self._metadata_context_max_tokens = to_integer(metadata_context_max_tokens)
+            self._enable_ontology_questions = to_boolean(enable_ontology_questions)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -291,6 +295,8 @@ class ExecuteTimbrQueryChain(Chain):
             raise ValueError("Timbr SQL or user prompt is required for executing the chain.")
 
         err_txt = f"\nThe original SQL (`{sql}`) was invalid with error: {error}. Please generate a corrected query." if error else ""
+        from ..kbclient import fetch_rules
+        kb_rules = fetch_rules(conn_params, agent=self._agent, ontology=self._ontology)
         generate_res = generate_sql(
             prompt,
             self._llm,
@@ -319,6 +325,8 @@ class ExecuteTimbrQueryChain(Chain):
             technical_context_properties=self._technical_context_properties,
             metadata_context_mode=self._metadata_context_mode,
             metadata_context_max_tokens=self._metadata_context_max_tokens,
+            enable_ontology_questions=self._enable_ontology_questions,
+            rules=kb_rules,
         )
 
         return generate_res
@@ -371,7 +379,7 @@ class ExecuteTimbrQueryChain(Chain):
 
         # ---- memory resolution (once per top-level invocation) ----
         _chain_ctx = self._received_chain_context
-        if _chain_ctx.get("memory") is None and self._enable_memory:
+        if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
             _chain_ctx["memory"] = resolve_memory(
                 llm=self._llm,
                 conn_params=self._get_conn_params(),
@@ -380,6 +388,8 @@ class ExecuteTimbrQueryChain(Chain):
                 enable_memory=self._enable_memory,
                 memory_window_size=self._memory_window_size,
                 concept_names=self._concepts_list,
+                agent=self._agent,
+                ontology=self._ontology,
             )
         memory_ctx = _chain_ctx.get("memory")
         memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
@@ -401,6 +411,7 @@ class ExecuteTimbrQueryChain(Chain):
                 enable_trace=self._enable_trace,
                 is_delegated=False,
                 conversation_id=conversation_id or _query_id,
+                verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, ontology_name, schema_name)
         elif _log_ctx is not None:
@@ -473,12 +484,24 @@ class ExecuteTimbrQueryChain(Chain):
                     _log_ctx.current_step = "executing_query"
                     log_agent_step(_log_ctx)
 
-                rows = run_query(
-                    sql,
-                    conn_params,
-                    llm_prompt=prompt,
-                    use_query_limit=True,
-                ) if is_sql_valid and is_sql_not_tried else []
+                if ontology_metadata.is_metadata_concept(concept_name):
+                    # Metadata concept: expand the sentinel query into the full sys_* set and
+                    # join the results into a flat, section-tagged rows[] for the answer chain.
+                    rows = ontology_metadata.fetch_metadata_rows(
+                        ontology_name,
+                        ontology_metadata.scope_of(prompt or ""),
+                        run_sql=lambda s: run_query(s, conn_params, use_query_limit=False),
+                        get_version=lambda o: _get_ontology_version(conn_params),
+                        cache=None,
+                    )
+                    is_infered = True
+                else:
+                    rows = run_query(
+                        sql,
+                        conn_params,
+                        llm_prompt=prompt,
+                        use_query_limit=True,
+                    ) if is_sql_valid and is_sql_not_tried else []
 
                 if iteration < self._no_results_max_retries:
                     # If no rows are returned and we should infer the result, we will try to re-generate the SQL query

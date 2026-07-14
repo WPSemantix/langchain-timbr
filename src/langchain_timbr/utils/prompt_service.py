@@ -32,6 +32,7 @@ class PromptService:
             self.is_jwt = conn_params.get('is_jwt', is_jwt)
             self.jwt_tenant_id = conn_params.get('jwt_tenant_id') or default_jwt_tenant_id
             self.timeout = conn_params.get('timeout') or llm_timeout
+            self.verify_ssl = conn_params.get('verify_ssl', True)
         else:
             # Fallback to kwargs for backward compatibility
             url_value = kwargs.get('url') or default_url
@@ -40,7 +41,9 @@ class PromptService:
             self.is_jwt = kwargs.get('is_jwt', is_jwt)
             self.jwt_tenant_id = kwargs.get('jwt_tenant_id') or default_jwt_tenant_id
             self.timeout = kwargs.get('timeout') or llm_timeout
+            self.verify_ssl = kwargs.get('verify_ssl', True)
 
+        self.reasoning = kwargs.get('reasoning', False)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests"""
@@ -140,7 +143,8 @@ class PromptService:
             response = requests.post(
                 url,
                 headers=headers,
-                timeout=self.timeout
+                timeout=self.timeout,
+                verify=self.verify_ssl,
             )
             response.raise_for_status()
             
@@ -181,8 +185,12 @@ class PromptService:
         Returns:
             ChatPromptTemplate object
         """
-        return self._fetch_template("llm_prompts/generate_sql")
-    
+        url = "llm_prompts/generate_sql"
+
+        if self.reasoning:
+            url += "?reasoning=true"
+
+        return self._fetch_template(url)
     
     def get_generate_sql_reasoning_template(self) -> ChatPromptTemplate:
         """
@@ -222,6 +230,16 @@ class PromptService:
             ChatPromptTemplate object
         """
         return self._fetch_template("llm_prompts/memory_classifier")
+    
+    
+    def get_memory_kb_classifier_template(self) -> ChatPromptTemplate:
+        """
+        Get combined memory + knowledge-base classifier template from API service (cached)
+        
+        Returns:
+            ChatPromptTemplate object
+        """
+        return self._fetch_template("llm_prompts/memory_kb_classifier")
     
     
     def clear_cache(self):
@@ -279,7 +297,8 @@ def get_determine_concept_prompt_template(
 
 
 def get_generate_sql_prompt_template(
-    conn_params: Optional[dict] = None
+    conn_params: Optional[dict] = None,
+    reasoning: bool = False
 ) -> PromptTemplateWrapper:
     """
     Get generate SQL prompt template wrapper
@@ -290,7 +309,7 @@ def get_generate_sql_prompt_template(
     Returns:
         PromptTemplateWrapper for generate SQL
     """
-    prompt_service = PromptService(conn_params=conn_params)
+    prompt_service = PromptService(conn_params=conn_params, reasoning=reasoning)
     return PromptTemplateWrapper(prompt_service, "get_generate_sql_template")
 
 
@@ -356,6 +375,22 @@ def get_memory_classifier_prompt_template(
     """
     prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_memory_classifier_template")
+
+
+def get_memory_kb_classifier_prompt_template(
+    conn_params: Optional[dict] = None
+) -> PromptTemplateWrapper:
+    """
+    Get combined memory + knowledge-base classifier prompt template wrapper
+
+    Args:
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
+    Returns:
+        PromptTemplateWrapper for the combined memory + KB classifier
+    """
+    prompt_service = PromptService(conn_params=conn_params)
+    return PromptTemplateWrapper(prompt_service, "get_memory_kb_classifier_template")
 
 
 # Global prompt service instance (updated signature)

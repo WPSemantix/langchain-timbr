@@ -65,6 +65,7 @@ class GenerateAnswerChain(Chain):
         technical_context_properties: Optional[Union[list[str], str]] = None,
         metadata_context_mode: Optional[str] = config.metadata_context_mode,
         metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
+        enable_ontology_questions: Optional[bool] = config.enable_ontology_questions,
         **kwargs,
     ):
         """
@@ -153,7 +154,7 @@ class GenerateAnswerChain(Chain):
             self._concept = agent_options.get("concept") if "concept" in agent_options else concept
 
             self._note = agent_options.get("note") if "note" in agent_options else ''
-            if note:
+            if note and note != self._note:
                 self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
             self._enable_history = to_boolean(agent_options.get("enable_history")) if "enable_history" in agent_options else to_boolean(enable_history)
@@ -174,6 +175,7 @@ class GenerateAnswerChain(Chain):
                 if "metadata_context_max_tokens" in agent_options
                 else to_integer(metadata_context_max_tokens)
             )
+            self._enable_ontology_questions = to_boolean(agent_options.get("enable_ontology_questions")) if "enable_ontology_questions" in agent_options else to_boolean(enable_ontology_questions)
         else:
             self._note = note
             self._enable_trace = to_boolean(enable_trace)
@@ -190,6 +192,7 @@ class GenerateAnswerChain(Chain):
             self._technical_context_properties = parse_list(technical_context_properties)
             self._metadata_context_mode = metadata_context_mode
             self._metadata_context_max_tokens = to_integer(metadata_context_max_tokens)
+            self._enable_ontology_questions = to_boolean(enable_ontology_questions)
 
         self._enable_logging = self._enable_trace or self._enable_history
         self._conversation_id = conversation_id
@@ -212,7 +215,9 @@ class GenerateAnswerChain(Chain):
             max_limit=to_integer(max_limit),
             retry_if_no_results=to_boolean(retry_if_no_results),
             no_results_max_retries=to_integer(no_results_max_retries),
-            note=self._note,
+            # Pass the raw user note (not the agent+user merge) — the child re-reads the
+            # agent note via agent=agent and would otherwise duplicate it.
+            note=note,
             db_is_case_sensitive=to_boolean(db_is_case_sensitive),
             graph_depth=to_integer(graph_depth),
             max_graph_depth=to_integer(max_graph_depth),
@@ -234,6 +239,7 @@ class GenerateAnswerChain(Chain):
             technical_context_properties=self._technical_context_properties,
             metadata_context_mode=self._metadata_context_mode,
             metadata_context_max_tokens=self._metadata_context_max_tokens,
+            enable_ontology_questions=self._enable_ontology_questions,
         )
 
 
@@ -319,12 +325,13 @@ class GenerateAnswerChain(Chain):
                 ontology=self._ontology,
                 schema=self._schema,
                 concept=self._concept,
+                verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, _log_ctx.ontology, _log_ctx.schema)
 
         # ---- memory resolution (once per top-level invocation) ----
         _chain_ctx = self._received_chain_context
-        if _chain_ctx.get("memory") is None and self._enable_memory:
+        if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
             _chain_ctx["memory"] = resolve_memory(
                 llm=self._llm,
                 conn_params=self._get_conn_params(),
@@ -333,6 +340,8 @@ class GenerateAnswerChain(Chain):
                 enable_memory=self._enable_memory,
                 memory_window_size=self._memory_window_size,
                 concept_names=self._concepts_list if hasattr(self, '_concepts_list') else None,
+                agent=self._agent,
+                ontology=self._ontology,
             )
         memory_ctx = _chain_ctx.get("memory")
         memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
@@ -362,6 +371,9 @@ class GenerateAnswerChain(Chain):
                 _log_ctx.is_follow_up = True
                 _log_ctx.parent_query_id = memory_ctx.parent_message_id
 
+        identify_concept_reason = _chain_ctx["reasoning"].get("identify_concept_reason") if _chain_ctx.get("reasoning") else None or inputs.get("identify_concept_reason") or execute_result.get("identify_concept_reason")
+        generate_sql_reason = _chain_ctx["reasoning"].get("generate_sql_reason") if _chain_ctx.get("reasoning") else None or inputs.get("generate_sql_reason") or execute_result.get("generate_sql_reason")
+
         _chain_start = _now()
         _answer_start = _chain_start
         res = answer_question(
@@ -373,6 +385,8 @@ class GenerateAnswerChain(Chain):
             note=self._note,
             debug=self._debug,
             memory_context=memory_ctx,
+            identify_concept_reason=identify_concept_reason,
+            generate_sql_reason=generate_sql_reason,
         )
 
         answer = res.get("answer", "")
@@ -416,8 +430,8 @@ class GenerateAnswerChain(Chain):
                 answer_generated=bool(answer),
                 llm_type=get_llm_type(self._llm),
                 llm_model=get_llm_model(self._llm),
-                identify_concept_reason=_chain_ctx["reasoning"].get("identify_concept_reason") or inputs.get("identify_concept_reason") or execute_result.get("identify_concept_reason"),
-                generate_sql_reason=_chain_ctx["reasoning"].get("generate_sql_reason") or inputs.get("generate_sql_reason") or execute_result.get("generate_sql_reason"),
+                identify_concept_reason=identify_concept_reason,
+                generate_sql_reason=generate_sql_reason,
                 identify_concept_chain_duration=_chain_ctx["duration"].get("IdentifyTimbrConceptChain"),
                 generate_sql_chain_duration=_chain_ctx["duration"].get("GenerateTimbrSqlChain"),
                 answer_chain_duration=_chain_ctx["duration"].get("GenerateAnswerChain"),

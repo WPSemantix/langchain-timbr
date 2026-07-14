@@ -159,7 +159,7 @@ class ValidateTimbrSqlChain(Chain):
                 else to_integer(max_graph_depth)
             )
             self._note = agent_options.get("note") if "note" in agent_options else ''
-            if note:
+            if note and note != self._note:
                 self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_reasoning = to_boolean(agent_options.get("enable_reasoning")) if "enable_reasoning" in agent_options else config.enable_reasoning
             if enable_reasoning is not None and enable_reasoning != self._enable_reasoning:
@@ -280,6 +280,7 @@ class ValidateTimbrSqlChain(Chain):
                 enable_trace=self._enable_trace,
                 is_delegated=False,
                 conversation_id=conversation_id or _query_id,
+                verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, self._ontology, self._schema)
 

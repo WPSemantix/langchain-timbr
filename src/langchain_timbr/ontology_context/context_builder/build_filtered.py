@@ -57,6 +57,32 @@ from .rebuild import (
     is_path_prompt_degraded,
 )
 from .subgraph import retrieve_subgraph, serialize_compact_ddl
+from ...kbclient import render_object_rules
+
+
+def _render_relationship_rules_block(rules, edges) -> str:
+    """Render SELECTION_RULE text for relationships present in the subgraph.
+
+    Only relationships actually in ``edges`` are considered (in-subgraph scope),
+    and only those with a rule contribute. Returns "" when there is nothing to
+    render, keeping the filter prompt byte-identical when no rules apply.
+    """
+    if rules is None or rules.is_empty() or not edges:
+        return ""
+    seen: set = set()
+    parts: List[str] = []
+    for edge in edges:
+        name = getattr(edge, "relationship_name", None)
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        txt = render_object_rules(rules.rules_for(name, ("relationship",), {"selection"}))
+        if txt:
+            indented = "\n".join("  " + line for line in txt.split("\n"))
+            parts.append(f"- `{name}`:\n{indented}")
+    if not parts:
+        return ""
+    return "Relationship selection rules:\n" + "\n".join(parts)
 from .validator import split_branching_paths, validate_overrides, validate_paths
 
 # Per-request caps on the planner's non-build_path actions. Enforced via
@@ -135,6 +161,8 @@ def build_filtered_metadata(
     config: MetadataContextConfig,
     graph_depth: int,
     note: str = "",
+    memory_context=None,
+    rules=None,
 ) -> DynamicMetadataResult:
     """Run the dynamic pipeline and return a result envelope.
 
@@ -216,7 +244,7 @@ def build_filtered_metadata(
                 question=question, anchor=current_anchor, ontology=ontology,
                 edge_index=edge_index, llm=llm, config=config,
                 graph_depth=graph_depth, stats=stats, warnings=warnings,
-                note=note,
+                note=note, memory_context=memory_context, rules=rules,
             )
         )
 
@@ -250,6 +278,8 @@ def build_filtered_metadata(
                 graph_depth=graph_depth, stats=stats, warnings=warnings,
                 note=note, allowed_actions=allowed,
                 initial_action_errors=pending_action_errors,
+                memory_context=memory_context,
+                rules_block=_render_relationship_rules_block(rules, edges),
             )
             # Consume any pending errors — they've been delivered to the LLM.
             pending_action_errors = None
@@ -335,6 +365,7 @@ def build_filtered_metadata(
                         ontology=ontology, edge_index=edge_index, llm=llm,
                         config=config, graph_depth=graph_depth, stats=stats,
                         warnings=warnings, note=note,
+                        memory_context=memory_context, rules=rules,
                         expand_targets=expand_targets,
                     )
                 )
@@ -366,6 +397,7 @@ def build_filtered_metadata(
                         ontology=ontology, edge_index=edge_index, llm=llm,
                         config=config, graph_depth=graph_depth, stats=stats,
                         warnings=warnings, note=note,
+                        memory_context=memory_context, rules=rules,
                     )
                 )
                 continue
@@ -555,6 +587,8 @@ def _build_subgraph_and_ddl(
     stats: Dict[str, Any],
     warnings: List[str],
     note: str = "",
+    memory_context=None,
+    rules=None,
     expand_targets: Optional[Set[str]] = None,
 ):
     """Step 0 — BFS to max_graph_depth + two-band split + DDL serialization.
@@ -611,6 +645,8 @@ def _build_subgraph_and_ddl(
             ontology=ontology,
             config=config,
             note=note,
+            memory_context=memory_context,
+            rules=rules,
         )
         stats["prefilter_used"] = True
         stats["prefilter_input_count"] = pf.input_count
@@ -748,6 +784,8 @@ def _step1_with_validation_retries(
     note: str = "",
     allowed_actions: Optional[List[str]] = None,
     initial_action_errors: Optional[List[str]] = None,
+    memory_context=None,
+    rules_block: str = "",
 ) -> tuple[Step1Output, List[SelectedPath]]:
     """Step 1 filter + bounded validation-retry loop. Returns (step1, valid_paths).
 
@@ -768,11 +806,13 @@ def _step1_with_validation_retries(
             llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
             error_lines=initial_action_errors,
             note=note, allowed_actions=allowed_actions,
+            memory_context=memory_context, rules_block=rules_block,
         )
     else:
         step1 = run_step1_filter(
             llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
             note=note, allowed_actions=allowed_actions,
+            memory_context=memory_context, rules_block=rules_block,
         )
 
     # Non-build_path actions have no selected_paths to validate.
@@ -808,6 +848,8 @@ def _step1_with_validation_retries(
                 errors=errors,
                 note=note,
                 allowed_actions=allowed_actions,
+                memory_context=memory_context,
+                rules_block=rules_block,
             )
             # Validation retries are only meaningful for build_path; if the
             # planner switches to expand_to/reanchor on retry, propagate that.

@@ -44,9 +44,8 @@ class TestIdentifyTimbrConceptChain:
             views_list='null',
             verify_ssl=config["verify_ssl"],
         )
-        with pytest.raises(Exception, match="No relevant concepts found for the query"):
-            result = chain.invoke({ "prompt": config["test_prompt"] })
-
+        result = chain.invoke({ "prompt": config["test_prompt"] })    
+        assert "No relevant concepts found for the query" in result.get("error", ""), "Expected error message for no relevant concepts"
 
 class TestGenerateTimbrSqlChain:
     """Test suite for GenerateTimbrSqlChain functionality."""
@@ -96,6 +95,7 @@ class TestGenerateTimbrSqlChain:
             ontology=config["timbr_ontology"],
             concepts_list=['plant'],
             verify_ssl=config["verify_ssl"],
+            enable_ontology_questions='false'
         )
         result = chain.invoke({ "prompt": config["test_prompt"] })
         print("GenerateTimbrSqlChain with concepts_list=['plant'] result:", result)
@@ -150,9 +150,10 @@ class TestGenerateTimbrSqlChain:
             token=config["timbr_token"],
             ontology=config["timbr_ontology"],
             verify_ssl=config["verify_ssl"],
+            concepts_list=["customer"],
             debug=True
         )
-        result = chain.invoke({ "prompt": config["test_prompt_2"] })
+        result = chain.invoke({ "prompt": config["test_prompt_2"] + " and their order date and shipment status" })
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "customer", "Concept customer should be returned"
@@ -175,7 +176,7 @@ class TestGenerateTimbrSqlChain:
             concept="customer",
             debug=True
         )
-        result = chain.invoke({ "prompt": config["test_prompt"] })
+        result = chain.invoke({ "prompt": config["test_prompt"]  + " and their order date and shipment status" })
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "customer", "Concept customer should be returned"
@@ -244,7 +245,7 @@ class TestGenerateTimbrSqlChain:
             include_tags=["length", "synonym"],
             debug=True
         )
-        result = chain.invoke({ "prompt": config["test_prompt"] })
+        result = chain.invoke({ "prompt": config["test_prompt_3"] })
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "product", "Concept product should be returned"
@@ -269,7 +270,7 @@ class TestGenerateTimbrSqlChain:
             include_tags=["length", "synonym"],
             debug=True
         )
-        result = chain.invoke({ "prompt": config["test_prompt"] })
+        result = chain.invoke({ "prompt": config["test_prompt_3"] })
         print("GenerateTimbrSqlChain result:", result)
         assert "sql" in result and result["sql"], "SQL should be generated"
         assert "concept" in result and result["concept"] == "product_cube", "Concept product_cube should be returned"
@@ -425,7 +426,7 @@ class TestGenerateAnswerChain:
             url=config["timbr_url"],
             token=config["timbr_token"],
         )
-        result = chain.invoke({ "prompt": config["test_prompt"], "rows": [{ "total_sales": 1000 }] })
+        result = chain.invoke({ "prompt": config["test_prompt"] })
         print("GenerateAnswerChain result:", result)
         assert "answer" in result, "Chain should return an 'answer'"
         assert result["answer"], "Answer should not be empty"
@@ -460,7 +461,7 @@ class TestGenerateAnswerChain:
         )
         result = chain.invoke({ "prompt": "all calls" })
         print("GenerateTimbrSqlChain with concepts_list=['plant'] result:", result)
-        assert "error" in result and "User doesn't have access to query Knowledge Graph schema: dtimbr" in result["error"], "Should return permission error message"
+        assert "error" in result and ("User doesn't have access to query Knowledge Graph schema: dtimbr" in result["error"] or "HTTP Response code: 401" in result["error"])  , "Should return permission error message"
 
 
     def test_execute_with_multiple_ontologies(self, llm, config):

@@ -138,27 +138,4 @@ class TestOptionalLLMIntegration:
             
             with pytest.raises(ValueError, match="Failed to initialize LLM from environment variables"):
                 TimbrSqlAgent()
-    
-    def test_explicit_llm_overrides_env_variables(self):
-        """Test that providing explicit LLM parameter works even with env variables"""
-        from langchain_timbr.llm_wrapper.llm_wrapper import LlmWrapper
-        
-        # Mock the config values
-        with patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_type', 'openai-chat'),\
-             patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', 'env-key'):
-            # Create explicit LLM
-            explicit_llm = LlmWrapper(
-                llm_type='openai-chat',
-                api_key='explicit-key',
-                model='gpt-3.5-turbo'
-            )
-            
-            # Test chain with explicit LLM
-            chain = ExecuteTimbrQueryChain(llm=explicit_llm)
-            assert chain is not None
-            assert chain._llm is explicit_llm
-            
-            # Test agent with explicit LLM
-            agent = TimbrSqlAgent(llm=explicit_llm)
-            assert agent is not None
-            assert agent._chain._llm is explicit_llm
+

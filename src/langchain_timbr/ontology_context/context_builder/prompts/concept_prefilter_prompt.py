@@ -65,19 +65,25 @@ def build_prefilter_messages(
     candidates_block: str,
     with_descriptions: bool,
     note: str = "",
+    memory_context=None,
 ) -> List[dict]:
     """Return [{role,content}, {role,content}] for the pre-filter call.
 
     ``note`` carries conversation memory (follow-up context) and any
     caller-supplied notes — appended so the pre-filter LLM can keep
     previously-relevant concepts in scope.
+
+    ``memory_context`` folds the classifier's expanded-intent summary into the
+    question (no-op when absent), matching the SQL-gen / concept prompts.
     """
+    from ....utils.memory import apply_memory_question_expansion
+
     template = (
         _USER_TEMPLATE_WITH_DESCRIPTIONS if with_descriptions
         else _USER_TEMPLATE_NAMES_ONLY
     )
     user_content = template.format(
-        question=question.strip(),
+        question=apply_memory_question_expansion(question.strip(), memory_context),
         anchor=anchor.strip(),
         candidates_block=candidates_block.strip(),
     ) + _render_note_block(note)

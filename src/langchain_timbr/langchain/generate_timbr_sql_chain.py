@@ -59,6 +59,7 @@ class GenerateTimbrSqlChain(Chain):
         technical_context_properties: Optional[Union[list[str], str]] = None,
         metadata_context_mode: Optional[str] = config.metadata_context_mode,
         metadata_context_max_tokens: Optional[int] = config.metadata_context_max_tokens,
+        enable_ontology_questions: Optional[bool] = config.enable_ontology_questions,
         **kwargs,
     ):
         """
@@ -169,7 +170,7 @@ class GenerateTimbrSqlChain(Chain):
                 else to_integer(max_graph_depth)
             )
             self._note = agent_options.get("note") if "note" in agent_options else ''
-            if note:
+            if note and note != self._note:
                 self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_reasoning = to_boolean(agent_options.get("enable_reasoning")) if "enable_reasoning" in agent_options else config.enable_reasoning
             if enable_reasoning is not None and enable_reasoning != self._enable_reasoning:
@@ -195,6 +196,7 @@ class GenerateTimbrSqlChain(Chain):
                 if "metadata_context_max_tokens" in agent_options
                 else to_integer(metadata_context_max_tokens)
             )
+            self._enable_ontology_questions = to_boolean(agent_options.get("enable_ontology_questions")) if "enable_ontology_questions" in agent_options else to_boolean(enable_ontology_questions)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._schema = schema
@@ -223,6 +225,7 @@ class GenerateTimbrSqlChain(Chain):
             # Plan 2 — dynamic metadata-context kwargs (no agent → kwargs win, with config defaults).
             self._metadata_context_mode = metadata_context_mode
             self._metadata_context_max_tokens = to_integer(metadata_context_max_tokens)
+            self._enable_ontology_questions = to_boolean(enable_ontology_questions)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -280,7 +283,7 @@ class GenerateTimbrSqlChain(Chain):
 
         # ---- memory resolution (once per top-level invocation) ----
         _chain_ctx = self._received_chain_context
-        if _chain_ctx.get("memory") is None and self._enable_memory:
+        if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
             _chain_ctx["memory"] = resolve_memory(
                 llm=self._llm,
                 conn_params=self._get_conn_params(),
@@ -289,6 +292,8 @@ class GenerateTimbrSqlChain(Chain):
                 enable_memory=self._enable_memory,
                 memory_window_size=self._memory_window_size,
                 concept_names=self._concepts_list,
+                agent=self._agent,
+                ontology=self._ontology,
             )
         memory_ctx = _chain_ctx.get("memory")
         memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
@@ -309,6 +314,7 @@ class GenerateTimbrSqlChain(Chain):
                 enable_trace=self._enable_trace,
                 is_delegated=False,
                 conversation_id=conversation_id or _query_id,
+                verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, self._ontology, self._schema)
 
@@ -318,6 +324,10 @@ class GenerateTimbrSqlChain(Chain):
 
         _chain_start = _now()
         try:
+            from ..kbclient import fetch_rules
+            kb_rules = fetch_rules(
+                self._get_conn_params(), agent=self._agent, ontology=self._ontology
+            )
             generate_res = generate_sql(
                 question=prompt,
                 llm=self._llm,
@@ -346,6 +356,8 @@ class GenerateTimbrSqlChain(Chain):
                 technical_context_properties=self._technical_context_properties,
                 metadata_context_mode=self._metadata_context_mode,
                 metadata_context_max_tokens=self._metadata_context_max_tokens,
+                enable_ontology_questions=self._enable_ontology_questions,
+                rules=kb_rules,
             )
         except Exception as exc:
             error = str(exc)

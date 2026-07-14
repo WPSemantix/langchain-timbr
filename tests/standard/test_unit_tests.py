@@ -472,7 +472,7 @@ class TestConversationIdAndAnswer:
 
         captured_payload = {}
 
-        def fake_safe_post(url, token, endpoint_path, payload):
+        def fake_safe_post(url, token, endpoint_path, payload, **kwargs):
             captured_payload.update(payload)
 
         with patch('langchain_timbr.utils.chain_logger._safe_post', side_effect=fake_safe_post):
@@ -518,7 +518,7 @@ class TestConversationIdAndAnswer:
 
         captured_payload = {}
 
-        def fake_safe_post(url, token, endpoint_path, payload):
+        def fake_safe_post(url, token, endpoint_path, payload, **kwargs):
             captured_payload.update(payload)
 
         with patch('langchain_timbr.utils.chain_logger._safe_post', side_effect=fake_safe_post):

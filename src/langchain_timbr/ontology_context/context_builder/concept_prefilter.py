@@ -19,8 +19,16 @@ from typing import Iterable, List, Optional, Sequence, Tuple
 
 from ..ontology.graph import Ontology
 from .metadata_config import MetadataContextConfig
+from ...kbclient import render_object_rules
 
 logger = logging.getLogger(__name__)
+
+
+def _candidate_rules_lines(rules_text: str) -> List[str]:
+    """Split a rendered per-candidate rules block into indented sub-lines."""
+    if not rules_text:
+        return []
+    return [f"  {line}" for line in rules_text.split("\n")]
 
 
 # ---------------------------------------------------------------------------
@@ -71,11 +79,13 @@ class _Candidate:
     """Mutable view of a candidate concept used during prompt construction."""
     name: str
     description: str
+    rules_text: str = ""
 
 
 def _gather_candidates(
     concepts: Sequence[str],
     ontology: Ontology,
+    rules=None,
 ) -> List[_Candidate]:
     out: List[_Candidate] = []
     for name in concepts:
@@ -84,7 +94,12 @@ def _gather_candidates(
             desc = (meta.description or "").strip()
         except Exception:
             desc = ""
-        out.append(_Candidate(name=name, description=desc))
+        rules_text = ""
+        if rules is not None:
+            rules_text = render_object_rules(
+                rules.rules_for(name, ("concept", "view", "cube"), {"selection"})
+            )
+        out.append(_Candidate(name=name, description=desc, rules_text=rules_text))
     return out
 
 
@@ -126,12 +141,17 @@ def render_with_descriptions(candidates: Iterable[_Candidate]) -> str:
             lines.append(f"- {c.name}: {c.description}")
         else:
             lines.append(f"- {c.name}")
+        lines.extend(_candidate_rules_lines(c.rules_text))
     return "\n".join(lines)
 
 
 def render_names_only(candidates: Iterable[_Candidate]) -> str:
     """Render candidates as bare names (one per line)."""
-    return "\n".join(f"- {c.name}" for c in candidates)
+    lines: List[str] = []
+    for c in candidates:
+        lines.append(f"- {c.name}")
+        lines.extend(_candidate_rules_lines(c.rules_text))
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +347,8 @@ def run_concept_prefilter(
     config: MetadataContextConfig,
     timeout: int = 60,
     note: str = "",
+    memory_context=None,
+    rules=None,
 ) -> PrefilterResult:
     """Run the pre-filter LLM call to split ``candidate_concepts`` into a
     detail band (full DDL render) + a menu band (names-only, recoverable
@@ -344,7 +366,7 @@ def run_concept_prefilter(
     from .prompts import build_prefilter_messages
 
     started = time.perf_counter()
-    candidates_view = _gather_candidates(candidate_concepts, ontology)
+    candidates_view = _gather_candidates(candidate_concepts, ontology, rules=rules)
     candidates_block, with_descriptions = build_prefilter_prompt(
         candidates_view, max_prompt_tokens=config.max_concept_prefilter_token,
     )
@@ -354,6 +376,7 @@ def run_concept_prefilter(
         candidates_block=candidates_block,
         with_descriptions=with_descriptions,
         note=note,
+        memory_context=memory_context,
     )
 
     candidate_set = {c.name for c in candidates_view}

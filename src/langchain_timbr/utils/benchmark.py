@@ -456,7 +456,7 @@ class BenchmarkScorer:
             return {
                 "assessment": assessment,
                 "breakdown": {},
-                "reasoning": str(evaluation.get("reasoning", ""))[:200],
+                "reasoning": str(evaluation.get("reasoning", ""))[:5000],
                 "scoring_method": "llm_judge",
             }
 
@@ -523,34 +523,34 @@ def _build_benchmark_log_headers(token: str) -> Dict[str, str]:
     }
 
 
-def _log_benchmark_running(url: str, token: str, payload: Dict[str, Any]) -> None:
+def _log_benchmark_running(url: str, token: str, payload: Dict[str, Any], verify_ssl: bool = False) -> None:
     """POST to /timbr-server/log_benchmark/running to register a benchmark run start."""
     endpoint = f"{url.rstrip('/')}/timbr-server/log_benchmark/running"
     headers = _build_benchmark_log_headers(token)
-    response = requests.post(endpoint, json=payload, headers=headers)
+    response = requests.post(endpoint, json=payload, headers=headers, verify=verify_ssl)
     if not response.ok:
         raise RuntimeError(
             f"Failed to log benchmark start [{response.status_code}]: {response.text}"
         )
 
 
-def _log_benchmark_update_completed(url: str, token: str, run_id: str, completed: int, agent_name: str) -> None:
+def _log_benchmark_update_completed(url: str, token: str, run_id: str, completed: int, agent_name: str, verify_ssl: bool = False) -> None:
     """POST to /timbr-server/log_benchmark/running_update_completed to update progress."""
     endpoint = f"{url.rstrip('/')}/timbr-server/log_benchmark/running_update_completed"
     headers = _build_benchmark_log_headers(token)
     payload = {"run_id": run_id, "completed": completed, "agent_name": agent_name}
-    response = requests.post(endpoint, json=payload, headers=headers)
+    response = requests.post(endpoint, json=payload, headers=headers, verify=verify_ssl)
     if not response.ok:
         raise RuntimeError(
             f"Failed to update benchmark progress [{response.status_code}]: {response.text}"
         )
 
 
-def _log_benchmark_history(url: str, token: str, payload: Dict[str, Any]) -> None:
+def _log_benchmark_history(url: str, token: str, payload: Dict[str, Any], verify_ssl: bool = False) -> None:
     """POST to /timbr-server/log_benchmark/history to finalise a benchmark run."""
     endpoint = f"{url.rstrip('/')}/timbr-server/log_benchmark/history"
     headers = _build_benchmark_log_headers(token)
-    response = requests.post(endpoint, json=payload, headers=headers)
+    response = requests.post(endpoint, json=payload, headers=headers, verify=verify_ssl)
     if not response.ok:
         raise RuntimeError(
             f"Failed to log benchmark history [{response.status_code}]: {response.text}"
@@ -909,6 +909,7 @@ def run_benchmark(
             "number_of_iterations": number_of_iterations,
             "completed": 0,
         },
+        verify_ssl=verify_ssl,
     )
 
     # ------------------------------------------------------------------
@@ -1091,6 +1092,7 @@ def run_benchmark(
             run_id=run_id,
             completed=completed_count,
             agent_name=agent_name,
+            verify_ssl=verify_ssl,
         )
 
         logger.info(f"  [{question_id}] FINAL → {result_status.upper()}")
@@ -1127,6 +1129,7 @@ def run_benchmark(
             "llm_model": llm_model,
             "result": benchmark_results,
         },
+        verify_ssl=verify_ssl,
     )
 
     # ------------------------------------------------------------------

@@ -6,6 +6,7 @@ import os
 # or pass enable_technical_context=True explicitly to chain constructors.
 # Must be set before the first langchain_timbr import so config.py bakes in False.
 os.environ["ENABLE_TECHNICAL_CONTEXT"] = "false"
+os.environ["ENABLE_KNOWLEDGE_BASE"] = "false"
 
 from langchain_timbr import LlmWrapper
 

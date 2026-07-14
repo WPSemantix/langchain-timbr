@@ -603,7 +603,7 @@ def get_concept_properties(
 
         if col_name:
             if "_type_of_" in col_name:
-                comment = f"if this value is 1, the row is of type {col_name.split('_type_of_')[1]}"
+                comment = f"if 1, the row is of type {col_name.split('_type_of_')[1]}"
             # elif (comment is None or comment == "") and "[" in col_name and "]" in col_name:
             #     comment = _generate_column_relationship_description(col_name)
             elif col_name.startswith("~"):

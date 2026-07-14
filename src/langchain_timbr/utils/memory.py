@@ -18,7 +18,10 @@ import requests
 from langchain_core.language_models.llms import LLM
 
 from .. import config
-from .prompt_service import get_memory_classifier_prompt_template
+from .prompt_service import (
+    get_memory_classifier_prompt_template,
+    get_memory_kb_classifier_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +88,7 @@ class MemoryContext:
     requires_extended_context: bool = False
     sql_context: List[Dict[str, Any]] = field(default_factory=list)
     qa_context: List[Dict[str, Any]] = field(default_factory=list)
+    kb_examples: List[Dict[str, Any]] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -99,19 +103,32 @@ def resolve_memory(
     memory_window_size: int,
     concept_names: Optional[List[str]] = None,
     timeout: Optional[int] = None,
+    agent: Optional[str] = None,
+    ontology: Optional[str] = None,
 ) -> Union[MemoryContext, MemoryDisabledSentinel]:
-    """Resolve conversation memory for the current invocation.
+    """Resolve conversation memory and knowledge-base examples for the current
+    invocation.
 
-    Returns a ``MemoryContext`` when memory is active and classification
-    succeeds, or ``MEMORY_DISABLED`` when any precondition is unmet or an
-    error occurs.  Failures are always silent (DEBUG-logged).
+    Returns a ``MemoryContext`` when memory and/or knowledge-base retrieval is
+    active and classification succeeds, or ``MEMORY_DISABLED`` when neither is
+    available or an error occurs.  Failures are always silent (DEBUG-logged).
+
+    Two activation modes are supported (either alone is sufficient):
+      * conversation memory — ``enable_memory`` with a real ``conversation_id``.
+      * knowledge-base examples — ``config.enable_knowledge_base`` with an
+        ``agent`` or ``ontology`` that exposes at least one knowledge base.
     """
     # ---- activation gate ------------------------------------------------
-    if not enable_memory:
-        return MEMORY_DISABLED
-    if not conversation_id or not conversation_id.strip():
-        return MEMORY_DISABLED
     if not prompt or not prompt.strip():
+        return MEMORY_DISABLED
+
+    memory_active = bool(enable_memory) and bool(conversation_id and conversation_id.strip())
+
+    kb_names: List[str] = []
+    if config.enable_knowledge_base:
+        kb_names = _resolve_available_kbs(conn_params, agent, ontology)
+
+    if not memory_active and not kb_names:
         return MEMORY_DISABLED
 
     try:
@@ -123,6 +140,9 @@ def resolve_memory(
             memory_window_size=memory_window_size,
             concept_names=concept_names,
             timeout=timeout,
+            memory_active=memory_active,
+            kb_names=kb_names,
+            ontology=ontology,
         )
     except Exception as exc:
         logger.debug("Memory disabled for this invocation due to error: %s", exc)
@@ -132,23 +152,37 @@ def resolve_memory(
 def _resolve_memory_impl(
     llm: LLM,
     conn_params: dict,
-    conversation_id: str,
+    conversation_id: Optional[str],
     prompt: str,
     memory_window_size: int,
     concept_names: Optional[List[str]],
     timeout: Optional[int],
+    memory_active: bool,
+    kb_names: List[str],
+    ontology: Optional[str],
 ) -> Union[MemoryContext, MemoryDisabledSentinel]:
-    # Step 1 — fetch history
-    messages = fetch_conversation_history(conn_params, conversation_id, memory_window_size)
-    if not messages:
+    # Step 1 — fetch history (only when conversation memory is active)
+    messages: List[Dict[str, Any]] = []
+    if memory_active:
+        messages = fetch_conversation_history(
+            conn_params, conversation_id, memory_window_size
+        ) or []
+
+    # Step 2 — fetch KB examples (only when KBs are available)
+    kb_matches: list = []
+    if kb_names:
+        kb_matches = _fetch_kb_examples(conn_params, prompt, kb_names, ontology, timeout)
+
+    # Nothing to work with on either channel → disabled
+    if not messages and not kb_matches:
         return MEMORY_DISABLED
 
-    # Step 2 — build id_map once (API returns complete chains)
+    # Step 3 — build id_map once (API returns complete chains)
     id_map: Dict[str, Dict[str, Any]] = {
         m["message_id"]: m for m in messages if "message_id" in m
     }
 
-    # Step 3 — classify
+    # Step 4 — classify (memory follow-up + KB example selection together)
     classifier_output = classify_follow_up(
         llm=llm,
         conn_params=conn_params,
@@ -157,6 +191,7 @@ def _resolve_memory_impl(
         id_map=id_map,
         concept_names=concept_names,
         timeout=timeout,
+        kb_matches=kb_matches,
     )
     if classifier_output is None:
         return MEMORY_DISABLED
@@ -164,21 +199,33 @@ def _resolve_memory_impl(
     is_follow_up = classifier_output.get("is_follow_up", False)
     relevant_ids = classifier_output.get("relevant_message_ids", [])
 
-    if not is_follow_up or not relevant_ids:
+    # Step 5 — build memory contexts (only for a real follow-up)
+    sql_ctx: List[Dict[str, Any]] = []
+    qa_ctx: List[Dict[str, Any]] = []
+    if is_follow_up and relevant_ids:
+        sql_ctx = build_sql_context(id_map, classifier_output)
+        qa_ctx = build_qa_context(id_map, classifier_output)
+
+    # Step 6 — select approved KB examples
+    kb_ctx: List[Dict[str, Any]] = []
+    if classifier_output.get("should_apply_examples") and kb_matches:
+        kb_ctx = _select_kb_examples(
+            kb_matches, classifier_output.get("relevant_example_names", [])
+        )
+
+    has_context = bool(sql_ctx or qa_ctx or kb_ctx)
+    if not has_context:
         return MemoryContext(is_follow_up=False)
 
-    # Step 4 — build contexts
-    sql_ctx = build_sql_context(id_map, classifier_output)
-    qa_ctx = build_qa_context(id_map, classifier_output)
-
     return MemoryContext(
-        is_follow_up=True,
+        is_follow_up=bool(is_follow_up and relevant_ids),
         summary=classifier_output.get("summary", ""),
         parent_message_id=classifier_output.get("parent_message_id"),
         relevant_message_ids=relevant_ids,
         requires_extended_context=classifier_output.get("requires_extended_context", False),
         sql_context=sql_ctx,
         qa_context=qa_ctx,
+        kb_examples=kb_ctx,
     )
 
 
@@ -202,10 +249,12 @@ def fetch_conversation_history(
     url = f"{base_url}/timbr/api/fetch_conversation_history/"
     headers = _build_auth_headers(conn_params)
     params = {"conversation_id": conversation_id, "top": top}
+    verify_ssl = conn_params.get("verify_ssl", True)
 
     try:
         response = requests.get(
             url, headers=headers, params=params, timeout=_HISTORY_FETCH_TIMEOUT,
+            verify=verify_ssl,
         )
         if not response.ok:
             logger.debug(
@@ -227,6 +276,148 @@ def fetch_conversation_history(
     except Exception as exc:
         logger.debug("Memory: history fetch failed: %s", exc)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Step 2 — Knowledge-base example retrieval
+# ---------------------------------------------------------------------------
+def _build_kb_client(conn_params: dict, ontology: Optional[str]):
+    """Construct a ``KBClient`` from ``conn_params`` (lazy import to keep the
+    memory module import-light)."""
+    from ..kbclient import KBClient
+
+    return KBClient.from_conn_params(conn_params, ontology)
+
+
+def _resolve_available_kbs(
+    conn_params: dict,
+    agent: Optional[str],
+    ontology: Optional[str],
+) -> List[str]:
+    """Resolve the unique knowledge bases available for this invocation.
+
+    Agent-first: when an ``agent`` is given, only its knowledge bases are used
+    (the ontology is NOT consulted).  Otherwise the ontology's knowledge bases
+    are used.  Short-circuits to ``[]`` with NO network call when neither an
+    agent nor an ontology is available.  All failures are swallowed (returns []).
+    """
+    effective_ontology = ontology or conn_params.get("ontology")
+    if not agent and not effective_ontology:
+        return []
+    try:
+        client = _build_kb_client(conn_params, ontology)
+        try:
+            names = client.resolve_knowledge_bases(
+                agent=agent, ontology=None if agent else effective_ontology
+            )
+        finally:
+            client.close()
+    except Exception as exc:
+        logger.debug("Memory: KB resolution failed: %s", exc)
+        return []
+
+    # Preserve order, drop duplicates.
+    seen: set = set()
+    unique: List[str] = []
+    for name in names or []:
+        if name and name not in seen:
+            seen.add(name)
+            unique.append(name)
+    return unique
+
+
+def _fetch_kb_examples(
+    conn_params: dict,
+    prompt: str,
+    kb_names: List[str],
+    ontology: Optional[str],
+    timeout: Optional[int],
+) -> list:
+    """Fetch KB examples matching ``prompt`` from ``kb_names``.
+
+    Returns a list of ``KBMatch`` objects, or ``[]`` on any failure.  When the
+    live search yields nothing and ``config.kb_fallback_example`` is enabled, a
+    single hard-coded example is returned so the classification + injection path
+    can be exercised without live KB data.
+    """
+    matches: list = []
+    try:
+        client = _build_kb_client(conn_params, ontology)
+        try:
+            result = client.search(prompt, knowledge_bases=kb_names)
+            matches = list(result.matches)
+        finally:
+            client.close()
+    except Exception as exc:
+        logger.debug("Memory: KB search failed: %s", exc)
+        matches = []
+
+    if not matches and config.kb_fallback_example:
+        matches = [_fallback_kb_match(kb_names)]
+    return matches
+
+
+def _fallback_kb_match(kb_names: List[str]):
+    """A single deterministic KB example used only when
+    ``config.kb_fallback_example`` is set and live search returns nothing."""
+    from ..kbclient import KBMatch
+
+    return KBMatch(
+        knowledge_base=kb_names[0] if kb_names else "fallback_kb",
+        example_name="fallback_example",
+        question="Show the total number of records grouped by category.",
+        query="SELECT category, COUNT(*) AS record_count FROM dtimbr.records GROUP BY category",
+        instructions="Always group by the requested dimension and alias the aggregate.",
+        validate_sql=0,
+        confidence=1.0,
+        changed_on=None,
+    )
+
+
+def _format_kb_examples_for_classifier(kb_matches: Optional[list]) -> str:
+    """Render KB matches into the ``{kb_examples}`` classifier variable.
+
+    Returns an empty string when there are no matches.
+    """
+    if not kb_matches:
+        return ""
+
+    lines: list[str] = []
+    for idx, match in enumerate(kb_matches, start=1):
+        lines.append(f"[{idx}] example_name: {getattr(match, 'example_name', '')}")
+        question = getattr(match, "question", "")
+        if question:
+            lines.append(f"Question: {question}")
+        instructions = getattr(match, "instructions", None)
+        if instructions and instructions.strip():
+            lines.append(f"Instructions: {instructions.strip()}")
+        query = getattr(match, "query", None)
+        if query and query.strip():
+            lines.append(f"SQL: {query.strip()}")
+        lines.append("---")
+    return "\n".join(lines)
+
+
+def _select_kb_examples(kb_matches: list, names: Optional[List[str]]) -> List[Dict[str, Any]]:
+    """Pick the KB matches whose ``example_name`` the classifier approved.
+
+    Matching is case-insensitive.  Returns lightweight dicts suitable for the
+    ``MemoryContext.kb_examples`` field.
+    """
+    if not kb_matches or not names:
+        return []
+    wanted = {str(n).strip().lower() for n in names if str(n).strip()}
+    selected: List[Dict[str, Any]] = []
+    for match in kb_matches:
+        example_name = getattr(match, "example_name", "")
+        if example_name and example_name.strip().lower() in wanted:
+            selected.append({
+                "example_name": example_name,
+                "knowledge_base": getattr(match, "knowledge_base", ""),
+                "instructions": getattr(match, "instructions", None),
+                "query": getattr(match, "query", None),
+            })
+    return selected
 
 
 # ---------------------------------------------------------------------------
@@ -276,8 +467,9 @@ def classify_follow_up(
     id_map: Dict[str, Dict[str, Any]],
     concept_names: Optional[List[str]] = None,
     timeout: Optional[int] = None,
+    kb_matches: Optional[list] = None,
 ) -> Optional[dict]:
-    """Run the memory-classifier LLM call.
+    """Run the combined memory + knowledge-base classifier LLM call.
 
     Returns the parsed+validated classifier dict, or ``None`` on any failure.
     """
@@ -286,7 +478,7 @@ def classify_follow_up(
 
     # Fetch the classifier prompt template
     try:
-        classifier_prompt_wrapper = get_memory_classifier_prompt_template(conn_params)
+        classifier_prompt_wrapper = get_memory_kb_classifier_prompt_template(conn_params)
     except Exception as exc:
         logger.debug("Memory: classifier prompt fetch failed: %s", exc)
         return None
@@ -294,16 +486,26 @@ def classify_follow_up(
     # Build chronological Q&A text for the classifier (uses sequential IDs)
     conversation_history, seq_to_guid = _format_history_for_classifier(messages, id_map)
     concepts_str = ", ".join(concept_names) if concept_names else ""
+    kb_examples_text = _format_kb_examples_for_classifier(kb_matches)
 
     try:
         formatted_prompt = classifier_prompt_wrapper.format_messages(
             question=prompt.strip(),
             conversation_history=conversation_history,
             concept_names=concepts_str,
+            kb_examples=kb_examples_text,
         )
     except Exception as exc:
-        logger.debug("Memory: classifier prompt formatting failed: %s", exc)
-        return None
+        try:
+            classifier_prompt_wrapper = get_memory_classifier_prompt_template(conn_params)
+            formatted_prompt = classifier_prompt_wrapper.format_messages(
+                question=prompt.strip(),
+                conversation_history=conversation_history,
+                concept_names=concepts_str
+            )
+        except Exception as exc2:
+            logger.debug("Memory: classifier prompt formatting failed: %s", exc2)
+            return None
 
     # Call LLM
     try:
@@ -324,7 +526,13 @@ def classify_follow_up(
 
     # Parse + validate (translate sequential IDs back to real GUIDs)
     history_ids = {m["message_id"] for m in messages if "message_id" in m}
-    return _validate_classifier_output(response_text, history_ids, seq_to_guid)
+    valid_example_names = {
+        getattr(m, "example_name", "") for m in (kb_matches or [])
+    }
+    valid_example_names.discard("")
+    return _validate_classifier_output(
+        response_text, history_ids, seq_to_guid, valid_example_names
+    )
 
 
 def _format_history_for_classifier(
@@ -376,11 +584,17 @@ def _validate_classifier_output(
     raw_text: str,
     history_ids: set,
     seq_to_guid: Optional[Dict[str, str]] = None,
+    valid_example_names: Optional[set] = None,
 ) -> Optional[dict]:
     """Parse and validate classifier JSON.  Returns ``None`` on any problem.
 
     When *seq_to_guid* is provided, the classifier's sequential IDs ("1", "2", ...)
     are translated back to real message GUIDs before validation.
+
+    KB fields (``should_apply_examples``, ``relevant_example_names``) are parsed
+    independently of the follow-up decision — a brand-new question can still
+    apply reference examples.  ``relevant_example_names`` is filtered to
+    *valid_example_names* when that set is provided.
     """
     # Strip markdown code fences if present
     text = raw_text.strip()
@@ -399,6 +613,25 @@ def _validate_classifier_output(
     if not isinstance(parsed, dict):
         logger.debug("Memory: classifier returned non-dict JSON: %s", raw_text[:500])
         return None
+
+    # ---- KB example selection (independent of follow-up) ----------------
+    should_apply_examples = parsed.get("should_apply_examples", False)
+    if not isinstance(should_apply_examples, bool):
+        should_apply_examples = bool(should_apply_examples)
+
+    relevant_example_names = parsed.get("relevant_example_names", [])
+    if not isinstance(relevant_example_names, list):
+        relevant_example_names = []
+    relevant_example_names = [str(n) for n in relevant_example_names if str(n).strip()]
+    if valid_example_names is not None:
+        valid_lower = {str(n).strip().lower() for n in valid_example_names}
+        relevant_example_names = [
+            n for n in relevant_example_names if n.strip().lower() in valid_lower
+        ]
+    if not relevant_example_names:
+        should_apply_examples = False
+
+    summary = str(parsed.get("summary", ""))
 
     is_follow_up = parsed.get("is_follow_up", False)
     relevant_ids = parsed.get("relevant_message_ids", [])
@@ -429,10 +662,12 @@ def _validate_classifier_output(
     if not is_follow_up:
         return {
             "is_follow_up": False,
-            "summary": "",
+            "summary": summary,
             "parent_message_id": None,
             "relevant_message_ids": [],
             "requires_extended_context": False,
+            "should_apply_examples": should_apply_examples,
+            "relevant_example_names": relevant_example_names,
         }
 
     # Validate parent_message_id
@@ -471,10 +706,12 @@ def _validate_classifier_output(
 
     return {
         "is_follow_up": True,
-        "summary": str(parsed.get("summary", "")),
+        "summary": summary,
         "parent_message_id": parent_id,
         "relevant_message_ids": relevant_ids,
         "requires_extended_context": requires_extended,
+        "should_apply_examples": should_apply_examples,
+        "relevant_example_names": relevant_example_names,
     }
 
 
@@ -587,25 +824,44 @@ def format_memory_note_for_sql(memory_context: MemoryContext) -> str:
     """Format memory context for injection into the ``{note}`` template var
     of identify-concept and generate-sql prompts.
 
-    Returns an empty string when memory is inactive or not a follow-up.
+    Includes the conversation-memory block (when a follow-up) followed by an
+    ``[Approved reference examples]`` block (when the classifier selected KB
+    examples).  Returns an empty string when neither is present.
     """
-    if not memory_context or not memory_context.is_follow_up:
+    if not memory_context:
         return ""
 
-    parts: list[str] = [
-        "[CONVERSATION MEMORY]",
-        "This is a follow-up question.",
-    ]
-    if memory_context.summary:
-        parts.append(f"Context summary: {memory_context.summary}")
+    parts: list[str] = []
 
-    if memory_context.sql_context:
-        parts.append("\nPrior SQL queries (chronological):")
-        for idx, entry in enumerate(memory_context.sql_context, start=1):
-            question = entry.get("question", "")
-            sql = entry.get("sql", "")
-            parts.append(f'--- [{idx}] Q: "{question}" ---')
-            parts.append(sql)
+    if memory_context.is_follow_up:
+        parts.append("[CONVERSATION MEMORY]")
+        parts.append("This is a follow-up question.")
+        if memory_context.summary:
+            parts.append(f"Context summary: {memory_context.summary}")
+
+        if memory_context.sql_context:
+            parts.append("\nPrior SQL queries (chronological):")
+            for idx, entry in enumerate(memory_context.sql_context, start=1):
+                question = entry.get("question", "")
+                sql = entry.get("sql", "")
+                parts.append(f'--- [{idx}] Q: "{question}" ---')
+                parts.append(sql)
+                parts.append("--- End ---")
+
+    if memory_context.kb_examples:
+        if parts:
+            parts.append("")
+        parts.append("[Approved reference examples]")
+        for idx, example in enumerate(memory_context.kb_examples, start=1):
+            name = example.get("example_name", "")
+            parts.append(f"--- [{idx}] {name} ---")
+            instructions = example.get("instructions")
+            if instructions and instructions.strip():
+                parts.append(f"Instructions: {instructions.strip()}")
+            query = example.get("query")
+            if query and query.strip():
+                parts.append("SQL:")
+                parts.append(query.strip())
             parts.append("--- End ---")
 
     return "\n".join(parts)
@@ -635,6 +891,38 @@ def format_memory_note_for_answer(memory_context: MemoryContext) -> str:
             parts.append("---")
 
     return "\n".join(parts)
+
+
+def apply_memory_question_expansion(
+    question: str,
+    memory_context: Optional[MemoryContext],
+    preserve_previous_anchor: bool = False,
+) -> str:
+    """Fold the classifier's expanded-intent ``summary`` into the user question.
+
+    Returns the question unchanged when no applicable memory summary exists.
+    """
+
+    if not memory_context:
+        return question
+
+    summary = getattr(memory_context, "summary", "").strip()
+    if not summary:
+        return question
+
+    anchor_instruction = (
+        ". For follow-ups, preserve the previous relevant query's anchor table from Prior SQL queries unless the "
+        "expanded intent requires a different anchor"
+        if preserve_previous_anchor
+        else ""
+    )
+
+    return (
+        f"{question} [EXPANDED INTENT: Interpret the question above as follows; "
+        f"it incorporates relevant prior-turn context and/or reference examples. "
+        f"Apply it unless the current question explicitly overrides it"
+        f"{anchor_instruction}: {summary}]"
+    )
 
 
 # ---------------------------------------------------------------------------

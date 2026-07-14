@@ -263,6 +263,7 @@ class TimbrSqlAgent(Runnable):
                 enable_trace=self._chain._enable_trace,
                 is_delegated=False,
                 conversation_id=conversation_id,
+                verify_ssl=self._chain._verify_ssl,
             )
             log_agent_start(_log_ctx, self._chain._ontology, self._chain._schema)
             _delegated_ctx = AgentLogContext(
@@ -276,6 +277,7 @@ class TimbrSqlAgent(Runnable):
                 enable_trace=_log_ctx.enable_trace,
                 is_delegated=True,
                 conversation_id=conversation_id,
+                verify_ssl=_log_ctx.verify_ssl,
             )
 
         return _log_ctx, _delegated_ctx

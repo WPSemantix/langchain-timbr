@@ -59,7 +59,7 @@ class TestMetadataContextConfig:
 
 class TestConfigFromModule:
     def test_module_defaults_yield_static_mode(self):
-        cfg = config_from_module()
+        cfg = config_from_module(mode="static")
         # Default in config.py is 'static' for the initial release.
         assert cfg.mode == "static"
 

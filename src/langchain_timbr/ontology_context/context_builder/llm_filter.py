@@ -22,6 +22,8 @@ def run_step1_filter(
     timeout: int = 60,
     note: str = "",
     allowed_actions: Optional[List[str]] = None,
+    memory_context=None,
+    rules_block: str = "",
 ) -> Step1Output:
     """Invoke the LLM once with the filter prompt and parse the JSON output.
 
@@ -40,7 +42,8 @@ def run_step1_filter(
 
     messages = build_filter_messages(
         question=question, anchor=anchor, compact_ddl=compact_ddl, note=note,
-        allowed_actions=allowed_actions,
+        allowed_actions=allowed_actions, memory_context=memory_context,
+        rules_block=rules_block,
     )
     raw = _invoke_llm(llm, messages, timeout=timeout)
     return _parse_step1(raw)
@@ -57,6 +60,8 @@ def run_step1_retry(
     timeout: int = 60,
     note: str = "",
     allowed_actions: Optional[List[str]] = None,
+    memory_context=None,
+    rules_block: str = "",
 ) -> Step1Output:
     """Retry with error messages injected from the previous round.
 
@@ -83,6 +88,8 @@ def run_step1_retry(
         error_lines=error_lines,
         note=note,
         allowed_actions=allowed_actions,
+        memory_context=memory_context,
+        rules_block=rules_block,
     )
     raw = _invoke_llm(llm, messages, timeout=timeout)
     return _parse_step1(raw)

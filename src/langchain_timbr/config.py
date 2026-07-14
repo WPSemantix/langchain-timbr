@@ -37,7 +37,7 @@ reasoning_steps = to_integer(os.environ.get('REASONING_STEPS', 2))
 
 should_validate_sql = to_boolean(os.environ.get('SHOULD_VALIDATE_SQL', os.environ.get('LLM_SHOULD_VALIDATE_SQL', 'true')))
 retry_if_no_results = to_boolean(os.environ.get('RETRY_IF_NO_RESULTS', os.environ.get('LLM_RETRY_IF_NO_RESULTS', 'true')))
-llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.get('TIMBR_LLM_DEFAULT_LIMIT', 500)))  # Default max tokens limit for LLM responses
+llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.get('TIMBR_LLM_DEFAULT_LIMIT', 100)))  # Default max result limit for LLM responses
 
 enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'true'))
 enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'true'))
@@ -46,6 +46,32 @@ history_save_results = to_boolean(os.environ.get('TIMBR_HISTORY_SAVE_RESULTS', '
 enable_memory = to_boolean(os.environ.get('TIMBR_ENABLE_MEMORY', 'true'))
 memory_window_size = to_integer(os.environ.get('TIMBR_MEMORY_WINDOW_SIZE', 3))
 
+# Whether to offer the virtual `ontology_metadata` concept for questions about the
+# ontology model itself (concepts / properties / measures, relationships, views,
+# and backing source tables).
+enable_ontology_questions = to_boolean(os.environ.get('ENABLE_ONTOLOGY_QUESTIONS', 'true'))
+
+# Identify-concept context builder. When ON, the first NL2SQL step (anchor-concept
+# selection) renders a hierarchical, signal-rich catalog of the already-filtered
+# candidate concepts/views instead of the flat name+description list. Every
+# candidate remains visible to the LLM — the builder never drops a candidate, it
+# only trims the cheapest signal (descriptions, then relationships/measures) to
+# stay under the token budget. Default ON; falls back to the legacy render on any
+# error. Set ENABLE_IDENTIFY_CONCEPT_CONTEXT=false to force the legacy path.
+enable_identify_concept_context = to_boolean(os.environ.get('ENABLE_IDENTIFY_CONCEPT_CONTEXT', 'true'))
+# Token ladder thresholds (cl100k_base) — see identify_concept_context.py.
+identify_concept_context_desc_trim_tokens = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_DESC_TRIM_TOKENS', 8000))
+identify_concept_context_rel_trim_tokens = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_REL_TRIM_TOKENS', 12000))
+identify_concept_context_hard_limit_tokens = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_HARD_LIMIT_TOKENS', 20000))
+identify_concept_context_desc_max_chars = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_DESC_MAX_CHARS', 200))
+identify_concept_context_measure_cap = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_MEASURE_CAP', 10))
+# Per-parent cap on rendered sub-type hints; overflow is summarized as "+N more".
+identify_concept_context_hint_cap = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_HINT_CAP', 15))
+# Trigram matcher (sub-type hints + relationship-axis trim). Ratio is scaled by 100
+# from the env int (e.g. 65 -> 0.65) so it fits the to_integer config convention.
+identify_concept_context_trigram_threshold = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_TRIGRAM_THRESHOLD', 65)) / 100.0
+identify_concept_context_trigram_floor = to_integer(os.environ.get('IDENTIFY_CONCEPT_CONTEXT_TRIGRAM_FLOOR', 3))
+
 enable_technical_context = to_boolean(os.environ.get('ENABLE_TECHNICAL_CONTEXT', 'true'))
 technical_context_mode = os.environ.get('TECHNICAL_CONTEXT_MODE', 'auto')
 technical_context_max_tokens = to_integer(os.environ.get('TECHNICAL_CONTEXT_MAX_TOKENS', 3000))
@@ -53,7 +79,7 @@ technical_context_properties = parse_list(os.environ.get('TECHNICAL_CONTEXT_PROP
 
 # Dynamic metadata-context assembly (Plan 2). Default 'static' for backward
 # compatibility — the static path is bit-for-bit identical to current behavior.
-metadata_context_mode = os.environ.get('METADATA_CONTEXT_MODE', 'static')        # static | dynamic
+metadata_context_mode = os.environ.get('METADATA_CONTEXT_MODE', 'dynamic')        # static | dynamic
 
 # SQL-gen metadata budget (final context passed to SQL gen). SOFT cap only —
 # triggers the cascade + waypoint filter to compress when exceeded. There is
@@ -95,3 +121,34 @@ max_detail_concepts = to_integer(os.environ.get('MAX_DETAIL_CONCEPTS', 20))
 # scope (the planner can only emit reanchor for those, not expand_to).
 # Validation: callers must satisfy graph_depth < max_graph_depth.
 max_graph_depth = to_integer(os.environ.get('MAX_GRAPH_DEPTH', 3))
+
+# Knowledge-base search client (kbclient.py). Thin HTTP client over
+# POST /timbr/api/kb/search plus opt-in LRU cache invalidated by polling
+# MAX(changed_on) on timbr.sys_knowledgebase_examples. Thresholds are scaled
+# by 100 from the env int (e.g. 80 -> 0.80) to fit the to_integer convention.
+kb_search_timeout = to_integer(os.environ.get('KB_SEARCH_TIMEOUT', 30))            # per-request seconds
+kb_top_k = to_integer(os.environ.get('KB_TOP_K', 5))                              # 1 <= top_k <= 20
+kb_high_threshold = to_integer(os.environ.get('KB_HIGH_THRESHOLD', 80)) / 100.0    # 0.0 <= x <= 1.0
+kb_medium_threshold = to_integer(os.environ.get('KB_MEDIUM_THRESHOLD', 50)) / 100.0  # 0.0 <= x <= high
+kb_max_retries = to_integer(os.environ.get('KB_MAX_RETRIES', 2))                  # retries on 502/503/504/conn
+# Client-side cache. TTL None (env unset) disables caching entirely.
+_kb_cache_ttl_env = os.environ.get('KB_CACHE_TTL_SECONDS', None)
+kb_cache_ttl_seconds = to_integer(_kb_cache_ttl_env) if _kb_cache_ttl_env not in (None, '') else None
+kb_cache_max_entries = to_integer(os.environ.get('KB_CACHE_MAX_ENTRIES', 128))
+
+# Knowledge-base rules (timbr.sys_knowledgebase_rules) injected into the NL2SQL
+# pipeline stages. Curated and small, so cached with a short fixed TTL and
+# re-validated by MAX(changed_on). enable flag is a kill-switch; when OFF the
+# pipeline behaves exactly as before (rules are never fetched or injected).
+kb_rules_cache_ttl_seconds = to_integer(os.environ.get('KB_RULES_CACHE_TTL_SECONDS', 60))
+
+# Knowledge-base example retrieval in the conversation-memory flow. When ON, the
+# memory subsystem probes for available knowledge bases (agent-first, else
+# ontology) and folds approved reference examples into the SQL-generation prompts.
+# Works independently of memory: KB retrieval runs whenever an agent/ontology is
+# present, even if TIMBR_ENABLE_MEMORY is false.
+enable_knowledge_base = to_boolean(os.environ.get('ENABLE_KNOWLEDGE_BASE', 'true'))
+# DEV/test aid: when the live KB search returns no matches, emit a single
+# hard-coded example so classifier selection + prompt injection can be validated
+# end-to-end without live KB data. Default OFF — never affects production.
+kb_fallback_example = to_boolean(os.environ.get('KB_FALLBACK_EXAMPLE', 'false'))

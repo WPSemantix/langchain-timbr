@@ -78,6 +78,7 @@ class TestLangchainChainsReasoningIntegration:
             ontology=config["timbr_ontology"],
             verify_ssl=config["verify_ssl"],
             enable_reasoning=True,
+            generate_answer=True
         )
         result = agent.invoke(config["test_reasoning_prompt"])
         print("Timbr SQL Agent result:", result)

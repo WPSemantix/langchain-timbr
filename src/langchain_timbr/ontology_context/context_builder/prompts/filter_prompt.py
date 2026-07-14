@@ -176,6 +176,17 @@ def _render_note_block(note: str) -> str:
     return "\n\n**Additional Notes:**\n" + note.strip()
 
 
+def _render_rules_block(rules_block: str) -> str:
+    """Render the KB relationship-rules block for the user message.
+
+    ``rules_block`` is pre-rendered upstream (in-subgraph relationships only).
+    Returns "" when empty so the prompt is byte-identical when no rules apply.
+    """
+    if not rules_block or not rules_block.strip():
+        return ""
+    return "\n\n" + rules_block.strip()
+
+
 def _build_system_prompt(allowed_actions: List[str]) -> str:
     """Assemble the system prompt with the variants for the allowed actions only.
 
@@ -214,6 +225,8 @@ def build_filter_messages(
     compact_ddl: str,
     note: str = "",
     allowed_actions: Optional[List[str]] = None,
+    memory_context=None,
+    rules_block: str = "",
 ) -> List[dict]:
     """Return [{role,content}, {role,content}] for the filter call.
 
@@ -226,15 +239,20 @@ def build_filter_messages(
     ``note`` carries conversation memory (when this is a follow-up question)
     and any caller-supplied notes — appended verbatim as the Additional Notes
     block so the filter LLM sees prior context.
+
+    ``memory_context`` folds the classifier's expanded-intent summary into the
+    question (no-op when absent), matching the SQL-gen / concept prompts.
     """
+    from ....utils.memory import apply_memory_question_expansion
+
     if allowed_actions is None:
         allowed_actions = ["build_path", "expand_to", "reanchor"]
     system_prompt = _build_system_prompt(allowed_actions)
     user_content = _USER_TEMPLATE.format(
-        question=question.strip(),
+        question=apply_memory_question_expansion(question.strip(), memory_context),
         anchor=anchor.strip(),
         compact_ddl=compact_ddl.strip(),
-    ) + _render_note_block(note)
+    ) + _render_note_block(note) + _render_rules_block(rules_block)
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_content},
@@ -249,20 +267,25 @@ def build_retry_messages(
     error_lines: List[str],
     note: str = "",
     allowed_actions: Optional[List[str]] = None,
+    memory_context=None,
+    rules_block: str = "",
 ) -> List[dict]:
     """Return messages for the retry call, with reason codes injected.
 
-    Same ``allowed_actions`` semantics as ``build_filter_messages``.
+    Same ``allowed_actions`` and ``memory_context`` semantics as
+    ``build_filter_messages``.
     """
+    from ....utils.memory import apply_memory_question_expansion
+
     if allowed_actions is None:
         allowed_actions = ["build_path", "expand_to", "reanchor"]
     system_prompt = _build_system_prompt(allowed_actions)
     errors_block = "\n".join(f"- {line}" for line in error_lines)
     retry_user = _USER_TEMPLATE.format(
-        question=question.strip(),
+        question=apply_memory_question_expansion(question.strip(), memory_context),
         anchor=anchor.strip(),
         compact_ddl=compact_ddl.strip(),
-    ) + _render_note_block(note) + "\n\n" + _RETRY_PREAMBLE.format(errors=errors_block)
+    ) + _render_note_block(note) + _render_rules_block(rules_block) + "\n\n" + _RETRY_PREAMBLE.format(errors=errors_block)
     return [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": retry_user},

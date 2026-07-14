@@ -1,3 +1,4 @@
+import logging
 from typing import Optional, Union, Dict, Any
 from ..utils._base_chain import Chain
 from langchain_core.language_models.llms import LLM
@@ -8,6 +9,8 @@ from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_c
 from ..utils.timbr_llm_utils import determine_concept
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
+
+logger = logging.getLogger(__name__)
 
 
 class IdentifyTimbrConceptChain(Chain):
@@ -44,6 +47,7 @@ class IdentifyTimbrConceptChain(Chain):
         conversation_id: Optional[str] = None,
         enable_memory: Optional[bool] = config.enable_memory,
         memory_window_size: Optional[int] = config.memory_window_size,
+        enable_ontology_questions: Optional[bool] = config.enable_ontology_questions,
         **kwargs,
     ):
         """
@@ -127,11 +131,12 @@ class IdentifyTimbrConceptChain(Chain):
             self._should_validate = to_boolean(agent_options.get("should_validate")) if "should_validate" in agent_options else False
             self._retries = to_integer(agent_options.get("retries") if "retries" in agent_options else retries)
             self._note = agent_options.get("note") if "note" in agent_options else ''
-            if note:
+            if note and note != self._note:
                 self._note = ((self._note + '\n') if self._note else '') + note
             self._enable_trace = to_boolean(agent_options.get("enable_trace")) if "enable_trace" in agent_options else to_boolean(enable_trace)
             self._enable_memory = to_boolean(agent_options.get("enable_memory")) if "enable_memory" in agent_options else to_boolean(enable_memory)
             self._memory_window_size = to_integer(agent_options.get("memory_window_size")) if "memory_window_size" in agent_options else to_integer(memory_window_size)
+            self._enable_ontology_questions = to_boolean(agent_options.get("enable_ontology_questions")) if "enable_ontology_questions" in agent_options else to_boolean(enable_ontology_questions)
         else:
             self._ontology = ontology if ontology is not None else config.ontology
             self._concepts_list = parse_list(concepts_list)
@@ -144,6 +149,7 @@ class IdentifyTimbrConceptChain(Chain):
             self._enable_trace = to_boolean(enable_trace)
             self._enable_memory = to_boolean(enable_memory)
             self._memory_window_size = to_integer(memory_window_size)
+            self._enable_ontology_questions = to_boolean(enable_ontology_questions)
 
         self._enable_logging = self._enable_trace
         self._conversation_id = conversation_id
@@ -167,6 +173,7 @@ class IdentifyTimbrConceptChain(Chain):
             "concept",
             "concept_metadata",
             "identify_concept_reason",
+            "error",
             self.usage_metadata_key,
             "conversation_id",
         ]
@@ -197,7 +204,7 @@ class IdentifyTimbrConceptChain(Chain):
 
         # ---- memory resolution (once per top-level invocation) ----
         _chain_ctx = self._received_chain_context
-        if _chain_ctx.get("memory") is None and self._enable_memory:
+        if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
             _chain_ctx["memory"] = resolve_memory(
                 llm=self._llm,
                 conn_params=self._get_conn_params(),
@@ -206,6 +213,8 @@ class IdentifyTimbrConceptChain(Chain):
                 enable_memory=self._enable_memory,
                 memory_window_size=self._memory_window_size,
                 concept_names=self._concepts_list,
+                agent=self._agent,
+                ontology=self._ontology,
             )
         memory_ctx = _chain_ctx.get("memory")
         memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
@@ -226,6 +235,7 @@ class IdentifyTimbrConceptChain(Chain):
                 enable_trace=self._enable_trace,
                 is_delegated=False,
                 conversation_id=conversation_id or _query_id,
+                verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, self._ontology, None)
 
@@ -234,20 +244,58 @@ class IdentifyTimbrConceptChain(Chain):
             log_agent_step(_log_ctx)
 
         _chain_start = _now()
-        res = determine_concept(
-            question=prompt,
-            llm=self._llm,
-            conn_params=self._get_conn_params(),
-            concepts_list=self._concepts_list,
-            views_list=self._views_list,
-            include_logic_concepts=self._include_logic_concepts,
-            include_tags=self._include_tags,
-            should_validate=self._should_validate,
-            retries=self._retries,
-            note=self._note,
-            debug=self._debug,
-            memory_context=memory_ctx,
-        )
+        try:
+            from ..kbclient import fetch_rules
+            kb_rules = fetch_rules(
+                self._get_conn_params(), agent=self._agent, ontology=self._ontology
+            )
+            res = determine_concept(
+                question=prompt,
+                llm=self._llm,
+                conn_params=self._get_conn_params(),
+                concepts_list=self._concepts_list,
+                views_list=self._views_list,
+                include_logic_concepts=self._include_logic_concepts,
+                include_tags=self._include_tags,
+                should_validate=self._should_validate,
+                retries=self._retries,
+                note=self._note,
+                debug=self._debug,
+                memory_context=memory_ctx,
+                enable_ontology_questions=self._enable_ontology_questions,
+                rules=kb_rules,
+            )
+        except Exception as exc:
+            error = str(exc)
+            logger.error("IdentifyTimbrConceptChain determine_concept failed: %s", error)
+            if _log_ctx:
+                log_chain_trace(
+                    ctx=_log_ctx,
+                    chain_type=_log_ctx.chain_type,
+                    start_time=_chain_start,
+                    status="failed",
+                    question=prompt,
+                    ontology=self._ontology,
+                    schema=None,
+                    concept=None,
+                    chain_output={"error": error},
+                    error=error,
+                    usage_metadata={},
+                )
+            return sanitize_results(
+                self.output_keys,
+                {
+                    **inputs,
+                    "ontology": self._ontology,
+                    "schema": None,
+                    "concept": None,
+                    "concept_metadata": None,
+                    "identify_concept_reason": None,
+                    "error": error,
+                    self.usage_metadata_key: {},
+                    "conversation_id": conversation_id or (_log_ctx.query_id if _log_ctx else None),
+                },
+            )
 
         usage_metadata = res.pop("usage_metadata", {})
         _duration_ms = res.pop("duration_ms", 0)
