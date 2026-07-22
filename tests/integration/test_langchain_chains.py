@@ -425,11 +425,14 @@ class TestGenerateAnswerChain:
             llm=llm,
             url=config["timbr_url"],
             token=config["timbr_token"],
+            ontology=config["timbr_ontology"]
         )
         result = chain.invoke({ "prompt": config["test_prompt"] })
         print("GenerateAnswerChain result:", result)
         assert "answer" in result, "Chain should return an 'answer'"
         assert result["answer"], "Answer should not be empty"
+        assert result["conversation_id"] is not None
+        assert result["query_id"] is not None
 
     def test_generate_answer_chain_with_sql(self, llm, config):
         """Test answer generation with SQL context."""

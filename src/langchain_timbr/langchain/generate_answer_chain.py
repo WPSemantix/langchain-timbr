@@ -256,7 +256,7 @@ class GenerateAnswerChain(Chain):
     @property
     def output_keys(self) -> list:
         base = [
-            "answer", self.usage_metadata_key, "conversation_id",
+            "answer", self.usage_metadata_key, "conversation_id", "query_id",
             "rows", "sql", "ontology", "schema", "concept", "error",
             "reasoning_status", "identify_concept_reason", "generate_sql_reason",
             "execute_timbr_usage_metadata",
@@ -464,5 +464,8 @@ class GenerateAnswerChain(Chain):
                 schema=execute_result.get("schema") or _log_ctx.schema,
                 concept=execute_result.get("concept") or _log_ctx.concept,
             )
+
+        if "query_id" not in result or result["query_id"] is None:
+            result["query_id"] = _log_ctx.query_id if _log_ctx else None
             
         return sanitize_results(self.output_keys, result)
