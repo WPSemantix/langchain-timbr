@@ -258,6 +258,7 @@ class ExecuteTimbrQueryChain(Chain):
             "generate_sql_reason",
             self.usage_metadata_key,
             "conversation_id",
+            "query_id"
         ]
         return list(dict.fromkeys(self.input_keys + base))
 
@@ -574,6 +575,9 @@ class ExecuteTimbrQueryChain(Chain):
                     reasoning_status=reasoning_status,
                     usage_metadata=usage_metadata,
                 )
+
+            if "query_id" not in result:
+                result["query_id"] = _log_ctx.query_id if _log_ctx else None
                 
             return sanitize_results(self.output_keys, result)
 
