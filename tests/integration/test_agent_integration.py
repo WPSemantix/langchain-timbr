@@ -28,6 +28,8 @@ class TestTimbrSqlAgentIntegration:
         assert len(result["rows"]) > 0, "Rows should be returned"
         assert "usage_metadata" in result, "Agent should return 'usage_metadata'"
         assert len(result["usage_metadata"]) == 2 and 'determine_concept' in result["usage_metadata"] and 'generate_sql' in result["usage_metadata"], "Usage metadata should contain both 'determine_concept' and 'generate_sql'"
+        assert "conversation_id" in result and result["conversation_id"] is not None, "Conversation ID should be present"
+        assert "query_id" in result and result["query_id"] is not None, "Query ID should be present"
     
     def test_timbr_sql_agent_with_generate_answer(self, llm, config):
         """Test the Timbr SQL Agent with generate_answer enabled to ensure natural language responses are generated."""

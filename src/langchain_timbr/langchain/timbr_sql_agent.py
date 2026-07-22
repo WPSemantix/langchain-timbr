@@ -217,7 +217,7 @@ class TimbrSqlAgent(Runnable):
             "answer", "rows", "sql", "ontology", "schema", "concept",
             "error", "reasoning_status", "usage_metadata",
             "identify_concept_reason", "generate_sql_reason",
-            "conversation_id", "chain_context",
+            "conversation_id", "query_id", "chain_context",
         ]
 
     def _get_empty_input_response(self, conversation_id: Optional[str] = None) -> dict:
@@ -235,6 +235,7 @@ class TimbrSqlAgent(Runnable):
             "generate_sql_reason": None,
             "usage_metadata": {},
             "conversation_id": conversation_id,
+            "query_id": None,
         }
 
     def _get_error_response(self, error_msg: str, conversation_id: Optional[str] = None) -> dict:
@@ -307,6 +308,7 @@ class TimbrSqlAgent(Runnable):
             "generate_sql_reason": result.get("generate_sql_reason"),
             "conversation_id": conversation_id,
             "chain_context": result.get("chain_context"),
+            "query_id": log_ctx.query_id if log_ctx and log_ctx.query_id else result.get("query_id", None),
         })
 
 
