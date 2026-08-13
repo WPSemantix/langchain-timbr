@@ -1,6 +1,6 @@
 anthropic~=0.96.0
 azure-identity~=1.25.0
-cryptography~=50.0.0
+cryptography~=49.0.0
 databricks-langchain~=0.7.1
 databricks-sdk~=0.64.0
 google-cloud-aiplatform==1.140
