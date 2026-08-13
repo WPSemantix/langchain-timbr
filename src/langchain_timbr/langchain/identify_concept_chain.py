@@ -271,7 +271,7 @@ class IdentifyTimbrConceptChain(Chain):
             if _log_ctx:
                 log_chain_trace(
                     ctx=_log_ctx,
-                    chain_type=_log_ctx.chain_type,
+                    chain_type="IdentifyTimbrConceptChain",
                     start_time=_chain_start,
                     status="failed",
                     question=prompt,
@@ -325,7 +325,7 @@ class IdentifyTimbrConceptChain(Chain):
         if _log_ctx:
             log_chain_trace(
                 ctx=_log_ctx,
-                chain_type=_log_ctx.chain_type,
+                chain_type="IdentifyTimbrConceptChain",
                 start_time=_chain_start,
                 status="completed",
                 question=prompt,

@@ -365,7 +365,7 @@ class GenerateTimbrSqlChain(Chain):
             if _log_ctx:
                 log_chain_trace(
                     ctx=_log_ctx,
-                    chain_type=_log_ctx.chain_type,
+                    chain_type="GenerateTimbrSqlChain",
                     start_time=_chain_start,
                     status="failed",
                     question=prompt,
@@ -415,6 +415,8 @@ class GenerateTimbrSqlChain(Chain):
             _chain_ctx["reasoning"]["identify_concept_reason"] = generate_res["identify_concept_reason"]
         if generate_res.get("generate_sql_reason"):
             _chain_ctx["reasoning"]["generate_sql_reason"] = generate_res["generate_sql_reason"]
+        if generate_res.get("generate_sql_reasons"):
+            _chain_ctx["reasoning"]["generate_sql_reasons"] = generate_res["generate_sql_reasons"]
         _chain_ctx["tokens"]["GenerateTimbrSqlChain"] = {
             "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
             "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
@@ -445,7 +447,7 @@ class GenerateTimbrSqlChain(Chain):
         if _log_ctx:
             log_chain_trace(
                 ctx=_log_ctx,
-                chain_type=_log_ctx.chain_type,
+                chain_type="GenerateTimbrSqlChain",
                 start_time=_chain_start,
                 status="failed" if (not is_sql_valid and error) else "completed",
                 question=prompt,
