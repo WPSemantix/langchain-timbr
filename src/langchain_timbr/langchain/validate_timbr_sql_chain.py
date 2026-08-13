@@ -367,7 +367,7 @@ class ValidateTimbrSqlChain(Chain):
         if _log_ctx:
             log_chain_trace(
                 ctx=_log_ctx,
-                chain_type=_log_ctx.chain_type,
+                chain_type="ValidateTimbrSqlChain",
                 start_time=_chain_start,
                 status="failed" if (not is_sql_valid and error) else "completed",
                 question=prompt,

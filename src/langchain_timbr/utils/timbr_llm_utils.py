@@ -295,6 +295,57 @@ def _extract_usage_metadata(response: Any) -> dict:
     
     return usage_metadata
 
+class _UsageCollectingLLM:
+    """Transparent proxy over an LLM that records per-call token usage.
+
+    Wraps an inner LLM and intercepts ``.invoke`` to accumulate token usage
+    (via :func:`_extract_usage_metadata`) into a shared ``sink`` dict under a
+    fixed ``key``. Every other attribute is delegated to the wrapped instance,
+    so builders that only call ``.invoke`` see an ordinary LLM. Instrumentation
+    failures are swallowed — they must never break the underlying LLM call.
+
+    Only used to observe token usage of context-builder LLM calls; it is never
+    persisted or compared by identity beyond the caller's own ``id(llm)`` caches.
+    """
+
+    def __init__(self, inner: Any, sink: dict, key: str):
+        object.__setattr__(self, "_inner", inner)
+        object.__setattr__(self, "_sink", sink)
+        object.__setattr__(self, "_key", key)
+
+    def invoke(self, *args, **kwargs):
+        inner = object.__getattribute__(self, "_inner")
+        response = inner.invoke(*args, **kwargs)
+        try:
+            usage = _extract_usage_metadata(response)
+            if usage:
+                sink = object.__getattribute__(self, "_sink")
+                key = object.__getattribute__(self, "_key")
+                bucket = sink.get(key)
+                if not isinstance(bucket, dict):
+                    bucket = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+                    sink[key] = bucket
+                for field in ("input_tokens", "output_tokens", "total_tokens"):
+                    val = usage.get(field)
+                    if isinstance(val, (int, float)):
+                        bucket[field] = bucket.get(field, 0) + val
+        except Exception:
+            pass
+        return response
+
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, "_inner"), name)
+
+
+def _wrap_llm_usage(llm: Any, sink: Optional[dict], key: str) -> Any:
+    """Return ``llm`` wrapped so its ``.invoke`` token usage accrues into
+    ``sink[key]``. When ``sink`` is None or ``llm`` is None, returns ``llm``
+    unchanged (backward-compatible no-op)."""
+    if llm is None or sink is None:
+        return llm
+    return _UsageCollectingLLM(llm, sink, key)
+
+
 def filter_list_by_ontology(concepts_list, ontology) -> list:
     ontology_specific_concepts = concepts_list
     
@@ -1561,6 +1612,11 @@ def _build_sql_generation_context(
     # KB rules threaded into the dynamic pre-filter / filter prompts and into the
     # per-object rendering below. None ⇒ no rules injected (backward-compat).
     rules: Optional[RuleSet] = None,
+    # Instrumentation sinks (optional; None ⇒ no-op). ``usage_sink`` accumulates
+    # context-builder token usage under keys "technical_context"/"metadata_context";
+    # ``duration_sink`` accumulates their wall-clock ms under the same keys.
+    usage_sink: Optional[dict] = None,
+    duration_sink: Optional[dict] = None,
 ) -> dict:
     """
     Prepare the complete SQL generation context by gathering all necessary metadata.
@@ -1576,6 +1632,11 @@ def _build_sql_generation_context(
         dict containing all context needed for SQL generation prompts
     """
     datasource_type = _get_active_datasource(conn_params).get('target_type')
+
+    # Usage-collecting proxies for context-builder LLM calls (no-op when
+    # usage_sink is None). Token usage accrues under discrete sink keys.
+    _tc_llm = _wrap_llm_usage(llm, usage_sink, "technical_context")
+    _mc_llm = _wrap_llm_usage(llm, usage_sink, "metadata_context")
 
     properties_desc = get_properties_description(conn_params=conn_params)
     relationships_desc = get_relationships_description(conn_params=conn_params)
@@ -1661,10 +1722,12 @@ def _build_sql_generation_context(
                     concept=bound_concept or concept,
                     conn_params=conn_params,
                     config=tc_config,
-                    llm=llm,
+                    llm=_tc_llm,
                 )
                 return dict(r.column_annotations or {})
 
+            import time as _time
+            _tc_start = _time.monotonic()
             tc_result = build_technical_context(
                 question=question,
                 columns=tc_columns,
@@ -1672,8 +1735,13 @@ def _build_sql_generation_context(
                 concept=concept,
                 conn_params=conn_params,
                 config=tc_config,
-                llm=llm,
+                llm=_tc_llm,
             )
+            if duration_sink is not None:
+                import time as _time
+                duration_sink["technical_context"] = duration_sink.get("technical_context", 0) + int(
+                    (_time.monotonic() - _tc_start) * 1000
+                )
             tc_annotations = dict(tc_result.column_annotations or {})
             for c in all_col_dicts:
                 name = c.get('name') or c.get('col_name', '')
@@ -1694,6 +1762,8 @@ def _build_sql_generation_context(
     _dynamic_mode = normalize_mode(metadata_context_mode or config.metadata_context_mode)
     if schema == 'dtimbr' and _dynamic_mode == 'dynamic':
         try:
+            import time as _time
+            _mc_start = _time.monotonic()
             (
                 _new_columns_str,
                 _new_measures_str,
@@ -1713,7 +1783,7 @@ def _build_sql_generation_context(
                 static_measures_str=measures_str,
                 static_rel_prop_str=rel_prop_str,
                 memory_context=memory_context,
-                llm=llm,
+                llm=_mc_llm,
                 note=note or '',
                 tc_annotations=tc_annotations,
                 tc_topup=tc_topup,
@@ -1726,6 +1796,10 @@ def _build_sql_generation_context(
                     include_logic_concepts=include_logic_concepts,
                 ),
             )
+            if duration_sink is not None:
+                duration_sink["metadata_context"] = duration_sink.get("metadata_context", 0) + int(
+                    (_time.monotonic() - _mc_start) * 1000
+                )
             columns_str = _new_columns_str
             measures_str = _new_measures_str
             rel_prop_str = _new_rel_prop_str
@@ -1881,6 +1955,9 @@ def handle_generate_sql_reasoning(
     technical_context_properties: Optional[list] = None,
     generate_sql_reason: Optional[str] = None,
     decisions: Optional[list] = None,
+    generate_sql_reasons: Optional[list] = None,
+    usage_sink: Optional[dict] = None,
+    duration_sink: Optional[dict] = None,
     # Plan 2 — dynamic metadata-context propagation (None ⇒ inherit from config)
     metadata_context_mode: Optional[str] = None,
     metadata_context_max_tokens: Optional[int] = None,
@@ -1962,6 +2039,8 @@ def handle_generate_sql_reasoning(
                     include_logic_concepts=include_logic_concepts,
                     note=evaluation_note,
                     memory_context=memory_context,
+                    usage_sink=usage_sink,
+                    duration_sink=duration_sink,
                 ),
                 note=evaluation_note,
                 timeout=timeout,
@@ -1972,6 +2051,9 @@ def handle_generate_sql_reasoning(
             reasoned_sql = regen_result['sql']
             reasoned_sql_reason = regen_result['generate_sql_reason']
             error = regen_result['error']
+
+            if generate_sql_reasons is not None and reasoned_sql_reason:
+                generate_sql_reasons.append({"step": f"generate_sql_reasoning_step_{step + 1}", "reason": reasoned_sql_reason})
 
             # Refresh generator reason + decision trace so the next iteration's
             # evaluator sees the freshest plan + trace for the SQL it evaluates.
@@ -2032,8 +2114,15 @@ def handle_validate_generate_sql(
     # context the original generate_sql call did.
     note: Optional[str] = None,
     memory_context=None,
+    generate_sql_reasons: Optional[list] = None,
+    usage_sink: Optional[dict] = None,
+    duration_sink: Optional[dict] = None,
 ) -> tuple[bool, str, str]:
+    import time as _vtime
+    _v_start = _vtime.monotonic()
     is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
+    if duration_sink is not None:
+        duration_sink["validate_sql"] = duration_sink.get("validate_sql", 0) + int((_vtime.monotonic() - _v_start) * 1000)
     validation_attempt = 0
   
     while validation_attempt < retries and not is_sql_valid:
@@ -2066,6 +2155,8 @@ def handle_validate_generate_sql(
                 include_logic_concepts=include_logic_concepts,
                 note=note,
                 memory_context=memory_context,
+                usage_sink=usage_sink,
+                duration_sink=duration_sink,
             ),
             note=validation_err_txt,
             timeout=timeout,
@@ -2075,6 +2166,10 @@ def handle_validate_generate_sql(
         
         regen_error = regen_result['error']
         sql_query = regen_result['sql']
+
+        _regen_reason = regen_result.get('generate_sql_reason')
+        if generate_sql_reasons is not None and _regen_reason:
+            generate_sql_reasons.append({"step": f"generate_sql_validation_regen_{validation_attempt}", "reason": _regen_reason})
 
         validation_key = f'generate_sql_validation_regen_{validation_attempt}'
         usage_metadata[validation_key] = {
@@ -2087,7 +2182,10 @@ def handle_validate_generate_sql(
         if regen_error:
             raise Exception(regen_error)
         
+        _v_start = _vtime.monotonic()
         is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
+        if duration_sink is not None:
+            duration_sink["validate_sql"] = duration_sink.get("validate_sql", 0) + int((_vtime.monotonic() - _v_start) * 1000)
 
     return is_sql_valid, error, sql_query
 
@@ -2219,6 +2317,8 @@ def generate_sql(
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params, enable_reasoning)
     sql_query = None
     generate_sql_reason = None
+    generate_sql_reasons = []
+    _ctx_builder_durations = {}
     is_sql_valid = True  # Assume valid by default; set to False only if validation fails
     error = ''
 
@@ -2250,6 +2350,8 @@ def generate_sql(
                 note=note,
                 memory_context=memory_context,
                 rules=rules,
+                usage_sink=usage_metadata,
+                duration_sink=_ctx_builder_durations,
             ),
             note=note,
             timeout=timeout,
@@ -2268,6 +2370,9 @@ def generate_sql(
         generate_sql_reason = result.get('generate_sql_reason', None)
         decisions = result.get('decisions', None)
         error = result['error']
+
+        if generate_sql_reason:
+            generate_sql_reasons.append({"step": "generate_sql", "reason": generate_sql_reason})
 
         if error:
             raise Exception(error)
@@ -2298,6 +2403,9 @@ def generate_sql(
                 technical_context_properties=technical_context_properties,
                 generate_sql_reason=generate_sql_reason,
                 decisions=decisions,
+                generate_sql_reasons=generate_sql_reasons,
+                usage_sink=usage_metadata,
+                duration_sink=_ctx_builder_durations,
                 metadata_context_mode=metadata_context_mode,
                 metadata_context_max_tokens=metadata_context_max_tokens,
                 max_graph_depth=max_graph_depth,
@@ -2337,6 +2445,9 @@ def generate_sql(
                 include_logic_concepts=include_logic_concepts,
                 note=note,
                 memory_context=memory_context,
+                generate_sql_reasons=generate_sql_reasons,
+                usage_sink=usage_metadata,
+                duration_sink=_ctx_builder_durations,
             )
     except TimeoutError as e:
         error = f"LLM call timed out: {str(e)}"
@@ -2353,9 +2464,13 @@ def generate_sql(
         "is_sql_valid": is_sql_valid if should_validate_sql else None,
         "identify_concept_reason": identify_concept_reason,
         "generate_sql_reason": generate_sql_reason,
+        "generate_sql_reasons": generate_sql_reasons,
         "reasoning_status": reasoning_status,
         "reasoning_duration": reasoning_duration,
         "identify_concept_chain_duration": identify_concept_chain_duration,
+        "technical_context_duration": _ctx_builder_durations.get("technical_context", 0),
+        "metadata_context_duration": _ctx_builder_durations.get("metadata_context", 0),
+        "validate_sql_duration": _ctx_builder_durations.get("validate_sql", 0),
         "usage_metadata": usage_metadata,
         "ontology": conn_params.get('ontology'),
         "conn_params": conn_params

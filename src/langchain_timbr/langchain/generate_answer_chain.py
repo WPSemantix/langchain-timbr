@@ -5,7 +5,7 @@ from langchain_core.language_models.llms import LLM
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
 from ..utils.general import to_boolean, to_integer, parse_list, validate_timbr_connection_params, sanitize_results
-from ..utils.timbr_llm_utils import answer_question
+from ..utils.timbr_llm_utils import answer_question, _wrap_llm_usage
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
 
@@ -330,10 +330,13 @@ class GenerateAnswerChain(Chain):
             log_agent_start(_log_ctx, _log_ctx.ontology, _log_ctx.schema)
 
         # ---- memory resolution (once per top-level invocation) ----
+        _memory_usage = {}
         _chain_ctx = self._received_chain_context
         if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
+            import time as _mem_time
+            _mem_start = _mem_time.monotonic()
             _chain_ctx["memory"] = resolve_memory(
-                llm=self._llm,
+                llm=_wrap_llm_usage(self._llm, _memory_usage, "memory_context"),
                 conn_params=self._get_conn_params(),
                 conversation_id=conversation_id,
                 prompt=prompt,
@@ -343,6 +346,7 @@ class GenerateAnswerChain(Chain):
                 agent=self._agent,
                 ontology=self._ontology,
             )
+            _chain_ctx["duration"]["memory_context"] = int((_mem_time.monotonic() - _mem_start) * 1000)
         memory_ctx = _chain_ctx.get("memory")
         memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
 
@@ -364,6 +368,8 @@ class GenerateAnswerChain(Chain):
             conversation_id = execute_result.get("conversation_id") or conversation_id
 
         if _log_ctx:
+            if not _log_ctx.ontology:
+                _log_ctx.ontology = execute_result.get("ontology") or self._ontology or ""
             _log_ctx.current_step = "generating_answer"
             log_agent_step(_log_ctx)
             # Persist memory follow-up state
@@ -373,6 +379,9 @@ class GenerateAnswerChain(Chain):
 
         identify_concept_reason = _chain_ctx["reasoning"].get("identify_concept_reason") if _chain_ctx.get("reasoning") else None or inputs.get("identify_concept_reason") or execute_result.get("identify_concept_reason")
         generate_sql_reason = _chain_ctx["reasoning"].get("generate_sql_reason") if _chain_ctx.get("reasoning") else None or inputs.get("generate_sql_reason") or execute_result.get("generate_sql_reason")
+        # For logging: primary = FIRST reason (never overwritten); answer still uses the final reason above.
+        _generate_sql_reasons = (_chain_ctx["reasoning"].get("generate_sql_reasons") if _chain_ctx.get("reasoning") else None) or []
+        _primary_generate_sql_reason = _generate_sql_reasons[0]["reason"] if _generate_sql_reasons else generate_sql_reason
 
         _chain_start = _now()
         _answer_start = _chain_start
@@ -409,10 +418,15 @@ class GenerateAnswerChain(Chain):
             ))
 
             _all_usage = {}
-            for k, v in inputs.items():
-                if k.endswith("_usage_metadata") and isinstance(v, dict):
-                    _all_usage = self._merge_usage_metadata(_all_usage, v)
+            # Include usage from the delegated execute chain (its metadata lives in
+            # execute_result, not inputs) so history token totals match the trace.
+            for _usage_src in (inputs, execute_result):
+                for k, v in _usage_src.items():
+                    if k.endswith("_usage_metadata") and isinstance(v, dict):
+                        _all_usage = self._merge_usage_metadata(_all_usage, v)
             _all_usage = self._merge_usage_metadata(_all_usage, usage_metadata)
+            if _memory_usage:
+                _all_usage = self._merge_usage_metadata(_all_usage, _memory_usage)
 
             _error = inputs.get("error") or execute_result.get("error")
             log_agent_history(
@@ -431,11 +445,16 @@ class GenerateAnswerChain(Chain):
                 llm_type=get_llm_type(self._llm),
                 llm_model=get_llm_model(self._llm),
                 identify_concept_reason=identify_concept_reason,
-                generate_sql_reason=generate_sql_reason,
+                generate_sql_reason=_primary_generate_sql_reason,
+                generate_sql_reasons=_generate_sql_reasons or None,
                 identify_concept_chain_duration=_chain_ctx["duration"].get("IdentifyTimbrConceptChain"),
                 generate_sql_chain_duration=_chain_ctx["duration"].get("GenerateTimbrSqlChain"),
                 answer_chain_duration=_chain_ctx["duration"].get("GenerateAnswerChain"),
                 reasoning_duration=_chain_ctx["duration"].get("reasoning"),
+                validate_sql_duration=_chain_ctx["duration"].get("validate_sql"),
+                memory_context_duration=_chain_ctx["duration"].get("memory_context"),
+                technical_context_duration=_chain_ctx["duration"].get("technical_context"),
+                metadata_context_duration=_chain_ctx["duration"].get("metadata_context"),
                 answer=answer or None,
                 has_results=_has_results,
                 results=rows,
@@ -454,7 +473,7 @@ class GenerateAnswerChain(Chain):
         if _log_ctx:
             log_chain_trace(
                 ctx=_log_ctx,
-                chain_type=_log_ctx.chain_type,
+                chain_type="GenerateAnswerChain",
                 start_time=_chain_start,
                 status="completed",
                 question=prompt,

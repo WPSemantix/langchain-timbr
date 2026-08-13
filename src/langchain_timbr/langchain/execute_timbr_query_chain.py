@@ -7,7 +7,7 @@ from langchain_timbr.utils.timbr_utils import get_timbr_agent_options
 from ..utils.general import parse_list, to_boolean, to_integer, validate_timbr_connection_params, sanitize_results
 from ..utils.timbr_utils import run_query, validate_sql, build_server_url, _get_ontology_version
 from .. import ontology_metadata
-from ..utils.timbr_llm_utils import generate_sql
+from ..utils.timbr_llm_utils import generate_sql, _wrap_llm_usage
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
 
@@ -374,15 +374,23 @@ class ExecuteTimbrQueryChain(Chain):
         reasoning_status = None
         identify_concept_reason = None
         generate_sql_reason = None
+        generate_sql_reasons = []
         _generate_sql_chain_duration_ms = 0
         _reasoning_duration_ms = 0
         _identify_concept_chain_duration_ms = 0
+        _technical_context_duration_ms = 0
+        _metadata_context_duration_ms = 0
+        _validate_sql_duration_ms = 0
+        _memory_usage = {}
+        _memory_context_duration_ms = 0
 
         # ---- memory resolution (once per top-level invocation) ----
         _chain_ctx = self._received_chain_context
         if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
+            import time as _mem_time
+            _mem_start = _mem_time.monotonic()
             _chain_ctx["memory"] = resolve_memory(
-                llm=self._llm,
+                llm=_wrap_llm_usage(self._llm, _memory_usage, "memory_context"),
                 conn_params=self._get_conn_params(),
                 conversation_id=conversation_id,
                 prompt=prompt or "",
@@ -392,6 +400,7 @@ class ExecuteTimbrQueryChain(Chain):
                 agent=self._agent,
                 ontology=self._ontology,
             )
+            _memory_context_duration_ms = int((_mem_time.monotonic() - _mem_start) * 1000)
         memory_ctx = _chain_ctx.get("memory")
         memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
 
@@ -418,6 +427,10 @@ class ExecuteTimbrQueryChain(Chain):
         elif _log_ctx is not None:
             _log_ctx.retry_count = 0
             _log_ctx.no_results_retry_count = 0
+            # Delegated contexts arrive without an ontology; populate it so
+            # running_update_step always has ontology (or agent_name).
+            if not _log_ctx.ontology:
+                _log_ctx.ontology = ontology_name or self._ontology or ""
 
         # Persist memory follow-up state
         if _log_ctx and memory_ctx and memory_ctx.is_follow_up:
@@ -435,7 +448,9 @@ class ExecuteTimbrQueryChain(Chain):
                 if _log_ctx:
                     _log_ctx.current_step = "validating_sql"
                     log_agent_step(_log_ctx)
+                _val_start = _now()
                 is_sql_valid, error, sql = validate_sql(sql, self._get_conn_params())
+                _validate_sql_duration_ms += int((_now() - _val_start).total_seconds() * 1000)
 
             is_infered = False
             iteration = 0
@@ -457,6 +472,9 @@ class ExecuteTimbrQueryChain(Chain):
                     _generate_sql_chain_duration_ms += int((_now() - _gen_start).total_seconds() * 1000)
                     _reasoning_duration_ms += generate_res.get("reasoning_duration", 0) or 0
                     _identify_concept_chain_duration_ms += generate_res.get("identify_concept_chain_duration") or 0
+                    _technical_context_duration_ms += generate_res.get("technical_context_duration", 0) or 0
+                    _metadata_context_duration_ms += generate_res.get("metadata_context_duration", 0) or 0
+                    _validate_sql_duration_ms += generate_res.get("validate_sql_duration", 0) or 0
                     conn_params = generate_res.get("conn_params")
                     sql = generate_res.get("sql", "")
                     ontology_name = generate_res.get("ontology", ontology_name)
@@ -470,12 +488,15 @@ class ExecuteTimbrQueryChain(Chain):
                     error = generate_res.get("error")
                     identify_concept_reason = generate_res.get("identify_concept_reason")
                     generate_sql_reason = generate_res.get("generate_sql_reason")
+                    generate_sql_reasons.extend(generate_res.get("generate_sql_reasons") or [])
                     _gen_meta = generate_res.get("usage_metadata", {})
                     usage_metadata = self._summarize_usage_metadata(usage_metadata, _gen_meta)
 
                     if _log_ctx:
                         if concept_name:
                             _log_ctx.concept = concept_name
+                        if ontology_name:
+                            _log_ctx.ontology = ontology_name
                         _log_ctx.current_step = "generating_sql"
                         log_agent_step(_log_ctx)
 
@@ -533,10 +554,22 @@ class ExecuteTimbrQueryChain(Chain):
                 _chain_ctx["duration"]["GenerateTimbrSqlChain"] = _generate_sql_chain_duration_ms
             _chain_ctx["duration"]["reasoning"] = _reasoning_duration_ms
             _chain_ctx["duration"]["IdentifyTimbrConceptChain"] = _identify_concept_chain_duration_ms or None
+            if _memory_context_duration_ms:
+                _chain_ctx["duration"]["memory_context"] = _memory_context_duration_ms
+            if _technical_context_duration_ms:
+                _chain_ctx["duration"]["technical_context"] = _technical_context_duration_ms
+            if _metadata_context_duration_ms:
+                _chain_ctx["duration"]["metadata_context"] = _metadata_context_duration_ms
+            if _validate_sql_duration_ms:
+                _chain_ctx["duration"]["validate_sql"] = _validate_sql_duration_ms
+            if _memory_usage:
+                usage_metadata = self._summarize_usage_metadata(usage_metadata, _memory_usage)
             if identify_concept_reason:
                 _chain_ctx["reasoning"]["identify_concept_reason"] = identify_concept_reason
             if generate_sql_reason:
                 _chain_ctx["reasoning"]["generate_sql_reason"] = generate_sql_reason
+            if generate_sql_reasons:
+                _chain_ctx["reasoning"]["generate_sql_reasons"] = generate_sql_reasons
             _chain_ctx["tokens"]["ExecuteTimbrQueryChain"] = {
                 "total_tokens": _sum_token_field(usage_metadata, "total_tokens", "approximate"),
                 "input_tokens":  _sum_token_field(usage_metadata, "input_tokens"),
@@ -561,7 +594,7 @@ class ExecuteTimbrQueryChain(Chain):
             if _log_ctx:
                 log_chain_trace(
                     ctx=_log_ctx,
-                    chain_type=_log_ctx.chain_type,
+                    chain_type="ExecuteTimbrQueryChain",
                     start_time=_chain_start,
                     status="failed" if final_error else "completed",
                     question=prompt,
@@ -569,12 +602,76 @@ class ExecuteTimbrQueryChain(Chain):
                     concept=concept_name,
                     schema=schema_name,
                     generated_sql=sql,
-                    chain_output={"row_count": len(rows) if rows else 0},
+                    chain_output={"row_count": len(rows) if rows else 0, "generate_sql_reason": generate_sql_reason},
                     rows_returned=len(rows) if rows else 0,
                     error=final_error,
                     reasoning_status=reasoning_status,
                     usage_metadata=usage_metadata,
                 )
+
+                # --- Synthetic sub-step trace rows (reasoning / validate /
+                # context-builder). Each reports its measured duration by
+                # back-dating start_time; tokens are the subset of usage_metadata
+                # attributable to that step. All are opt-in via enable_trace and
+                # only emitted when the step actually ran.
+                if _log_ctx.enable_trace:
+                    from datetime import timedelta
+
+                    def _usage_subset(prefixes):
+                        return {
+                            k: v for k, v in (usage_metadata or {}).items()
+                            if isinstance(v, dict) and any(k.startswith(p) for p in prefixes)
+                        }
+
+                    def _emit_substep(chain_type, duration_ms, step_usage, chain_output):
+                        log_chain_trace(
+                            ctx=_log_ctx,
+                            chain_type=chain_type,
+                            start_time=_now() - timedelta(milliseconds=duration_ms or 0),
+                            status="failed" if final_error else "completed",
+                            question=prompt,
+                            ontology=ontology_name,
+                            concept=concept_name,
+                            schema=schema_name,
+                            chain_output=chain_output,
+                            reasoning_status=reasoning_status,
+                            usage_metadata=step_usage,
+                        )
+
+                    if _reasoning_duration_ms:
+                        _emit_substep(
+                            "ReasoningStep",
+                            _reasoning_duration_ms,
+                            _usage_subset(("sql_reasoning_step_", "generate_sql_reasoning_step_")),
+                            {"generate_sql_reasons": generate_sql_reasons},
+                        )
+
+                    _validate_usage = _usage_subset(("generate_sql_validation_regen_",))
+                    if _validate_sql_duration_ms or _validate_usage:
+                        _emit_substep(
+                            "ValidationStep",
+                            _validate_sql_duration_ms,
+                            _validate_usage,  # tokens only when an LLM regen actually occurred
+                            {"validated": True},
+                        )
+
+                    _ctx_usage = _usage_subset(("memory_context", "technical_context", "metadata_context"))
+                    _ctx_total_ms = (
+                        _memory_context_duration_ms
+                        + _technical_context_duration_ms
+                        + _metadata_context_duration_ms
+                    )
+                    if _ctx_total_ms or _ctx_usage:
+                        _emit_substep(
+                            "ContextBuilderStep",
+                            _ctx_total_ms,
+                            _ctx_usage,
+                            {
+                                "memory_context_duration": _memory_context_duration_ms,
+                                "technical_context_duration": _technical_context_duration_ms,
+                                "metadata_context_duration": _metadata_context_duration_ms,
+                            },
+                        )
 
             if "query_id" not in result:
                 result["query_id"] = _log_ctx.query_id if _log_ctx else None

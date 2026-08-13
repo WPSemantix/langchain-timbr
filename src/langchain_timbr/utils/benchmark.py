@@ -826,7 +826,6 @@ def run_benchmark(
             llm_type=llm_type,
             model=llm_model,
             api_key=llm_api_key,
-            temperature=0,
             **(llm_params or {}),
         )
 
@@ -852,7 +851,6 @@ def run_benchmark(
                 llm_type=llm_type,
                 model=llm_model,
                 api_key=llm_api_key,
-                temperature=0,
                 **(llm_params or {}),
             )
         logger.info(f"Creating GenerateTimbrSqlChain for '{agent_name}'…")
@@ -871,7 +869,6 @@ def run_benchmark(
             llm_type=llm_type,
             model=llm_model,
             api_key=llm_api_key,
-            temperature=0,
             **llm_params,
         ) if _use_llm_params else None
         agent_executor = create_timbr_sql_agent(
