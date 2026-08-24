@@ -7,6 +7,8 @@
 [![Python 3.10](https://img.shields.io/badge/python-3.10-blue.svg)](https://www.python.org/downloads/release/python-31017/)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/downloads/release/python-31112/)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3129/)
+[![Python 3.13](https://img.shields.io/badge/python-3.13-blue.svg)](https://www.python.org/downloads/release/python-3130/)
+[![Python 3.14](https://img.shields.io/badge/python-3.14-blue.svg)](https://www.python.org/downloads/release/python-3140/)
 
 # Timbr LangChain LLM SDK
 
@@ -18,6 +20,18 @@ Timbr LangChain LLM SDK is a Python SDK that extends LangChain and LangGraph wit
 
 - Access to a timbr-server
 - Python 3.10 or newer
+
+### Python 3.14 note
+
+> IMPORTANT for Python 3.14 users
+>
+> Python 3.14 currently has partial support.
+> Base package installation is supported, but some optional provider extras may
+> still be unavailable on 3.14 due to upstream package constraints.
+>
+> If an extras install fails on 3.14, install the base package first:
+>
+> `python -m pip install langchain-timbr`
 
 ## Installation
 
