@@ -23,9 +23,15 @@ Timbr LangChain LLM SDK is a Python SDK that extends LangChain and LangGraph wit
 
 ### Python 3.14 note
 
-Python 3.14 is currently supported for the base package installation.
-Some optional provider extras may still be unavailable on 3.14 due to upstream
-package constraints.
+> IMPORTANT for Python 3.14 users
+>
+> Python 3.14 currently has partial support.
+> Base package installation is supported, but some optional provider extras may
+> still be unavailable on 3.14 due to upstream package constraints.
+>
+> If an extras install fails on 3.14, install the base package first:
+>
+> `python -m pip install langchain-timbr`
 
 ## Installation
 
