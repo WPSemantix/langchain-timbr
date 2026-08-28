@@ -1,11 +1,16 @@
+import atexit
 import logging
+import queue
 import threading
+import time
 import uuid6
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 import requests
+
+from ..config import log_flush_timeout, log_post_timeout, log_queue_size
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +69,75 @@ def _clean(payload: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in payload.items() if v is not None}
 
 
+# --- background log dispatch -------------------------------------------------
+# Telemetry must never sit on the caller's critical path: on a remote server the
+# start + step posts alone cost seconds per run. Everything is handed to one
+# worker thread through a FIFO queue, which keeps the posts in the order the
+# server expects (running -> running_update_step -> history, where history
+# deletes the running row) while a thread-per-post would not. The queue is
+# bounded and drops rather than blocks, and an atexit flush gives short-lived
+# processes a chance to drain before the interpreter tears the daemon down.
+# All three are env-tunable: TIMBR_LOG_QUEUE_SIZE, TIMBR_LOG_FLUSH_TIMEOUT,
+# TIMBR_LOG_POST_TIMEOUT.
+_LOG_QUEUE_MAXSIZE = log_queue_size
+_LOG_FLUSH_TIMEOUT = float(log_flush_timeout)
+# Per-post HTTP timeout. Generous on purpose: a log server that is merely slow
+# under load should still get its row, since nothing waits on it. The cost is
+# that a server which is DOWN holds the worker for this long per post.
+_LOG_POST_TIMEOUT = log_post_timeout
+_log_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_LOG_QUEUE_MAXSIZE)
+_log_worker: Optional[threading.Thread] = None
+_log_worker_lock = threading.Lock()
+_log_session = requests.Session()
+
+
+def _log_worker_loop() -> None:
+    while True:
+        args = _log_queue.get()
+        try:
+            _safe_post(*args)
+        finally:
+            _log_queue.task_done()
+
+
+def _ensure_log_worker() -> None:
+    global _log_worker
+    if _log_worker is None or not _log_worker.is_alive():
+        with _log_worker_lock:
+            if _log_worker is None or not _log_worker.is_alive():
+                _log_worker = threading.Thread(
+                    target=_log_worker_loop, name="timbr-chain-logger", daemon=True,
+                )
+                _log_worker.start()
+
+
+def _flush_log_queue(timeout: float = _LOG_FLUSH_TIMEOUT) -> None:
+    """Wait (bounded) for queued log posts to drain. Called at interpreter exit."""
+    deadline = time.monotonic() + timeout
+    while _log_queue.unfinished_tasks and time.monotonic() < deadline:
+        time.sleep(0.02)
+
+
+atexit.register(_flush_log_queue)
+
+
+def _dispatch(url: str, token: str, endpoint_path: str, payload: Dict[str, Any], verify_ssl: bool = True) -> None:
+    """Queue a log post for the background worker. Never blocks the caller."""
+    _ensure_log_worker()
+    try:
+        _log_queue.put_nowait((url, token, endpoint_path, payload, verify_ssl))
+    except queue.Full:
+        logger.warning("Chain log queue full — dropping post to %s", endpoint_path)
+
+
 def _safe_post(url: str, token: str, endpoint_path: str, payload: Dict[str, Any], verify_ssl: bool = True) -> None:
     """Fire-and-forget HTTP POST. Never raises; logs failures at WARNING level."""
     try:
         endpoint = f"{url.rstrip('/')}{endpoint_path}"
-        response = requests.post(endpoint, json=payload, auth=("token", token), timeout=5, verify=verify_ssl)
+        response = _log_session.post(
+            endpoint, json=payload, auth=("token", token),
+            timeout=_LOG_POST_TIMEOUT, verify=verify_ssl,
+        )
         if not response.ok:
             logger.warning(
                 "Chain log request to %s returned %s: %s",
@@ -85,7 +154,7 @@ def log_agent_start(
     additional_options: Optional[str] = "{}",
 ) -> None:
     """POST to sys_agents_running — called when execution begins."""
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running", _clean({
+    _dispatch(ctx.url, ctx.token, "/timbr-server/log_agent/running", _clean({
         "query_id":               ctx.query_id,
         "agent_name":             ctx.agent_name,
         "chain_type":             ctx.chain_type,
@@ -104,7 +173,7 @@ def log_agent_start(
 
 def log_agent_step(ctx: AgentLogContext) -> None:
     """POST step update to sys_agents_running — called at each step transition."""
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/running_update_step", _clean({
+    _dispatch(ctx.url, ctx.token, "/timbr-server/log_agent/running_update_step", _clean({
         "query_id":               ctx.query_id,
         "agent_name":             ctx.agent_name,
         "ontology":               ctx.ontology,
@@ -210,7 +279,7 @@ def log_agent_history(
     if has_results and results is not None:
         post_params["results"] = results
 
-    _safe_post(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean(post_params), verify_ssl=ctx.verify_ssl)
+    _dispatch(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean(post_params), verify_ssl=ctx.verify_ssl)
 
 
 def log_chain_trace(
@@ -267,11 +336,7 @@ def log_chain_trace(
         "total_tokens":       _sum_token_field(meta, "total_tokens", "approximate"),
         "additional_options": additional_options,
     })
-    threading.Thread(
-        target=_safe_post,
-        args=(ctx.url, ctx.token, "/timbr-server/log_agent/trace", payload, ctx.verify_ssl),
-        daemon=True,
-    ).start()
+    _dispatch(ctx.url, ctx.token, "/timbr-server/log_agent/trace", payload, ctx.verify_ssl)
 
 
 def determine_status(rows: Optional[list], error: Optional[str]) -> str:

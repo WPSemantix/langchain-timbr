@@ -28,6 +28,15 @@ _STATS_COLUMNS = (
     "distinct_count, non_null_count, stats, updated_at"
 )
 
+# Returned by _build_compound_mapping_query when the cache already covers every
+# requested property: a well-formed query that selects nothing. Callers skip the
+# round-trip rather than asking the server to prove it.
+_EMPTY_STATS_QUERY = (
+    f"SELECT {_STATS_COLUMNS} "
+    f"FROM timbr.sys_properties_statistics "
+    f"WHERE 1 = 0"
+)
+
 # Allowed characters in property names for SQL interpolation (letters, digits, underscore, dot, brackets)
 _SAFE_PROPERTY_NAME_RE = re.compile(r"^[\w.\[\]]+$", re.UNICODE)
 
@@ -140,11 +149,7 @@ def _build_compound_mapping_query(
 
     if not or_parts:
         # Nothing to fetch — return a query that returns no rows
-        return (
-            f"SELECT {_STATS_COLUMNS} "
-            f"FROM timbr.sys_properties_statistics "
-            f"WHERE 1 = 0"
-        )
+        return _EMPTY_STATS_QUERY
 
     or_clause = " OR ".join(or_parts)
     return (
@@ -258,6 +263,10 @@ def fetch_stats_for_mappings(
                 chunk, per_mapping_missing, props_index,
                 include_properties, exclude_properties,
             )
+            if query is _EMPTY_STATS_QUERY:
+                # The cache already holds every requested property for this
+                # chunk — the query is known-empty, so skip the round-trip.
+                continue
         else:
             # Simple query: all mappings with a single property filter
             in_clause = ", ".join(f"'{name}'" for name in chunk)

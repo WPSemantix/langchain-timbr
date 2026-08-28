@@ -5,6 +5,9 @@ Handles three shapes:
   - Single-hop: "orders[order].total"  → hops=[("orders","order")], final_property="total"
   - Multi-hop:  "orders[order].items[order_item].quantity"
                 → hops=[("orders","order"),("items","order_item")], final_property="quantity"
+
+A ``*N`` transitive-depth marker on the concept is stripped:
+  - "has_parent[work_item*1].label" → hops=[("has_parent","work_item")]
 """
 
 from __future__ import annotations
@@ -19,6 +22,13 @@ logger = logging.getLogger(__name__)
 
 # Matches relationship[concept] segments
 _HOP_RE = re.compile(r"(\w+)\[([^\]]+)\]")
+
+# Timbr renders self-referencing / transitive relationships with a ``*N`` depth
+# marker inside the brackets (``has_parent[work_item*1].label``) — both in its
+# own DESCRIBE output and in rebuilt dynamic column names. The marker is
+# positional: the concept is still ``work_item``, so it must come off before the
+# name is used for ontology lookups. ``raw`` keeps the original spelling.
+_TRANSITIVITY_MARKER_RE = re.compile(r"\*\d+$")
 
 
 class ColumnPathParseError(Exception):
@@ -45,7 +55,10 @@ def parse_column_path(column_name: str, selected_table: str) -> ColumnPath:
     _validate_brackets(column_name)
 
     # Extract all hop segments: relationship[concept]
-    hops: list[tuple[str, str]] = _HOP_RE.findall(column_name)
+    hops: list[tuple[str, str]] = [
+        (rel, _TRANSITIVITY_MARKER_RE.sub("", concept))
+        for rel, concept in _HOP_RE.findall(column_name)
+    ]
 
     if not hops:
         # Direct column — no relationship hops

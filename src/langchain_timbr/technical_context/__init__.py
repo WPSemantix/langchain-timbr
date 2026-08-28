@@ -2,18 +2,21 @@
 
 Public API:
     build_technical_context(question, columns, schema, concept, conn_params, config)
+    technical_context_scope()  — de-duplicates repeat builds within one SQL generation
 """
 
 from __future__ import annotations
 
+import contextvars
 import logging
+from contextlib import contextmanager
 from typing import Any
 
 from .config import TechnicalContextConfig
 from .types import ColumnRef, MatchResult, SemanticType, TechnicalContextResult
 from .semantic_type import classify_semantic_type, compute_ontology_distance, compute_priority_band
 from .extraction.ngram import extract_prompt_tokens
-from .extraction.llm import extract_candidates_with_llm
+from .extraction.llm import extract_candidates_with_llm, llm_identity
 from .assembly.multi_match import run_all_matchers
 from .assembly.per_column import assemble_column_payload, format_annotation
 from .assembly.trimming import trim_to_budget
@@ -22,6 +25,38 @@ from .statistics_loader import load_column_statistics
 from .statistics_loader.config import StatisticsLoaderConfig
 
 logger = logging.getLogger(__name__)
+
+
+# Per-SQL-generation memo. One ``generate_sql`` call builds the technical
+# context two or three times over the same question and column set: the dynamic
+# metadata-context top-up re-enters it, and so does the reasoning pass when it
+# decides to regenerate. Each rebuild re-reads statistics, re-classifies every
+# column and re-runs the matchers, all to produce the identical annotations.
+#
+# Scoped rather than global on purpose — it lives only for the duration of the
+# enclosing ``technical_context_scope()``, so a later invoke still picks up
+# fresh statistics. A ContextVar keeps it correct when the pipeline hands work
+# to a worker thread (contextvars are copied into the child context).
+_scope: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "technical_context_scope", default=None,
+)
+
+
+@contextmanager
+def technical_context_scope():
+    """Memoize identical ``build_technical_context`` calls for this block."""
+    token = _scope.set({})
+    try:
+        yield
+    finally:
+        _scope.reset(token)
+
+
+def _scope_key(question, columns, schema, concept, config, llm):
+    return (
+        question, schema, concept, llm_identity(llm), repr(config),
+        tuple((c.get("name"), c.get("type", "")) for c in columns),
+    )
 
 
 def build_technical_context(
@@ -60,6 +95,14 @@ def build_technical_context(
 
     if not columns or not question:
         return TechnicalContextResult(column_annotations={})
+
+    scope = _scope.get()
+    scope_key = None
+    if scope is not None:
+        scope_key = _scope_key(question, columns, schema, concept, config, llm)
+        memoized = scope.get(scope_key)
+        if memoized is not None:
+            return memoized
 
     # 1. Load statistics for all columns
     stats_columns = [{"name": c["name"], "type": c.get("type", "")} for c in columns]
@@ -212,4 +255,7 @@ def build_technical_context(
         "llm_used": use_llm,
     }
 
-    return TechnicalContextResult(column_annotations=annotations, metadata=metadata)
+    result = TechnicalContextResult(column_annotations=annotations, metadata=metadata)
+    if scope is not None:
+        scope[scope_key] = result
+    return result

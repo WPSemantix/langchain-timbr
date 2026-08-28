@@ -1,19 +1,133 @@
 import os
 from typing import Optional, Any
+import threading
 import time
 import base64
 import hashlib
+import requests
 from pytimbr_api import timbr_http_connector
 from functools import wraps
 from cryptography.fernet import Fernet
 
-from ..config import cache_timeout, ignore_tags, ignore_tags_prefix
+from ..config import (
+    cache_timeout, ignore_tags, ignore_tags_prefix,
+    http_keepalive, http_pool_maxsize,
+)
 from .general import to_boolean
 
 # Cache dictionary
 _cache = {}
 _ontology_version = None
 _last_version_check = 0
+
+# Concurrency guards for the cache above. Under a threaded server every request
+# thread misses a cold cache at the same moment and every one of them runs the
+# underlying query — measured at 150 Timbr queries for a single cached call with
+# 50 threads. ``_cache_lock`` makes the dict read/write atomic; ``_inflight``
+# turns each key into a single-flight, so the first thread computes and the rest
+# wait for its result instead of duplicating it. ``_version_lock`` is taken
+# non-blocking so the periodic SHOW VERSION probe is done by one thread and
+# never becomes a barrier the other 49 queue behind.
+_cache_lock = threading.Lock()
+_inflight: dict = {}
+_version_lock = threading.Lock()
+
+# --- Timbr SQL transport -----------------------------------------------------
+# pytimbr_api issues every query through the module-level ``requests.post``,
+# which builds a throwaway Session — a fresh TCP connection and TLS handshake
+# per query — and asks the server to close it (``Connection: close``). A single
+# NL2SQL run makes dozens of queries, so on an HTTPS endpoint that handshake
+# accounts for most of the Timbr wait. We keep one pooled Session for the
+# process instead. Same URL, same headers minus ``Connection``, same response
+# parsing (``timbr_http_connector._parse_response``), so behaviour is unchanged
+# apart from the socket being reused.
+_session: Optional[requests.Session] = None
+_session_lock = threading.Lock()
+
+
+def _get_session() -> requests.Session:
+    """Return the process-wide pooled Session, creating it on first use."""
+    global _session
+    if _session is None:
+        with _session_lock:
+            if _session is None:
+                session = requests.Session()
+                # connect-only retries: a pooled socket the server closed while
+                # idle fails before the request is sent, so retrying cannot
+                # re-execute a query.
+                retry = requests.adapters.Retry(
+                    total=1, connect=1, read=0, status=0,
+                    allowed_methods=False, backoff_factor=0.1,
+                )
+                adapter = requests.adapters.HTTPAdapter(
+                    pool_connections=http_pool_maxsize,
+                    pool_maxsize=http_pool_maxsize,
+                    max_retries=retry,
+                )
+                session.mount("http://", adapter)
+                session.mount("https://", adapter)
+                _session = session
+    return _session
+
+
+def close_session() -> None:
+    """Close the pooled Session and drop it. Next query opens a fresh one."""
+    global _session
+    with _session_lock:
+        if _session is not None:
+            try:
+                _session.close()
+            finally:
+                _session = None
+
+
+def _run_query_pooled(
+    url: str,
+    ontology: str,
+    token: str,
+    query,
+    datasource: str = None,
+    nested: str = 'false',
+    verify_ssl: bool = True,
+    enable_IPv6: bool = False,
+    is_jwt: bool = False,
+    jwt_tenant_id: str = None,
+    additional_headers: dict = None,
+):
+    """Keep-alive equivalent of ``timbr_http_connector.run_query``.
+
+    Mirrors that function's URL, headers, body encoding and response parsing
+    exactly; the only differences are the reused connection pool and the absent
+    ``Connection: close`` header.
+    """
+    datasource_addition = f'?datasource={datasource}' if datasource else ''
+
+    base_url = url if url.endswith('/') else url + '/'
+
+    headers = {
+        'Content-Type': 'application/text',
+        'nested': nested,
+    }
+
+    if is_jwt:
+        headers['x-jwt-token'] = token
+        if jwt_tenant_id:
+            headers['x-jwt-tenant-id'] = jwt_tenant_id
+    else:
+        headers['x-api-key'] = token
+
+    if additional_headers:
+        for key, value in additional_headers.items():
+            headers[key.replace('_', '-')] = value
+
+    requests.packages.urllib3.util.connection.HAS_IPV6 = enable_IPv6
+    response = _get_session().post(
+        f'{base_url}timbr/openapi/ontology/{ontology}/query{datasource_addition}',
+        headers=headers,
+        data=query.encode('utf-8') if isinstance(query, str) else query,
+        verify=verify_ssl,
+    )
+    return timbr_http_connector._parse_response(response)
 
 
 def build_server_url(url: str, thrift_host: str, thrift_port: int) -> str:
@@ -31,7 +145,6 @@ def build_server_url(url: str, thrift_host: str, thrift_port: int) -> str:
 def clear_cache():
     """Clear the cache and reset the ontology version."""
     global _cache, _ontology_version
-    # with cache_lock:
     _cache.clear()
     _ontology_version = None
 
@@ -100,27 +213,64 @@ def cache_with_version_check(func):
     def wrapper(*args, **kwargs):
         global _ontology_version, _last_version_check
 
-        now = time.time()
-        if (now - _last_version_check) > cache_timeout:
-            conn_params = kwargs.get("conn_params") or args[-1]
-            current_version = _get_ontology_version(conn_params)
+        if (time.time() - _last_version_check) > cache_timeout:
+            # Non-blocking: whichever thread gets the lock refreshes the version
+            # for everyone; the others carry on with what they have rather than
+            # queueing behind a network round-trip.
+            if _version_lock.acquire(blocking=False):
+                try:
+                    if (time.time() - _last_version_check) > cache_timeout:
+                        conn_params = kwargs.get("conn_params") or args[-1]
+                        current_version = _get_ontology_version(conn_params)
 
-            # If version changed, clear cache and set new version
-            if _ontology_version != current_version:
-                clear_cache()
-                _ontology_version = current_version
+                        # If version changed, clear cache and set new version
+                        if _ontology_version != current_version:
+                            clear_cache()
+                            _ontology_version = current_version
 
-            _last_version_check = now
-        
+                        _last_version_check = time.time()
+                finally:
+                    _version_lock.release()
+
         # Generate a cache key based on function name and arguments
         cache_key = (func.__name__, _serialize_cache_key(*args, **kwargs))
-        if cache_key not in _cache or not _cache[cache_key]:
-            # Call the function and store the result in the cache
-            _cache[cache_key] = func(*args, **kwargs)
 
-        return _cache[cache_key]
+        while True:
+            with _cache_lock:
+                if cache_key in _cache:
+                    return _cache[cache_key]
+                waiter = _inflight.get(cache_key)
+                if waiter is None:
+                    waiter = threading.Event()
+                    _inflight[cache_key] = waiter
+                    break                     # this thread computes it
+            # Someone else is already computing this key — wait, then re-check.
+            waiter.wait(timeout=cache_timeout)
+
+        try:
+            # Call the function and store the result in the cache. An empty
+            # result is cached like any other: "this ontology has no property
+            # descriptions" is an answer, and re-asking on every call cost a
+            # round-trip per invoke for each such query.
+            result = func(*args, **kwargs)
+            with _cache_lock:
+                _cache[cache_key] = result
+            return result
+        finally:
+            # Always release the waiters. On failure they find no cache entry
+            # and no in-flight marker, so one of them retries the call.
+            with _cache_lock:
+                _inflight.pop(cache_key, None)
+            waiter.set()
 
     return wrapper
+
+
+def _send_query(**kwargs):
+    """Single transport seam for every Timbr query."""
+    if http_keepalive:
+        return _run_query_pooled(**kwargs)
+    return timbr_http_connector.run_query(**kwargs)
 
 
 def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use_query_limit = False) -> list[list]:
@@ -149,7 +299,7 @@ def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use
                 if not query_conn_params['additional_headers']:
                     del query_conn_params['additional_headers']
 
-    results = timbr_http_connector.run_query(
+    results = _send_query(
         query=query,
         **query_conn_params,
     )
@@ -163,6 +313,7 @@ def get_ontologies(conn_params: dict) -> list[str]:
     return [row.get('ontology') for row in res]
 
 
+@cache_with_version_check
 def get_datasources(conn_params: dict, filter_active: Optional[bool] = False) -> list[dict]:
     query = "SHOW DATASOURCES"
     res = run_query(query, conn_params)

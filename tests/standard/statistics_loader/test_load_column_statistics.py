@@ -1,5 +1,6 @@
 """Tests for load_column_statistics orchestration (loader.py)."""
 
+import logging
 import pytest
 from unittest.mock import patch, MagicMock
 from datetime import datetime
@@ -193,3 +194,110 @@ class TestLoadColumnStatisticsDtimbr:
 
         assert "col_a" in result
         assert result["col_a"].distinct_count == -1
+
+
+class TestSelfReferencingRelationshipColumns:
+    """Columns on self-referencing relationships arrive from timbr carrying a
+    ``*N`` depth marker (``has_parent[work_item*1].label``). The marker must not
+    reach the ontology lookup — otherwise the concept misses, no mappings are
+    resolved, and the column silently loses its statistics."""
+
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.fetch_stats_for_mappings")
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.load_view_row_counts")
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.load_concept_mappings")
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.load_ontology_concepts")
+    def test_transitive_column_resolves_stats(
+        self, mock_ontology, mock_mappings, mock_views, mock_fetch_stats, conn_params, caplog
+    ):
+        """`has_parent[work_item*1].label` resolves against `work_item`."""
+        from langchain_timbr.technical_context.statistics_loader.types import RawStatsRow, TopKEntry
+
+        mock_ontology.return_value = {
+            "work_item": OntologyConceptRow(concept="work_item", inheritance="", query=None),
+        }
+        mock_mappings.return_value = {
+            "work_item": [
+                ConceptMappingRow(concept="work_item", mapping_name="map_work_item", number_of_rows=4200),
+            ],
+        }
+        mock_views.return_value = {}
+        mock_fetch_stats.return_value = [
+            RawStatsRow(
+                property_name="label",
+                target_name="map_work_item",
+                target_type="mapping",
+                distinct_count=37,
+                non_null_count=4200,
+                top_k=[TopKEntry("Epic", 20), TopKEntry("Story", 17)],
+                min_value=None,
+                max_value=None,
+                raw_stats=None,
+                updated_at=datetime(2024, 5, 1),
+            ),
+        ]
+
+        col = "has_parent[work_item*1].label"
+        with caplog.at_level(logging.WARNING):
+            result = load_column_statistics(
+                schema="dtimbr",
+                table_name="work_item",
+                columns=[{"name": col, "type": "varchar(255)"}],
+                conn_params=conn_params,
+            )
+
+        # Keyed by the original name — the marker stays in the annotation key.
+        assert col in result
+        assert result[col].distinct_count == 37
+        assert result[col].total_source_rows == 4200
+        assert result[col].top_k is not None
+        assert "work_item*1" not in caplog.text
+
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.fetch_stats_for_mappings")
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.load_view_row_counts")
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.load_concept_mappings")
+    @patch("langchain_timbr.technical_context.statistics_loader.loader.load_ontology_concepts")
+    def test_depth_does_not_change_the_stats(
+        self, mock_ontology, mock_mappings, mock_views, mock_fetch_stats, conn_params
+    ):
+        """The marker is positional — every depth resolves to the same concept,
+        so all of them get the concept's stats. A leaked `work_item*N` would
+        leave the marked columns on sentinel values."""
+        from langchain_timbr.technical_context.statistics_loader.types import RawStatsRow
+
+        mock_ontology.return_value = {
+            "work_item": OntologyConceptRow(concept="work_item", inheritance="", query=None),
+        }
+        mock_mappings.return_value = {
+            "work_item": [
+                ConceptMappingRow(concept="work_item", mapping_name="map_work_item", number_of_rows=4200),
+            ],
+        }
+        mock_views.return_value = {}
+        mock_fetch_stats.return_value = [
+            RawStatsRow(
+                property_name="label",
+                target_name="map_work_item",
+                target_type="mapping",
+                distinct_count=37,
+                non_null_count=4200,
+                top_k=None,
+                min_value=None,
+                max_value=None,
+                raw_stats=None,
+                updated_at=datetime(2024, 5, 1),
+            ),
+        ]
+
+        result = load_column_statistics(
+            schema="dtimbr",
+            table_name="user",  # root is NOT work_item — the hop is the only way in
+            columns=[
+                {"name": "assigned_work[work_item*1].label", "type": "varchar(255)"},
+                {"name": "assigned_work[work_item*3].label", "type": "varchar(255)"},
+            ],
+            conn_params=conn_params,
+        )
+
+        for col in ("assigned_work[work_item*1].label", "assigned_work[work_item*3].label"):
+            assert result[col].distinct_count == 37, col
+            assert result[col].total_source_rows == 4200, col

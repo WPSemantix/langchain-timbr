@@ -770,6 +770,15 @@ def _compute_expand_minimal_concepts(
     return minimal
 
 
+# Correction handed to the planner when its previous answer could not be parsed
+# as the selection object (most often: it returned the SQL query itself).
+_PARSE_RETRY_ERROR_LINE = (
+    "Your previous answer could not be parsed. It must be a single JSON object "
+    "matching the schema above — not SQL, not prose, not a code block containing "
+    "anything else. Do not write the query; select the concepts and paths."
+)
+
+
 def _step1_with_validation_retries(
     *,
     llm,
@@ -801,16 +810,37 @@ def _step1_with_validation_retries(
     planner sees a structured rejection message and is re-prompted within the
     same call shape.
     """
-    if initial_action_errors:
+    retry_budget = max(0, int(config.metadata_context_dynamic_retry or 0))
+
+    try:
+        if initial_action_errors:
+            step1 = run_step1_retry(
+                llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
+                error_lines=initial_action_errors,
+                note=note, allowed_actions=allowed_actions,
+                memory_context=memory_context, rules_block=rules_block,
+            )
+        else:
+            step1 = run_step1_filter(
+                llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
+                note=note, allowed_actions=allowed_actions,
+                memory_context=memory_context, rules_block=rules_block,
+            )
+    except ValueError as exc:
+        # The planner sometimes answers with the finished SQL — or prose —
+        # instead of the selection object. Left alone that discards the call
+        # AND every relationship in the emitted context, so it costs output
+        # quality as well as the round-trip. Re-prompt once out of the same
+        # retry budget the validation loop uses; a second failure propagates
+        # exactly as before.
+        if retry_budget <= 0:
+            raise
+        retry_budget -= 1
+        stats["parse_retry_used"] = True
+        warnings.append(f"Step 1 output was not valid JSON, re-prompted: {exc}")
         step1 = run_step1_retry(
             llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
-            error_lines=initial_action_errors,
-            note=note, allowed_actions=allowed_actions,
-            memory_context=memory_context, rules_block=rules_block,
-        )
-    else:
-        step1 = run_step1_filter(
-            llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
+            error_lines=[_PARSE_RETRY_ERROR_LINE],
             note=note, allowed_actions=allowed_actions,
             memory_context=memory_context, rules_block=rules_block,
         )
@@ -833,7 +863,6 @@ def _step1_with_validation_retries(
     )
     stats["first_pass_valid"] = not errors
 
-    retry_budget = max(0, int(config.metadata_context_dynamic_retry or 0))
     attempt = 0
     while errors and attempt < retry_budget:
         attempt += 1
