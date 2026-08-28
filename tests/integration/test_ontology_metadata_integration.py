@@ -171,6 +171,42 @@ class TestOntologyMetadataExecution:
             "Answer should mention at least one of the ontology's concepts"
 
 
+    def test_answer_consumes_ontology_measure_definition(self, llm, config):
+            exec_chain = ExecuteTimbrQueryChain(
+                llm=llm,
+                url=config["timbr_url"],
+                token=config["timbr_token"],
+                ontology=config["timbr_ontology"],
+                concept=META,
+                verify_ssl=config["verify_ssl"],
+                enable_ontology_questions=True,
+            )
+            exec_result = exec_chain.invoke({"prompt": "What measures are related to order?"})
+            rows = exec_result.get("rows")
+
+            blob = _rows_blob(rows)
+            assert "order" in blob, "Definition rows should contain the 'order' concept"
+            assert "total_sales" in blob, "Definition rows should contain the 'total_sales' measure"
+
+            answer_chain = GenerateAnswerChain(
+                llm=llm,
+                url=config["timbr_url"],
+                token=config["timbr_token"],
+            )
+            answer_result = answer_chain.invoke({
+                "prompt": "What measures are related to order?",
+                "rows": rows,
+                "sql": exec_result.get("sql"),
+            })
+            answer = answer_result.get("answer")
+            print("T4 GenerateAnswerChain answer:", answer)
+
+            assert answer, "Answer should not be empty"
+            answer_lc = answer.lower()
+            assert any(tok in answer_lc for tok in ("order", "total_sales")), \
+                "Answer should mention at least one of the ontology's measures"
+
+
 # --------------------------------------------------------------------------- #
 # T5 — agent routes metadata to the correct single ontology
 # --------------------------------------------------------------------------- #

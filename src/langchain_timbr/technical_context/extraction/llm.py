@@ -17,25 +17,30 @@ import re
 from collections import OrderedDict
 from typing import Any
 
+from ...config import extraction_cache_size
+
 logger = logging.getLogger(__name__)
 
 
 # In-process LRU cache for candidate extraction.
 #
 # The extraction is a pure function of ``question`` — no columns, no schema,
-# no time — so memoizing by ``(question.strip(), id(llm))`` is safe. The
+# no time — so memoizing by ``(question.strip(), llm_identity(llm))`` is safe. The
 # primary win is the dynamic-metadata-context ``tc_topup`` path, which today
 # re-invokes ``build_technical_context`` with the SAME question + LLM after
 # an ``expand_to`` / anchor swap, causing a second identical LLM call. With
 # this cache the second call is served from memory.
 #
-# ``id(llm)`` is the cheap process-local identity guard against multi-LLM
-# processes serving the same question. ``OrderedDict.move_to_end`` +
+# ``llm_identity(llm)`` is the cheap process-local identity guard against
+# multi-LLM processes serving the same question; it looks through the
+# usage-collecting proxy the context builder wraps around the model, which is
+# rebuilt per pass and would otherwise make every lookup a miss.
+# ``OrderedDict.move_to_end`` +
 # ``popitem(last=False)`` is the canonical Python LRU pattern. We do NOT
 # use ``functools.lru_cache`` because the cached value is a ``list`` and we
 # return defensive copies (lru_cache returns the same object — caller
 # mutation would poison the cache).
-_CACHE_MAXSIZE = 128
+_CACHE_MAXSIZE = extraction_cache_size  # env: TIMBR_EXTRACTION_CACHE_SIZE
 _EXTRACTION_CACHE: "OrderedDict[tuple[str, int], list[str]]" = OrderedDict()
 
 
@@ -43,6 +48,24 @@ def _extraction_cache_clear() -> None:
     """Drop every cached extraction. Used by tests for isolation; also handy
     when debugging by hand from a REPL."""
     _EXTRACTION_CACHE.clear()
+
+
+def llm_identity(llm: Any) -> int:
+    """Identity of the underlying model, seeing through transparent proxies.
+
+    The context-builder call sites wrap the LLM in a fresh usage-collecting
+    proxy on every pass, so keying a cache on the object handed in would miss
+    every time even though the model behind it never changes. Proxies in this
+    package expose the wrapped object as ``_inner``; ordinary chat models have
+    no such attribute and are their own identity.
+    """
+    inner = llm
+    for _ in range(4):  # bounded: guards against a self-referential wrapper
+        nxt = getattr(inner, "_inner", None)
+        if nxt is None or nxt is inner:
+            break
+        inner = nxt
+    return id(inner)
 
 
 def extract_candidates_with_llm(
@@ -57,7 +80,7 @@ def extract_candidates_with_llm(
     WHERE clauses and provides synonyms/alternate forms for each.
 
     Results are memoized in an in-process LRU cache keyed by
-    ``(question.strip(), id(llm))`` so re-entrant callers (notably the
+    ``(question.strip(), llm_identity(llm))`` so re-entrant callers (notably the
     dynamic metadata-context ``tc_topup`` pass) don't burn a second
     identical LLM call. Errors are NEVER cached — only successful LLM
     invocations (even when the parsed result is empty).
@@ -78,7 +101,7 @@ def extract_candidates_with_llm(
     if not question or not question.strip():
         return []
 
-    cache_key = (question.strip(), id(llm))
+    cache_key = (question.strip(), llm_identity(llm))
     cached = _EXTRACTION_CACHE.get(cache_key)
     if cached is not None:
         _EXTRACTION_CACHE.move_to_end(cache_key)

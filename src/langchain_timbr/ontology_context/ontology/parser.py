@@ -9,6 +9,8 @@ Two public functions:
 
 from __future__ import annotations
 
+import logging
+
 from .models import (
     ConceptMetadata,
     MeasureMeta,
@@ -17,6 +19,9 @@ from .models import (
     RelationshipLookupEntry,
     RelationshipMeta,
 )
+
+logger = logging.getLogger(__name__)
+
 
 
 def classify(col: str) -> tuple:
@@ -168,6 +173,8 @@ def parse_describe_output(
     # rel_name -> builder dict {target, transitivity, target_props: list,
     #   additional_props: list[RelationshipAdditionalProperty], any_inverse_seen: bool}
     rel_builders: dict[str, dict] = {}
+    # Relationships whose rows contradict each other; dropped after the sweep.
+    poisoned_rels: set[str] = set()
 
     for row in rows:
         col = _row_str(row, _FIELD_COL_NAME).strip()
@@ -190,7 +197,10 @@ def parse_describe_output(
             # Bare relationship row without a property/additional suffix — record
             # the relationship so it exists in the output even if no prop attached.
             _, rel_name, target, transitivity, is_inverse = cls
-            _get_or_init_builder(rel_builders, rel_name, target, transitivity, is_inverse)
+            _get_or_init_builder(
+                rel_builders, rel_name, target, transitivity, is_inverse,
+                poisoned_rels, name,
+            )
             continue
 
         if kind == "direct":
@@ -230,7 +240,12 @@ def parse_describe_output(
 
         if kind == "rel_target_prop":
             _, rel_name, target, transitivity, prop_name, is_inverse = cls
-            builder = _get_or_init_builder(rel_builders, rel_name, target, transitivity, is_inverse)
+            builder = _get_or_init_builder(
+                rel_builders, rel_name, target, transitivity, is_inverse,
+                poisoned_rels, name,
+            )
+            if builder is None:
+                continue
             if prop_name and prop_name not in builder["target_props"]:
                 builder["target_props"].append(prop_name)
             if is_inverse:
@@ -239,7 +254,12 @@ def parse_describe_output(
 
         if kind == "rel_additional":
             _, rel_name, target, transitivity, additional_name, is_inverse = cls
-            builder = _get_or_init_builder(rel_builders, rel_name, target, transitivity, is_inverse)
+            builder = _get_or_init_builder(
+                rel_builders, rel_name, target, transitivity, is_inverse,
+                poisoned_rels, name,
+            )
+            if builder is None:
+                continue
             ap = RelationshipAdditionalProperty(name=additional_name, data_type=data_type)
             if ap not in builder["additional_props"]:
                 builder["additional_props"].append(ap)
@@ -249,6 +269,9 @@ def parse_describe_output(
 
         # Defensive: unknown classification — surface so unit tests fail loudly.
         raise ValueError(f"Unhandled classification {kind!r} for column {col!r}")
+
+    for _bad in poisoned_rels:
+        rel_builders.pop(_bad, None)
 
     relationships: dict[str, RelationshipMeta] = {}
     for rel_name, builder in rel_builders.items():
@@ -303,7 +326,19 @@ def _get_or_init_builder(
     target: str,
     transitivity: int,
     is_inverse: bool,
-) -> dict:
+    poisoned: set[str],
+    concept: str,
+) -> dict | None:
+    """Return the builder for ``rel_name``, or None if it is self-inconsistent.
+
+    A relationship whose rows disagree about their target concept or
+    transitivity cannot be assembled: the properties already collected belong
+    to one target and the rest to another, so keeping it would emit a
+    relationship whose column list blends two concepts. It is dropped and
+    recorded in ``poisoned`` — but only that relationship. The concept's other
+    relationships, properties and measures are still returned, which is what a
+    caller can actually use. (Raising here used to discard the entire concept.)
+    """
     builder = rel_builders.get(rel_name)
     if builder is None:
         builder = {
@@ -317,13 +352,23 @@ def _get_or_init_builder(
         return builder
     # Consistency checks
     if builder["target"] != target:
-        raise ValueError(
-            f"Relationship {rel_name!r} seen with inconsistent target_concept: "
-            f"{builder['target']!r} vs {target!r}"
-        )
+        if rel_name not in poisoned:
+            poisoned.add(rel_name)
+            logger.warning(
+                "Concept %r: relationship %r has inconsistent target_concept "
+                "(%r vs %r) — dropping that relationship; the rest of the "
+                "concept is unaffected. Fix the ontology definition to recover it.",
+                concept, rel_name, builder["target"], target,
+            )
+        return None
     if builder["transitivity"] != transitivity:
-        raise ValueError(
-            f"Relationship {rel_name!r} seen with inconsistent transitivity: "
-            f"{builder['transitivity']} vs {transitivity}"
-        )
+        if rel_name not in poisoned:
+            poisoned.add(rel_name)
+            logger.warning(
+                "Concept %r: relationship %r has inconsistent transitivity "
+                "(%s vs %s) — dropping that relationship; the rest of the "
+                "concept is unaffected. Fix the ontology definition to recover it.",
+                concept, rel_name, builder["transitivity"], transitivity,
+            )
+        return None
     return builder

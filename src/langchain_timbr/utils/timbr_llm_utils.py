@@ -5,6 +5,7 @@ import concurrent.futures
 import contextvars
 import json
 import re
+from functools import wraps
 
 try:
     from langsmith import traceable as ls_traceable
@@ -18,7 +19,7 @@ except ImportError:
         return decorator
     _LANGSMITH_AVAILABLE = False
 
-from .general import parse_list
+from .general import parse_list, format_results_for_prompt
 from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, encrypt_prompt, get_ontology_description
 from .prompt_service import (
     get_determine_concept_prompt_template,
@@ -149,7 +150,7 @@ def _calculate_token_count(llm: LLM, prompt: str | list[Any]) -> int:
         if hasattr(llm, 'client') and hasattr(llm.client, 'model_name') and llm.client.model_name:
             encoding = tiktoken.encoding_for_model(llm.client.model_name)
     except Exception as e:
-        print(f"Error with primary token counting: {e}")
+        #print(f"Error with primary token counting: {e}")
         pass
 
     try:
@@ -1213,6 +1214,9 @@ def _apply_dynamic_metadata_context(
     properties_desc: dict | None = None,
     memory_context=None,
     rules: Optional[RuleSet] = None,
+    # Reports a degraded (relationship-free) build to the caller. Optional and
+    # None by default, so existing call sites are unchanged.
+    status_sink: Optional[dict] = None,
 ) -> tuple[str, str, str, str | None]:
     """Decide static vs dynamic and return possibly-rebuilt context strings.
 
@@ -1316,6 +1320,9 @@ def _apply_dynamic_metadata_context(
             "anchor-only output (no relationships), NOT static.",
             result.error,
         )
+        if status_sink is not None:
+            status_sink["metadata_context_degraded"] = True
+            status_sink["metadata_context_error"] = str(result.error)
 
     # Rebuild filtered strings ----------------------------------------------
     # ALL direct properties + measures for the anchor (flat columns/measures
@@ -1552,13 +1559,20 @@ def _apply_dynamic_metadata_context(
                 len(result.validated_paths or []),
             )
 
+    # A pipeline failure is never cached. Its lean anchor-only strings are keyed
+    # by (question, anchor, graph_depth, ...) in a cache that lives as long as
+    # the ontology version, so storing them would pin a transient planner glitch
+    # to that question for the life of the process: every later ask, in the same
+    # worker, silently gets relationship-free context and never retries.
+    # Re-planning next time costs one LLM call and lets the request heal.
     entry = (
         new_columns_str,
         new_measures_str,
         new_rel_prop_str,
         result.effective_anchor,
     )
-    ontology.set_filtered_cache(cache_key, entry)
+    if not result.error:
+        ontology.set_filtered_cache(cache_key, entry)
     return entry
 
 
@@ -1617,6 +1631,9 @@ def _build_sql_generation_context(
     # ``duration_sink`` accumulates their wall-clock ms under the same keys.
     usage_sink: Optional[dict] = None,
     duration_sink: Optional[dict] = None,
+    # Set to a dict to be told when the dynamic metadata-context came back
+    # degraded (relationship-free). None ⇒ nobody is asking.
+    status_sink: Optional[dict] = None,
 ) -> dict:
     """
     Prepare the complete SQL generation context by gathering all necessary metadata.
@@ -1795,6 +1812,7 @@ def _build_sql_generation_context(
                     max_graph_depth=max_graph_depth,
                     include_logic_concepts=include_logic_concepts,
                 ),
+                status_sink=status_sink,
             )
             if duration_sink is not None:
                 duration_sink["metadata_context"] = duration_sink.get("metadata_context", 0) + int(
@@ -1827,6 +1845,9 @@ def _build_sql_generation_context(
                 "Dynamic metadata-context failed (%s); falling back to static.",
                 _dyn_exc,
             )
+            if status_sink is not None:
+                status_sink["metadata_context_degraded"] = True
+                status_sink["metadata_context_error"] = str(_dyn_exc)
 
     if rel_prop_str:
         measures_str += f"\n{rel_prop_str}"
@@ -2013,35 +2034,54 @@ def handle_generate_sql_reasoning(
             if (metadata_context_mode == "static" and step >= 1 and type(max_graph_depth) == int and previous_token_count > 0 and previous_token_count < 20000):
                 context_graph_depth = min(max_graph_depth, context_graph_depth + 1)
 
+            # Build the regeneration context first so a degraded build can be
+            # detected BEFORE spending a second SQL-generation call on it.
+            _context_status: dict = {}
+            regen_context = _build_sql_generation_context(
+                question=question,
+                conn_params=conn_params,
+                schema=schema,
+                concept=concept,
+                concept_metadata=concept_metadata,
+                graph_depth=context_graph_depth,
+                include_tags=include_tags,
+                exclude_properties=exclude_properties,
+                db_is_case_sensitive=db_is_case_sensitive,
+                max_limit=max_limit,
+                llm=llm,
+                enable_technical_context=enable_technical_context,
+                technical_context_mode=technical_context_mode,
+                technical_context_max_tokens=technical_context_max_tokens,
+                technical_context_properties=technical_context_properties,
+                metadata_context_mode=metadata_context_mode,
+                metadata_context_max_tokens=metadata_context_max_tokens,
+                max_graph_depth=max_graph_depth,
+                include_logic_concepts=include_logic_concepts,
+                note=evaluation_note,
+                memory_context=memory_context,
+                usage_sink=usage_sink,
+                duration_sink=duration_sink,
+                status_sink=_context_status,
+            )
+            if _context_status.get("metadata_context_degraded"):
+                # The rebuild lost its relationship context (most often the
+                # planner answered with something unparseable). Regenerating
+                # from it would replace a first-pass answer that had the full
+                # schema with one written against a thinner view of it — so
+                # keep the SQL we already have and stop reasoning.
+                import logging as _rlog
+                _rlog.getLogger(__name__).warning(
+                    "Reasoning step %d: metadata context came back degraded (%s); "
+                    "keeping the SQL from the previous pass instead of regenerating.",
+                    step + 1, _context_status.get("metadata_context_error"),
+                )
+                break
+
             regen_result = _generate_sql_with_llm(
                 question=question,
                 llm=llm,
                 generate_sql_prompt=generate_sql_prompt,
-                current_context=_build_sql_generation_context(
-                    question=question,
-                    conn_params=conn_params,
-                    schema=schema,
-                    concept=concept,
-                    concept_metadata=concept_metadata,
-                    graph_depth=context_graph_depth,
-                    include_tags=include_tags,
-                    exclude_properties=exclude_properties,
-                    db_is_case_sensitive=db_is_case_sensitive,
-                    max_limit=max_limit,
-                    llm=llm,
-                    enable_technical_context=enable_technical_context,
-                    technical_context_mode=technical_context_mode,
-                    technical_context_max_tokens=technical_context_max_tokens,
-                    technical_context_properties=technical_context_properties,
-                    metadata_context_mode=metadata_context_mode,
-                    metadata_context_max_tokens=metadata_context_max_tokens,
-                    max_graph_depth=max_graph_depth,
-                    include_logic_concepts=include_logic_concepts,
-                    note=evaluation_note,
-                    memory_context=memory_context,
-                    usage_sink=usage_sink,
-                    duration_sink=duration_sink,
-                ),
+                current_context=regen_context,
                 note=evaluation_note,
                 timeout=timeout,
                 debug=debug,
@@ -2158,7 +2198,7 @@ def handle_validate_generate_sql(
                 usage_sink=usage_sink,
                 duration_sink=duration_sink,
             ),
-            note=validation_err_txt,
+            note=(note if note is not None else "") + validation_err_txt,
             timeout=timeout,
             debug=debug,
             memory_context=memory_context,
@@ -2189,7 +2229,29 @@ def handle_validate_generate_sql(
 
     return is_sql_valid, error, sql_query
 
+def _with_technical_context_scope(func):
+    """Open a technical-context memo scope for one SQL-generation call.
+
+    The pipeline builds the technical context two or three times per call — the
+    dynamic metadata top-up re-enters it, and so does the reasoning pass — with
+    identical inputs each time. The scope makes the repeats free while keeping
+    the memo from outliving the call (a later invoke re-reads statistics).
+    Imported lazily so importing this module does not pull in the technical
+    context package, matching how the builder itself is imported below.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            from ..technical_context import technical_context_scope
+        except Exception:
+            return func(*args, **kwargs)
+        with technical_context_scope():
+            return func(*args, **kwargs)
+    return wrapper
+
+
 @ls_traceable(name="generate_sql")
+@_with_technical_context_scope
 def generate_sql(
         question: str,
         llm: LLM,
@@ -2514,7 +2576,7 @@ def answer_question(
 
     prompt = qa_prompt.format_messages(
         question=apply_memory_question_expansion(question, memory_context),
-        formatted_rows=results,
+        formatted_rows=format_results_for_prompt(results),
         additional_context=additional_context,
         note=note,
     )

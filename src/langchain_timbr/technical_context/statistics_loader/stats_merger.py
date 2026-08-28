@@ -18,6 +18,25 @@ from .types import RawStatsRow, TopKEntry, ColumnStatistics, ConceptMappingSet
 logger = logging.getLogger(__name__)
 
 
+def _is_canonical_top_k(entries: list[TopKEntry]) -> bool:
+    """True when the union+sort below would return ``entries`` unchanged.
+
+    That holds when values are unique and counts are non-increasing — which is
+    what a single mapping's stats row already looks like. Checking costs one
+    pass; rebuilding costs an allocation per value plus a sort.
+    """
+    seen: set[str] = set()
+    prev: int | None = None
+    for e in entries:
+        if prev is not None and e.count > prev:
+            return False
+        if e.value in seen:
+            return False
+        seen.add(e.value)
+        prev = e.count
+    return True
+
+
 def merge_rows(
     rows: list[RawStatsRow],
     mapping_set: ConceptMappingSet,
@@ -60,15 +79,21 @@ def merge_rows(
     max_value = None
 
     if has_topk:
-        # Union by value, sum counts
-        merged: dict[str, int] = defaultdict(int)
-        for r in rows:
-            for entry in (r.top_k or []):
-                merged[entry.value] += entry.count
-        top_k = sorted(
-            [TopKEntry(value=v, count=c) for v, c in merged.items()],
-            key=lambda e: -e.count,
-        )
+        single = rows[0].top_k if len(rows) == 1 else None
+        if single is not None and _is_canonical_top_k(single):
+            # Nothing to merge — hand back the row's own list (copied, so callers
+            # can't mutate the cached stats row).
+            top_k = list(single)
+        else:
+            # Union by value, sum counts
+            merged: dict[str, int] = defaultdict(int)
+            for r in rows:
+                for entry in (r.top_k or []):
+                    merged[entry.value] += entry.count
+            top_k = sorted(
+                [TopKEntry(value=v, count=c) for v, c in merged.items()],
+                key=lambda e: -e.count,
+            )
     elif has_minmax:
         mins = [r.min_value for r in rows if r.min_value is not None]
         maxs = [r.max_value for r in rows if r.max_value is not None]

@@ -13,6 +13,30 @@ is_jwt = to_boolean(os.environ.get('IS_JWT', 'false'))
 jwt_tenant_id = os.environ.get('JWT_TENANT_ID', None)
 
 cache_timeout = to_integer(os.environ.get('CACHE_TIMEOUT', 120))
+
+# Timbr SQL transport. When ON (default) every Timbr query goes through one
+# process-wide keep-alive connection pool instead of opening — and tearing down
+# — a fresh TCP/TLS connection per query, which on an HTTPS endpoint costs about
+# three quarters of a second per request. Set TIMBR_HTTP_KEEPALIVE=false to fall
+# back to pytimbr_api's per-request connection behaviour.
+http_keepalive = to_boolean(os.environ.get('TIMBR_HTTP_KEEPALIVE', 'true'))
+# Sized for the concurrent metadata prefetch (see ontology/graph.py) plus headroom.
+http_pool_maxsize = to_integer(os.environ.get('TIMBR_HTTP_POOL_MAXSIZE', 16))
+
+# --- process-wide cache bounds ------------------------------------------------
+# Column statistics (top-K values, min/max, distinct counts). The largest thing
+# the pipeline holds, and shared across every ontology this process talks to.
+stats_cache_max_mb = to_integer(os.environ.get('TIMBR_STATS_CACHE_MB', 500))
+stats_cache_idle_seconds = to_integer(os.environ.get('TIMBR_STATS_CACHE_IDLE_SECONDS', 86400))
+# LLM candidate extraction: question -> the filter literals found in it.
+extraction_cache_size = to_integer(os.environ.get('TIMBR_EXTRACTION_CACHE_SIZE', 256))
+# Dynamic metadata-context results, one entry per distinct question (~12 KB
+# each). Evicted on ontology version change; this bounds a long-lived worker
+# that never sees one.
+filtered_cache_size = to_integer(os.environ.get('TIMBR_FILTERED_CACHE_SIZE', 1000))
+# Max concurrent `describe concept` requests issued when warming the ontology
+# metadata cache. 1 restores the fully sequential behaviour.
+metadata_prefetch_workers = to_integer(os.environ.get('TIMBR_METADATA_PREFETCH_WORKERS', 8))
 ignore_tags = parse_list(os.environ.get('IGNORE_TAGS', 'icon'))
 ignore_tags_prefix = parse_list(os.environ.get('IGNORE_TAGS_PREFIX', 'mdx.,bli.'))
 
@@ -38,6 +62,23 @@ reasoning_steps = to_integer(os.environ.get('REASONING_STEPS', 2))
 should_validate_sql = to_boolean(os.environ.get('SHOULD_VALIDATE_SQL', os.environ.get('LLM_SHOULD_VALIDATE_SQL', 'true')))
 retry_if_no_results = to_boolean(os.environ.get('RETRY_IF_NO_RESULTS', os.environ.get('LLM_RETRY_IF_NO_RESULTS', 'true')))
 llm_default_limit = to_integer(os.environ.get('LLM_DEFAULT_LIMIT', os.environ.get('TIMBR_LLM_DEFAULT_LIMIT', 100)))  # Default max result limit for LLM responses
+
+# Answer-generation result payload (utils/general.py). Query results with more
+# rows than ANSWER_RESULTS_MAX_ROWS, or more columns than ANSWER_RESULTS_MAX_COLUMNS,
+# are rendered as CSV instead of JSON when handed to the LLM, which drops the
+# column names repeated on every row. Raise either knob to keep JSON for larger
+# result sets; set them very high to disable the CSV rendering entirely.
+answer_results_max_rows = to_integer(os.environ.get('ANSWER_RESULTS_MAX_ROWS', 50))
+answer_results_max_columns = to_integer(os.environ.get('ANSWER_RESULTS_MAX_COLUMNS', 10))
+
+# Chain telemetry dispatch (utils/chain_logger.py). Posts are queued and sent by
+# one background worker, so these bound the queue rather than the request path.
+# Note the two interact: a log endpoint that stops responding drains at one post
+# per timeout, so raising the timeout makes a full queue arrive sooner. Size the
+# queue for how long an outage you want to ride out at your request rate.
+log_post_timeout = to_integer(os.environ.get('TIMBR_LOG_POST_TIMEOUT', 30))
+log_queue_size = to_integer(os.environ.get('TIMBR_LOG_QUEUE_SIZE', 1000))
+log_flush_timeout = to_integer(os.environ.get('TIMBR_LOG_FLUSH_TIMEOUT', 5))
 
 enable_trace = to_boolean(os.environ.get('TIMBR_ENABLE_TRACE', 'true'))
 enable_history = to_boolean(os.environ.get('TIMBR_ENABLE_HISTORY', 'true'))
