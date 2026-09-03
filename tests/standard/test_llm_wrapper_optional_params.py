@@ -104,3 +104,26 @@ class TestLlmWrapperOptionalParams:
                  patch('langchain_timbr.llm_wrapper.llm_wrapper.config.llm_api_key', None):
                 with pytest.raises(ValueError, match="llm_type must be provided"):
                     LlmWrapper()
+
+    def test_timbr_custom_llm_path(self, tmp_path):
+        """Test that a Timbr custom_llm_path loads get_llm and uses its returned LLM."""
+        custom_file = tmp_path / "my_custom_llm.py"
+        custom_file.write_text(
+            "def get_llm(api_key, **params):\n"
+            "    from unittest.mock import Mock\n"
+            "    mock = Mock()\n"
+            "    mock._llm_type = 'custom-timbr'\n"
+            "    mock.received_api_key = api_key\n"
+            "    mock.received_params = params\n"
+            "    return mock\n"
+        )
+
+        wrapper = LlmWrapper(
+            llm_type="timbr",
+            api_key="test-key",
+            custom_llm_path=str(custom_file),
+        )
+
+        assert wrapper.client._llm_type == "custom-timbr"
+        assert wrapper.client.received_api_key == "test-key"
+        assert "custom_llm_path" not in wrapper.client.received_params
