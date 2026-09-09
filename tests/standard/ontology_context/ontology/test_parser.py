@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from langchain_timbr.ontology_context.ontology.models import RelationshipLookupEntry
@@ -278,21 +280,41 @@ class TestParseDescribeOutputRelationships:
         meta = parse_describe_output("customer", rows, relationship_meta_lookup=lookup)
         assert meta.relationships["made_order"].is_inverse is True
 
-    def test_inconsistent_target_raises(self):
+    def test_inconsistent_target_drops_only_that_relationship(self):
+        """A relationship whose rows disagree about their target is dropped, and
+        the concept's other relationships and properties still parse. Raising
+        here used to discard the whole concept — every relationship, property
+        and measure — over one bad definition."""
         rows = [
             _row("rel_x[concept_a].p1"),
             _row("rel_x[concept_b].p2"),
+            _row("rel_ok[concept_c].p3"),
+            _row("plain_col"),
         ]
-        with pytest.raises(ValueError, match="inconsistent target_concept"):
-            parse_describe_output("source", rows, relationship_meta_lookup={})
+        meta = parse_describe_output("source", rows, relationship_meta_lookup={})
 
-    def test_inconsistent_transitivity_raises(self):
+        assert "rel_x" not in meta.relationships
+        assert "rel_ok" in meta.relationships
+        assert meta.relationships["rel_ok"].target_concept == "concept_c"
+        assert "plain_col" in meta.properties
+
+    def test_inconsistent_transitivity_drops_only_that_relationship(self):
         rows = [
             _row("has_x[c].p1"),
             _row("has_x[c*2].p2"),
+            _row("has_y[d].p3"),
         ]
-        with pytest.raises(ValueError, match="inconsistent transitivity"):
+        meta = parse_describe_output("source", rows, relationship_meta_lookup={})
+
+        assert "has_x" not in meta.relationships
+        assert "has_y" in meta.relationships
+
+    def test_inconsistent_relationship_is_logged(self, caplog):
+        rows = [_row("rel_x[concept_a].p1"), _row("rel_x[concept_b].p2")]
+        with caplog.at_level(logging.WARNING):
             parse_describe_output("source", rows, relationship_meta_lookup={})
+        assert "inconsistent target_concept" in caplog.text
+        assert "rel_x" in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -95,3 +95,61 @@ class TestParseColumnPath:
         col = "orders[order].items[order_item].quantity"
         path = parse_column_path(col, "customer")
         assert path.raw == col
+
+
+class TestTransitivityMarker:
+    """The ``*N`` depth marker timbr puts on self-referencing / transitive
+    relationships must not leak into concept names — it would miss the ontology
+    lookup in the statistics loader and silently drop the column's stats."""
+
+    def test_self_ref_depth_one(self):
+        """timbr's DESCRIBE emits `has_parent[work_item*1].label` for self-refs."""
+        path = parse_column_path("has_parent[work_item*1].label", "work_item")
+        assert path.hops == [("has_parent", "work_item")]
+        assert path.owning_concept == "work_item"
+        assert path.final_property == "label"
+
+    def test_multi_digit_depth(self):
+        """Depth is not limited to one digit."""
+        path = parse_column_path("has_acquired[company*12].name", "company")
+        assert path.hops == [("has_acquired", "company")]
+        assert path.owning_concept == "company"
+
+    def test_marker_on_intermediate_hop(self):
+        """A marker on a non-final hop is stripped too."""
+        path = parse_column_path(
+            "has_parent[work_item*2].assigned_to[user].email", "work_item"
+        )
+        assert path.hops == [("has_parent", "work_item"), ("assigned_to", "user")]
+        assert path.owning_concept == "user"
+        assert path.final_property == "email"
+
+    def test_marker_on_every_hop(self):
+        """Markers strip independently per hop."""
+        path = parse_column_path("a[x*2].b[y*3].prop", "root")
+        assert path.hops == [("a", "x"), ("b", "y")]
+        assert path.owning_concept == "y"
+
+    def test_raw_keeps_marker(self):
+        """`raw` is the annotation key downstream — it must stay verbatim."""
+        col = "has_parent[work_item*1].label"
+        assert parse_column_path(col, "work_item").raw == col
+
+    def test_additional_property_form(self):
+        """timbr also emits the `rel[concept]_prop` form for these columns."""
+        path = parse_column_path(
+            "has_parent[work_item*1]_transitivity_level", "work_item"
+        )
+        assert path.hops == [("has_parent", "work_item")]
+        assert path.owning_concept == "work_item"
+
+    def test_asterisk_only_in_concept_position_is_stripped(self):
+        """Only a trailing `*N` is a marker; other text is left alone."""
+        path = parse_column_path("rel[con*cept].prop", "root")
+        assert path.hops == [("rel", "con*cept")]
+
+    def test_unmarked_concept_unchanged(self):
+        """Flat relationships are untouched."""
+        path = parse_column_path("orders[order].total", "customer")
+        assert path.hops == [("orders", "order")]
+        assert path.owning_concept == "order"

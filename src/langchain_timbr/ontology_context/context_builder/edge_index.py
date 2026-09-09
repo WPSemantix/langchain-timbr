@@ -61,6 +61,12 @@ class EdgeIndex:
             # describe support), surface as empty outbound rather than raise —
             # BFS will simply not expand from it.
             return []
+        # cardinality_of() describes the target of every relationship. Warm them
+        # in one parallel wave first so the loop below runs entirely from cache
+        # instead of paying a round-trip per relationship.
+        self._ontology.prefetch(
+            rel.target_concept for rel in meta.relationships.values()
+        )
         edges: List[EdgeMeta] = []
         for rel in meta.relationships.values():
             try:

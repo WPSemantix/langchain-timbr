@@ -1,5 +1,8 @@
 import os
 from typing import Any, Optional, Union
+import ast
+import csv
+import io
 import json
 import re
 
@@ -309,3 +312,108 @@ def sanitize_results(output_keys: list, result: dict) -> dict:
     Keys in output_keys but absent from result default to None.
     """
     return {key: result.get(key) for key in output_keys}
+
+
+# Result payloads larger than these thresholds are sent to the LLM as CSV
+# instead of JSON/list, to avoid repeating column names on every row. Both are
+# configurable via ANSWER_RESULTS_MAX_ROWS / ANSWER_RESULTS_MAX_COLUMNS; these
+# constants are the fallback when config is unavailable.
+_RESULTS_MAX_ROWS = 50
+_RESULTS_MAX_COLUMNS = 10
+
+
+def _results_thresholds() -> tuple[int, int]:
+    """Return the (max rows, max columns) thresholds from config.
+
+    Imported lazily and per call: config imports this module, so a top-level
+    import would be circular, and reading per call keeps the knobs overridable
+    at runtime.
+    """
+    try:
+        from .. import config
+        return int(config.answer_results_max_rows), int(config.answer_results_max_columns)
+    except Exception:
+        return _RESULTS_MAX_ROWS, _RESULTS_MAX_COLUMNS
+
+
+def _coerce_results_to_rows(results: Any) -> Optional[list]:
+    """Return results as a list of rows, parsing a serialized list if needed, else None."""
+    if isinstance(results, list):
+        return results
+
+    if isinstance(results, str):
+        text = results.strip()
+        if not text.startswith('['):
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            try:
+                parsed = ast.literal_eval(text)
+            except Exception:
+                return None
+        return parsed if isinstance(parsed, list) else None
+
+    return None
+
+
+def _to_csv_cell(value: Any) -> str:
+    """Render a single value for a CSV cell (nested values become compact JSON)."""
+    if value is None:
+        return ''
+    if isinstance(value, (dict, list, tuple)):
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(',', ':'), default=str)
+        except Exception:
+            return str(value)
+    return str(value)
+
+
+def format_results_for_prompt(results: Any) -> Any:
+    """Return a token-efficient CSV rendering of large/wide tabular results.
+
+    Results with more rows than ANSWER_RESULTS_MAX_ROWS, or more columns than
+    ANSWER_RESULTS_MAX_COLUMNS, are converted to CSV (header line + one line
+    per row) instead of the default JSON/list rendering, which repeats every
+    column name on every row.
+
+    Anything else - smaller result sets, non-tabular data, or any conversion
+    failure - is returned unchanged, so callers never lose data.
+    """
+    try:
+        rows = _coerce_results_to_rows(results)
+        if not rows:
+            return results
+
+        if all(isinstance(row, dict) for row in rows):
+            columns = list(dict.fromkeys(key for row in rows for key in row))
+            table = [[row.get(column) for column in columns] for row in rows]
+            column_count = len(columns)
+        elif all(isinstance(row, (list, tuple)) for row in rows):
+            columns = None
+            table = rows
+            column_count = max(len(row) for row in rows)
+        else:
+            return results
+
+        if column_count == 0:
+            return results
+
+        max_rows, max_columns = _results_thresholds()
+        if len(rows) <= max_rows and column_count <= max_columns:
+            return results
+
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, lineterminator='\n')
+        if columns is not None:
+            writer.writerow(columns)
+        for row in table:
+            writer.writerow([_to_csv_cell(value) for value in row])
+
+        header_note = '' if columns is None else ', first line holds the column names'
+        return (
+            f"Query results in CSV format ({len(rows)} rows, {column_count} columns{header_note}):\n"
+            f"{buffer.getvalue()}"
+        )
+    except Exception:
+        return results

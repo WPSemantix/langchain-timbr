@@ -12,6 +12,7 @@ def substring_match(
     known_values: list[str],
     *,
     min_length: int = 3,
+    normalized: list[str] | None = None,
 ) -> list[MatchResult]:
     """Find known values that appear as substrings within the prompt text.
 
@@ -23,6 +24,10 @@ def substring_match(
         column_name: Column name for result attribution.
         known_values: Known values from column statistics top_k.
         min_length: Minimum normalized value length to include in search.
+        normalized: Optional pre-normalized (space-preserving) forms of
+            ``known_values``, index-aligned. Supplied by :func:`run_all_matchers`
+            so the three matchers normalize each value once between them.
+            Computed here when omitted.
 
     Returns:
         List of MatchResult with match_type="substring" and score=95.
@@ -40,11 +45,11 @@ def substring_match(
     automaton = ahocorasick.Automaton()
     norm_to_original: dict[str, str] = {}
 
-    for v in known_values:
-        sv = str(v)
-        nv = normalize_keep_spaces(sv)
+    if normalized is None:
+        normalized = (normalize_keep_spaces(str(v)) for v in known_values)
+    for v, nv in zip(known_values, normalized):
         if nv and len(nv) >= min_length:
-            norm_to_original[nv] = sv
+            norm_to_original[nv] = str(v)
             automaton.add_word(nv, nv)
 
     if not norm_to_original:

@@ -21,77 +21,77 @@ class TestMultiOntologyFix:
     # run_query                                                            #
     # ------------------------------------------------------------------ #
 
-    @patch("langchain_timbr.utils.timbr_utils.timbr_http_connector")
-    def test_run_query_multi_ontology_uses_first_ontology(self, mock_connector):
+    @patch("langchain_timbr.utils.timbr_utils._send_query")
+    def test_run_query_multi_ontology_uses_first_ontology(self, mock_send):
         """run_query must strip to the first ontology when a comma-separated list is given."""
-        mock_connector.run_query.return_value = []
+        mock_send.return_value = []
         conn_params = {"url": MOCK_URL, "token": MOCK_TOKEN, "ontology": "ontology_a,ontology_b"}
 
         run_query("SELECT 1", conn_params)
 
-        kwargs = mock_connector.run_query.call_args.kwargs
+        kwargs = mock_send.call_args.kwargs
         assert kwargs["ontology"] == "ontology_a"
 
-    @patch("langchain_timbr.utils.timbr_utils.timbr_http_connector")
-    def test_run_query_does_not_mutate_conn_params(self, mock_connector):
+    @patch("langchain_timbr.utils.timbr_utils._send_query")
+    def test_run_query_does_not_mutate_conn_params(self, mock_send):
         """run_query must not mutate the caller's conn_params dict."""
-        mock_connector.run_query.return_value = []
+        mock_send.return_value = []
         conn_params = {"url": MOCK_URL, "token": MOCK_TOKEN, "ontology": "ontology_a,ontology_b"}
 
         run_query("SELECT 1", conn_params)
 
         assert conn_params["ontology"] == "ontology_a,ontology_b"
 
-    @patch("langchain_timbr.utils.timbr_utils.timbr_http_connector")
-    def test_run_query_multi_ontology_strips_whitespace(self, mock_connector):
+    @patch("langchain_timbr.utils.timbr_utils._send_query")
+    def test_run_query_multi_ontology_strips_whitespace(self, mock_send):
         """run_query must strip surrounding whitespace from the first ontology."""
-        mock_connector.run_query.return_value = []
+        mock_send.return_value = []
         conn_params = {"url": MOCK_URL, "token": MOCK_TOKEN, "ontology": " ontology_a , ontology_b "}
 
         run_query("SELECT 1", conn_params)
 
-        kwargs = mock_connector.run_query.call_args.kwargs
+        kwargs = mock_send.call_args.kwargs
         assert kwargs["ontology"] == "ontology_a"
 
-    @patch("langchain_timbr.utils.timbr_utils.timbr_http_connector")
-    def test_run_query_single_ontology_unchanged(self, mock_connector):
+    @patch("langchain_timbr.utils.timbr_utils._send_query")
+    def test_run_query_single_ontology_unchanged(self, mock_send):
         """run_query must leave a single (non-comma) ontology value unchanged."""
-        mock_connector.run_query.return_value = []
+        mock_send.return_value = []
         conn_params = {"url": MOCK_URL, "token": MOCK_TOKEN, "ontology": "ontology_a"}
 
         run_query("SELECT 1", conn_params)
 
-        kwargs = mock_connector.run_query.call_args.kwargs
+        kwargs = mock_send.call_args.kwargs
         assert kwargs["ontology"] == "ontology_a"
 
     # ------------------------------------------------------------------ #
     # get_timbr_agent_options                                              #
     # ------------------------------------------------------------------ #
 
-    @patch("langchain_timbr.utils.timbr_utils.timbr_http_connector")
-    def test_get_timbr_agent_options_uses_system_db_for_multi_ontology(self, mock_connector):
+    @patch("langchain_timbr.utils.timbr_utils._send_query")
+    def test_get_timbr_agent_options_uses_system_db_for_multi_ontology(self, mock_send):
         """get_timbr_agent_options must query system_db when multiple ontologies are present."""
-        mock_connector.run_query.return_value = [
+        mock_send.return_value = [
             {"option_name": "ontology", "option_value": "ontology_a,ontology_b"}
         ]
         conn_params = {"url": MOCK_URL, "token": MOCK_TOKEN, "ontology": "ontology_a,ontology_b"}
 
         get_timbr_agent_options("my_agent", conn_params)
 
-        kwargs = mock_connector.run_query.call_args.kwargs
+        kwargs = mock_send.call_args.kwargs
         assert kwargs["ontology"] == "system_db"
 
-    @patch("langchain_timbr.utils.timbr_utils.timbr_http_connector")
-    def test_get_timbr_agent_options_single_ontology_unchanged(self, mock_connector):
+    @patch("langchain_timbr.utils.timbr_utils._send_query")
+    def test_get_timbr_agent_options_single_ontology_unchanged(self, mock_send):
         """get_timbr_agent_options must pass the single ontology through unchanged."""
-        mock_connector.run_query.return_value = [
+        mock_send.return_value = [
             {"option_name": "ontology", "option_value": "ontology_a"}
         ]
         conn_params = {"url": MOCK_URL, "token": MOCK_TOKEN, "ontology": "ontology_a"}
 
         get_timbr_agent_options("my_agent", conn_params)
 
-        kwargs = mock_connector.run_query.call_args.kwargs
+        kwargs = mock_send.call_args.kwargs
         assert kwargs["ontology"] == "ontology_a"
 
     # ------------------------------------------------------------------ #

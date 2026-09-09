@@ -472,10 +472,10 @@ class TestConversationIdAndAnswer:
 
         captured_payload = {}
 
-        def fake_safe_post(url, token, endpoint_path, payload, **kwargs):
+        def fake_dispatch(url, token, endpoint_path, payload, **kwargs):
             captured_payload.update(payload)
 
-        with patch('langchain_timbr.utils.chain_logger._safe_post', side_effect=fake_safe_post):
+        with patch('langchain_timbr.utils.chain_logger._dispatch', side_effect=fake_dispatch):
             log_agent_history(
                 ctx=ctx,
                 ontology="ont",
@@ -518,10 +518,10 @@ class TestConversationIdAndAnswer:
 
         captured_payload = {}
 
-        def fake_safe_post(url, token, endpoint_path, payload, **kwargs):
+        def fake_dispatch(url, token, endpoint_path, payload, **kwargs):
             captured_payload.update(payload)
 
-        with patch('langchain_timbr.utils.chain_logger._safe_post', side_effect=fake_safe_post):
+        with patch('langchain_timbr.utils.chain_logger._dispatch', side_effect=fake_dispatch):
             log_agent_history(
                 ctx=ctx,
                 ontology="ont",

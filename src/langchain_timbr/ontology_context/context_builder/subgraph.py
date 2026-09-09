@@ -104,6 +104,8 @@ def retrieve_subgraph(
     frontier: List[str] = [anchor]
 
     for _ in range(hop_ceiling):
+        # One parallel wave per BFS level instead of a round-trip per concept.
+        edge_index.ontology.prefetch(frontier)
         next_frontier: List[str] = []
         for concept in frontier:
             for edge in edge_index.outbound_edges(concept):
@@ -218,6 +220,13 @@ def serialize_compact_ddl(
     # Hop map covers every concept that may render — detail set plus expand-
     # minimal set — so heading labels resolve uniformly.
     expand_minimal_list = list(expand_minimal_concepts or [])
+    # Rendering asks the ontology for each concept's props / measures /
+    # description, and the cascade re-renders up to four times. Warm every
+    # concept that can render in one parallel wave rather than a round-trip
+    # apiece, mid-render.
+    ontology.prefetch(
+        list(concepts) + expand_minimal_list + list(menu_concepts or [])
+    )
     hop_inputs = list(concepts) + [
         c for c in expand_minimal_list if c not in concepts
     ]

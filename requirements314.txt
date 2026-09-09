@@ -1,0 +1,11 @@
+# Python 3.14 fallback lane: base package only.
+# Some pinned extras currently fail on 3.14 (e.g. snowflake~=1.8.0,
+# snowflake-snowpark-python~=1.45.0 require Python <3.14).
+
+# Install only the base package (core dependencies from pyproject.toml).
+-e .
+
+# Test tooling (not provider extras).
+langchain-tests~=1.1.9
+pytest~=9.0.3
+pytest-rerunfailures~=15.0

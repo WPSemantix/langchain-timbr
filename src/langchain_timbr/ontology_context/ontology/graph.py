@@ -8,8 +8,9 @@ default 120s) so cache hits are pure in-memory dict lookups.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 
-from ...config import cache_timeout
+from ...config import cache_timeout, filtered_cache_size, metadata_prefetch_workers
 from .cardinality import derive_cardinality
 from .models import ConceptMetadata, RelationshipLookupEntry
 from .parser import parse_describe_output
@@ -53,6 +54,11 @@ class Ontology:
             version_ttl_seconds if version_ttl_seconds is not None else cache_timeout
         )
         self._cache: dict[str, ConceptMetadata] = {}
+        # Concepts whose describe output failed to parse. Without this, a single
+        # malformed concept costs a fresh `describe concept` round-trip on every
+        # lookup — callers such as edge_index.outbound_edges swallow the error and
+        # ask again for each relationship pointing at it. Cleared with _cache.
+        self._failed: dict[str, Exception] = {}
         self._rel_lookup: dict[tuple[str, str], RelationshipLookupEntry] | None = None
         # concept_name -> tuple of parent concepts (root-to-direct order trimmed
         # below). Populated lazily alongside _rel_lookup. Empty tuple means
@@ -62,7 +68,10 @@ class Ontology:
         # Side cache for Plan 2 filtered-metadata results (Step 0+1 outputs).
         # Keyed by an arbitrary tuple (question, anchor, graph_depth, ...) chosen
         # by the caller. Invalidated together with concept cache on version change.
-        self._filtered_cache: dict[tuple, object] = {}
+        # One entry per distinct question (~12 KB), so a worker that runs for
+        # days without an ontology change needs a size bound as well: LRU, capped
+        # at ``filtered_cache_size`` (env TIMBR_FILTERED_CACHE_SIZE).
+        self._filtered_cache: "OrderedDict[tuple, object]" = OrderedDict()
 
     # ---- public API --------------------------------------------------------
 
@@ -75,18 +84,27 @@ class Ontology:
         cached = self._cache.get(name)
         if cached is not None:
             return cached
-        rows = self._client.describe_concept(name)
-        # Look up the inheritance chain BEFORE parsing so the parser can
-        # fall back through parent concepts when resolving relationship
-        # metadata (a relationship declared on ``organization`` must be
-        # found when parsing ``company`` so its is_mtm / join-key signal
-        # flows through to cardinality derivation).
-        chain = (self._inheritance_lookup or {}).get(name, ())
-        meta = parse_describe_output(
-            name, rows,
-            relationship_meta_lookup=self._rel_lookup,
-            inheritance_chain=chain,
-        )
+        failure = self._failed.get(name)
+        if failure is not None:
+            # Same error the first attempt raised, without re-querying. The
+            # traceback is reset so repeated raises can't accumulate frames.
+            raise failure.with_traceback(None)
+        try:
+            rows = self._client.describe_concept(name)
+            # Look up the inheritance chain BEFORE parsing so the parser can
+            # fall back through parent concepts when resolving relationship
+            # metadata (a relationship declared on ``organization`` must be
+            # found when parsing ``company`` so its is_mtm / join-key signal
+            # flows through to cardinality derivation).
+            chain = (self._inheritance_lookup or {}).get(name, ())
+            meta = parse_describe_output(
+                name, rows,
+                relationship_meta_lookup=self._rel_lookup,
+                inheritance_chain=chain,
+            )
+        except Exception as exc:
+            self._failed[name] = exc
+            raise
         # Also surface the chain on ConceptMetadata for downstream callers
         # (the parser itself doesn't set this field — kept separate so the
         # parser stays independent of sys_ontology fetching).
@@ -95,6 +113,48 @@ class Ontology:
             meta = replace(meta, inheritance_chain=chain)
         self._cache[name] = meta
         return meta
+
+    def prefetch(self, names, *, max_workers: int | None = None) -> None:
+        """Warm the concept-metadata cache for ``names`` concurrently.
+
+        ``describe concept`` is one HTTP round-trip per concept and a single
+        subgraph walk needs dozens of them, strictly one after another. Callers
+        that already know which concepts they are about to need can issue them
+        as a few parallel waves instead.
+
+        Best-effort and side-effect-free from the caller's point of view: a
+        concept that fails to describe or parse is recorded exactly as a normal
+        lookup would record it, and the error surfaces when that concept is
+        actually requested. Never raises.
+        """
+        self._ensure_version()
+        pending = [
+            n for n in dict.fromkeys(names)
+            if n and n not in self._cache and n not in self._failed
+        ]
+        if not pending:
+            return
+
+        workers = metadata_prefetch_workers if max_workers is None else max_workers
+        if workers <= 1 or len(pending) == 1:
+            for name in pending:
+                self._prefetch_one(name)
+            return
+
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(
+            max_workers=min(workers, len(pending)),
+            thread_name_prefix="timbr-describe",
+        ) as pool:
+            list(pool.map(self._prefetch_one, pending))
+
+    def _prefetch_one(self, name: str) -> None:
+        try:
+            self.get_concept_metadata(name)
+        except Exception:
+            # Recorded in self._failed by get_concept_metadata; re-raised when
+            # the concept is genuinely requested.
+            pass
 
     def inheritance_chain_of(self, concept: str) -> tuple[str, ...]:
         """Return the cached inheritance chain for ``concept``.
@@ -151,11 +211,21 @@ class Ontology:
 
     def get_filtered_cache(self, key: tuple):
         """Return a previously-stored filtered-metadata result, or None."""
-        return self._filtered_cache.get(key)
+        value = self._filtered_cache.get(key)
+        if value is not None:
+            self._filtered_cache.move_to_end(key)
+        return value
 
     def set_filtered_cache(self, key: tuple, value) -> None:
-        """Store a filtered-metadata result. Cleared on ontology version change."""
+        """Store a filtered-metadata result.
+
+        Evicted on ontology version change, and least-recently-used first once
+        the cache holds more than ``filtered_cache_size`` questions.
+        """
         self._filtered_cache[key] = value
+        self._filtered_cache.move_to_end(key)
+        while len(self._filtered_cache) > filtered_cache_size:
+            self._filtered_cache.popitem(last=False)
 
     # ---- internals ---------------------------------------------------------
 
@@ -168,6 +238,7 @@ class Ontology:
             self._last_version_check = now
             if current != self._version_id:
                 self._cache.clear()
+                self._failed.clear()
                 self._rel_lookup = None
                 self._inheritance_lookup = None
                 self._filtered_cache.clear()

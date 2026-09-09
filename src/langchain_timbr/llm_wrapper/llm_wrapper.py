@@ -1,3 +1,5 @@
+import importlib.util
+import os
 from enum import Enum
 from typing import Optional
 from langchain_core.language_models.llms import LLM
@@ -6,6 +8,24 @@ from pydantic import Field
 from .timbr_llm_wrapper import TimbrLlmWrapper
 from ..utils.general import is_llm_type, is_support_temperature, get_supported_models, parse_additional_params, pop_param_value
 from .. import config
+
+# Cache of dynamically loaded custom LLM modules keyed by absolute file path.
+_custom_llm_module_cache = {}
+
+
+def _load_custom_llm_module(custom_llm_path):
+  if not os.path.exists(custom_llm_path):
+    raise FileNotFoundError(f"custom_llm_path file not found: {custom_llm_path}")
+  cache_key = os.path.abspath(custom_llm_path)
+  custom_module = _custom_llm_module_cache.get(cache_key)
+  if custom_module is None:
+    spec = importlib.util.spec_from_file_location("custom_llm_module", custom_llm_path)
+    custom_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(custom_module)
+    if not hasattr(custom_module, 'get_llm'):
+      raise AttributeError(f"function get_llm not found in {custom_llm_path}")
+    _custom_llm_module_cache[cache_key] = custom_module
+  return custom_module
 
 class LlmTypes(Enum):
   OpenAI = 'openai-chat'
@@ -196,6 +216,11 @@ class LlmWrapper(LLM):
         **params,
       )
     elif is_llm_type(llm_type, LlmTypes.Timbr):
+      params = self._add_temperature(LlmTypes.Timbr.name, model, **llm_params)
+      custom_llm_path = pop_param_value(params, ['custom_llm_path'])
+      if custom_llm_path:
+        custom_module = _load_custom_llm_module(custom_llm_path)
+        return custom_module.get_llm(api_key, **params)
       return TimbrLlmWrapper(
         api_key=api_key,
         **params,

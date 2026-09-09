@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from ...config import stats_cache_idle_seconds, stats_cache_max_mb
+
 
 @dataclass
 class StatisticsLoaderConfig:
@@ -40,11 +42,13 @@ class StatisticsLoaderConfig:
     cache_validation_interval_seconds: int = 600
     """Per-ontology TTL gate: batch validation query at most every N seconds."""
 
-    cache_idle_eviction_seconds: int = 3600
-    """Evict entries unused for longer than this (seconds). Checked on every request."""
+    cache_idle_eviction_seconds: int = stats_cache_idle_seconds
+    """Evict entries unused for longer than this (seconds). Checked on every request.
+    Env: TIMBR_STATS_CACHE_IDLE_SECONDS."""
 
-    cache_max_total_mb: int = 500
-    """Maximum total cache size in MB. LRU eviction when exceeded."""
+    cache_max_total_mb: int = stats_cache_max_mb
+    """Maximum total cache size in MB, across all ontologies in this process.
+    LRU eviction when exceeded. Env: TIMBR_STATS_CACHE_MB."""
 
     # --- Property filtering (SQL-level WHERE clauses) ---
     include_properties: list = field(default_factory=list)
