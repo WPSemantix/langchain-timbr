@@ -18,6 +18,7 @@ from collections import OrderedDict
 from typing import Any
 
 from ...config import extraction_cache_size
+from ...utils.llm_executor import get_llm_executor
 
 logger = logging.getLogger(__name__)
 
@@ -25,23 +26,26 @@ logger = logging.getLogger(__name__)
 # In-process LRU cache for candidate extraction.
 #
 # The extraction is a pure function of ``question`` — no columns, no schema,
-# no time — so memoizing by ``(question.strip(), llm_identity(llm))`` is safe. The
-# primary win is the dynamic-metadata-context ``tc_topup`` path, which today
-# re-invokes ``build_technical_context`` with the SAME question + LLM after
-# an ``expand_to`` / anchor swap, causing a second identical LLM call. With
-# this cache the second call is served from memory.
+# no time, and no model — so the question alone is the key. One win is the
+# dynamic-metadata-context ``tc_topup`` path, which re-invokes
+# ``build_technical_context`` with the SAME question after an ``expand_to`` /
+# anchor swap, causing a second identical LLM call; the larger one is that a
+# repeated question is now free across requests too.
 #
-# ``llm_identity(llm)`` is the cheap process-local identity guard against
-# multi-LLM processes serving the same question; it looks through the
-# usage-collecting proxy the context builder wraps around the model, which is
-# rebuilt per pass and would otherwise make every lookup a miss.
+# The key deliberately excludes the model. Keying on ``llm_identity(llm)`` meant
+# keying on ``id()``, and a server builds a fresh ``LlmWrapper`` per request — a
+# new address, so every cross-request lookup missed and re-paid the call. (It was
+# unsound as well: CPython reuses the address of a collected object, so a new
+# model could inherit a dead one's entries.) The cost is that two different models
+# in one process share literals, which is fine — the literals are facts about the
+# question text; models differ only in the synonyms they suggest.
 # ``OrderedDict.move_to_end`` +
 # ``popitem(last=False)`` is the canonical Python LRU pattern. We do NOT
 # use ``functools.lru_cache`` because the cached value is a ``list`` and we
 # return defensive copies (lru_cache returns the same object — caller
 # mutation would poison the cache).
 _CACHE_MAXSIZE = extraction_cache_size  # env: TIMBR_EXTRACTION_CACHE_SIZE
-_EXTRACTION_CACHE: "OrderedDict[tuple[str, int], list[str]]" = OrderedDict()
+_EXTRACTION_CACHE: "OrderedDict[str, list[str]]" = OrderedDict()
 
 
 def _extraction_cache_clear() -> None:
@@ -80,9 +84,9 @@ def extract_candidates_with_llm(
     WHERE clauses and provides synonyms/alternate forms for each.
 
     Results are memoized in an in-process LRU cache keyed by
-    ``(question.strip(), llm_identity(llm))`` so re-entrant callers (notably the
-    dynamic metadata-context ``tc_topup`` pass) don't burn a second
-    identical LLM call. Errors are NEVER cached — only successful LLM
+    ``question.strip()`` alone, so neither a re-entrant caller (notably the
+    dynamic metadata-context ``tc_topup`` pass) nor a later request repeating
+    the question burns a second identical LLM call. Errors are NEVER cached — only successful LLM
     invocations (even when the parsed result is empty).
 
     Args:
@@ -101,7 +105,7 @@ def extract_candidates_with_llm(
     if not question or not question.strip():
         return []
 
-    cache_key = (question.strip(), llm_identity(llm))
+    cache_key = question.strip()
     cached = _EXTRACTION_CACHE.get(cache_key)
     if cached is not None:
         _EXTRACTION_CACHE.move_to_end(cache_key)
@@ -160,12 +164,12 @@ def _call_llm(llm: Any, prompt_text: str, *, timeout: int = 30) -> str:
     def _invoke():
         return ctx.run(llm.invoke, prompt_text)
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_invoke)
-        try:
-            response = future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(f"LLM candidate extraction timed out after {timeout}s")
+    future = get_llm_executor().submit(_invoke)
+    try:
+        response = future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        # Abandon the future rather than joining it (see utils/llm_executor.py).
+        raise TimeoutError(f"LLM candidate extraction timed out after {timeout}s")
 
     # Handle different response types
     if hasattr(response, "content"):

@@ -326,14 +326,17 @@ def _lookup_transitivity(ontology, from_concept: str, rel_name: str) -> int:
 def _lookup_relationship_description(
     ontology, from_concept: str, rel_name: str,
 ) -> str:
-    """Return the relationship's description string, or '' on any failure."""
-    meta = _safe_get_concept_metadata(ontology, from_concept)
-    if meta is None:
+    """Return the relationship's description string, or '' on any failure.
+
+    Delegates to the ontology's sys_concept_relationships lookup rather than
+    describing ``from_concept``: that lookup is where the description comes
+    from either way (``parse_describe_output`` reads the same entry), so the
+    describe was a round-trip for an in-memory value.
+    """
+    try:
+        return ontology.relationship_description(from_concept, rel_name)
+    except Exception:
         return ""
-    rel_meta = meta.relationships.get(rel_name)
-    if rel_meta is None:
-        return ""
-    return rel_meta.description or ""
 
 
 def _safe_cardinality_of(ontology, from_concept: str, rel_name: str) -> Optional[str]:

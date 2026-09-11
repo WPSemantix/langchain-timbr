@@ -15,8 +15,8 @@ from langchain_timbr.technical_context.extraction import llm as _llm_mod
 
 @pytest.fixture(autouse=True)
 def _clear_extraction_cache():
-    """Drop the in-process LRU cache before every test so MagicMock id() reuse
-    or test ordering can't leak state across tests."""
+    """Drop the in-process LRU cache before every test. The key is the question
+    alone, so tests sharing a question string would otherwise leak state."""
     _extraction_cache_clear()
     yield
     _extraction_cache_clear()
@@ -197,9 +197,10 @@ class TestParseCandidatesResponse:
 
 
 class TestExtractionCache:
-    """In-process LRU cache over ``(question, id(llm))``. Removes the duplicate
+    """In-process LRU cache over ``question`` alone. Removes the duplicate
     ``extract_candidates_with_llm`` call the dynamic-metadata-context
-    ``tc_topup`` pass otherwise triggers."""
+    ``tc_topup`` pass otherwise triggers, and serves a question repeated by a
+    later request without re-paying the call."""
 
     def _payload(self, *, literal: str = "metal", synonyms=("metallic",)) -> str:
         return json.dumps({
@@ -236,9 +237,13 @@ class TestExtractionCache:
         extract_candidates_with_llm("  Which metal material  ", llm=llm)
         assert llm.invoke.call_count == 1
 
-    def test_different_llm_instances_do_not_share_cache(self):
-        """``id(llm)`` is part of the key so two LLMs in the same process
-        don't serve each other's answers."""
+    def test_different_llm_instances_share_cache(self):
+        """The model is deliberately NOT part of the key.
+
+        A server builds a fresh LlmWrapper per request, so keying on the object
+        made every cross-request lookup miss. The extraction depends only on the
+        question text, so the second model is served the first one's answer.
+        """
         llm_a = MagicMock()
         llm_b = MagicMock()
         llm_a.invoke.return_value = self._payload(literal="A_metal")
@@ -246,7 +251,18 @@ class TestExtractionCache:
         ra = extract_candidates_with_llm("same question", llm=llm_a)
         rb = extract_candidates_with_llm("same question", llm=llm_b)
         assert ra[0] == "A_metal"
-        assert rb[0] == "B_metal"
+        assert rb == ra, "second model must be served from the cache"
+        assert llm_a.invoke.call_count == 1
+        assert llm_b.invoke.call_count == 0
+
+    def test_different_question_still_misses_across_llms(self):
+        """Dropping the model from the key must not collapse distinct questions."""
+        llm_a = MagicMock()
+        llm_b = MagicMock()
+        llm_a.invoke.return_value = self._payload(literal="metal")
+        llm_b.invoke.return_value = self._payload(literal="wood", synonyms=("wooden",))
+        assert extract_candidates_with_llm("metal question", llm=llm_a) == ["metal", "metallic"]
+        assert extract_candidates_with_llm("wooden question", llm=llm_b) == ["wood", "wooden"]
         assert llm_a.invoke.call_count == 1
         assert llm_b.invoke.call_count == 1
 

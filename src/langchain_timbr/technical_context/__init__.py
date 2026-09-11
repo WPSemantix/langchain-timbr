@@ -18,6 +18,7 @@ from .semantic_type import classify_semantic_type, compute_ontology_distance, co
 from .extraction.ngram import extract_prompt_tokens
 from .extraction.llm import extract_candidates_with_llm, llm_identity
 from .assembly.multi_match import run_all_matchers
+from .matching.normalize import normalize, normalize_keep_spaces
 from .assembly.per_column import assemble_column_payload, format_annotation
 from .assembly.trimming import trim_to_budget
 from .modes import estimate_include_all_cost
@@ -40,6 +41,38 @@ logger = logging.getLogger(__name__)
 _scope: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "technical_context_scope", default=None,
 )
+
+
+def match_date_year(
+    candidates: list[str],
+    date_years: dict[str, tuple[frozenset[str], int]],
+    column_name: str,
+) -> MatchResult | None:
+    """A year named in the question promotes the date columns that cover it.
+
+    Returns a summary — the year, the months present in it, and how many dates —
+    never the dates themselves. One year of one column is ~184 values, and across
+    every date column listing them would be roughly sixteen times the entire
+    technical-context budget. The column already publishes its min/max range, so
+    the summary is the increment and the promotion is the point.
+
+    Returns None when no candidate names a year the column holds.
+    """
+    for candidate in candidates:
+        hit = date_years.get(candidate.strip())
+        if hit is None:
+            continue
+        months, count = hit
+        return MatchResult(
+            column_name=column_name,
+            matched_value=(
+                f"{candidate.strip()}: months {','.join(sorted(months))} ({count} dates)"
+            ),
+            score=90,
+            match_type="year",
+            candidate=candidate,
+        )
+    return None
 
 
 @contextmanager
@@ -193,12 +226,38 @@ def build_technical_context(
     # means misclassification degrades to name_only with matched values
     # instead of producing no annotation at all.
     matches_by_column: dict[str, list[MatchResult]] = {}
+    # The tokens and the question are the same for every column, so normalize
+    # them once here rather than once per column inside each matcher.
+    norm_candidates = [normalize(t) for t in candidates]
+    norm_question = normalize_keep_spaces(question)
     for col_ref in col_refs:
         stats = stats_map.get(col_ref.name)
         if not stats or not stats.top_k:
             continue
 
-        known_values = [str(e.value) for e in stats.top_k]
+        # The normalized forms ride along on the entries, derived once when the
+        # row was parsed. One pass builds all three lists, index-aligned by
+        # construction — the matcher sees top_k whole and in order, so there is
+        # no slicing to keep them in step with.
+        known_values: list[str] = []
+        norm_values: list[str] | None = []
+        norm_space_values: list[str] | None = []
+        norm_stripped: list[str] | None = [] if stats.value_kind == "numeric" else None
+        for e in stats.top_k:
+            known_values.append(str(e.value))
+            if norm_values is not None:
+                if e.norm is None or e.norm_space is None:
+                    # Pre-change row: let the matcher derive them.
+                    norm_values = norm_space_values = None
+                else:
+                    norm_values.append(e.norm)
+                    norm_space_values.append(e.norm_space)
+            if norm_stripped is not None:
+                if e.norm_stripped is None:
+                    norm_stripped = None
+                else:
+                    norm_stripped.append(e.norm_stripped)
+
         matches = run_all_matchers(
             prompt_text=question,
             prompt_tokens=candidates,
@@ -206,7 +265,25 @@ def build_technical_context(
             known_values=known_values,
             config=config,
             semantic_type=col_ref.semantic_type,
+            normalized=norm_values,
+            normalized_space=norm_space_values,
+            normalized_tokens=norm_candidates,
+            normalized_prompt=norm_question,
+            normalized_stripped=norm_stripped,
+            value_kind=stats.value_kind,
+            # Identity for the structure cache. `column_name` alone is not
+            # unique — the same property exists under different concepts and
+            # schemas, and on a multi-tenant server under different ontologies.
+            ontology=conn_params.get("ontology", ""),
+            schema=schema,
+            concept=concept,
         )
+
+        if stats.value_kind == "date" and stats.date_years:
+            year_hit = match_date_year(candidates, stats.date_years, col_ref.name)
+            if year_hit is not None:
+                matches.append(year_hit)
+
         if matches:
             matches_by_column[col_ref.name] = matches
 

@@ -632,6 +632,11 @@ def _build_subgraph_and_ddl(
     # demoted by their position, no need to ask the LLM about them.
     detail_concepts: List[str] = list(detail_in_band)
     prefilter_demoted_entries: List[MenuEntry] = []
+    # First point that needs describe output: the trigger counts each
+    # candidate's properties and measures, and the pre-filter reads their
+    # descriptions. The BFS above deliberately warmed nothing, so warm the
+    # band it settled on in one parallel wave rather than a round-trip apiece.
+    ontology.prefetch(detail_in_band)
     should_fire, trigger_reason = should_trigger_concept_prefilter(
         candidate_concepts=detail_in_band, ontology=ontology, config=config,
     )
@@ -970,6 +975,11 @@ def _build_depth_capped_result(
     concepts, _preds, edges = retrieve_subgraph(
         anchor=anchor, edge_index=edge_index, config=config, max_hop=capped_depth,
     )
+    # The walk itself reads no describe output, and this branch's concepts are not
+    # the pre-filtered detail band that was warmed upstream — so warm them here.
+    # Every synthesized path below is handed to build_relationships_from_paths,
+    # which reads each target's properties and measures one concept at a time.
+    edge_index.ontology.prefetch(concepts)
     if not edges:
         stats["resolved_by"] = "empty"
         stats["fallback_empty"] = True

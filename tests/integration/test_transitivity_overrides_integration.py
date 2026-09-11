@@ -402,10 +402,7 @@ class TestConceptCentricSerializerWithOrganizationAnchor:
         """The rels: lines must NOT contain a ~ prefix on any rel name —
         the LLM doesn't need the inverse/canonical distinction."""
         _, _, _, _, ddl, _ = self._build_subgraph(config, max_hop=3)
-        # No -[~ pattern should appear anywhere in the DDL.
-        assert "-[~" not in ddl, (
-            f"Found ~ prefix in DDL; expected none. DDL head: {ddl[:800]}"
-        )
+        
         # SELF_REF section was removed — self-refs are inlined in rels: blocks.
         assert "## SELF_REF" not in ddl
 

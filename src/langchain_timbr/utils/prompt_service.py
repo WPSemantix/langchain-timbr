@@ -44,6 +44,7 @@ class PromptService:
             self.verify_ssl = kwargs.get('verify_ssl', True)
 
         self.reasoning = kwargs.get('reasoning', False)
+        self.after_validate = kwargs.get('after_validate', False)
     
     def _get_headers(self) -> Dict[str, str]:
         """Get headers for API requests"""
@@ -187,7 +188,12 @@ class PromptService:
         """
         url = "llm_prompts/generate_sql"
 
-        if self.reasoning:
+        # The server picks the template from these flags: ?reason=true selects
+        # the post-validation variant (no 'reason' field to re-derive), and
+        # ?reasoning=true the variant used while reasoning is enabled.
+        if self.after_validate:
+            url += "?reason=true"
+        elif self.reasoning:
             url += "?reasoning=true"
 
         return self._fetch_template(url)
@@ -298,18 +304,24 @@ def get_determine_concept_prompt_template(
 
 def get_generate_sql_prompt_template(
     conn_params: Optional[dict] = None,
-    reasoning: bool = False
+    reasoning: bool = False,
+    after_validate: bool = False
 ) -> PromptTemplateWrapper:
     """
     Get generate SQL prompt template wrapper
     
     Args:
         conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
-        
+        reasoning: Request the variant used while reasoning is enabled
+        after_validate: Request the post-validation-retry variant, which does not
+            ask for a 'reason' the first pass already produced
+
     Returns:
         PromptTemplateWrapper for generate SQL
     """
-    prompt_service = PromptService(conn_params=conn_params, reasoning=reasoning)
+    prompt_service = PromptService(
+        conn_params=conn_params, reasoning=reasoning, after_validate=after_validate
+    )
     return PromptTemplateWrapper(prompt_service, "get_generate_sql_template")
 
 

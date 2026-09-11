@@ -27,6 +27,24 @@ def _load_custom_llm_module(custom_llm_path):
     _custom_llm_module_cache[cache_key] = custom_module
   return custom_module
 
+# Client-timeout parameter in every spelling LangChain exposes for the providers
+# that accept one. Only clients built here get a default; an LLM the caller
+# constructed is theirs, and is passed through untouched.
+_TIMEOUT_PARAM_ALIASES = ('timeout', 'request_timeout', 'default_request_timeout')
+
+
+def _apply_default_llm_timeout(params):
+  """Bound the socket at LLM_TIMEOUT unless the caller already chose a timeout.
+
+  Without it the OpenAI and Anthropic SDKs fall back to their own 600s default, so
+  a hung call holds a pool worker for eight minutes after the caller gave up.
+  """
+  if any(params.get(name) is not None for name in _TIMEOUT_PARAM_ALIASES):
+    return params
+  params['timeout'] = config.llm_timeout
+  return params
+
+
 class LlmTypes(Enum):
   OpenAI = 'openai-chat'
   Anthropic = 'anthropic-chat'
@@ -192,6 +210,7 @@ class LlmWrapper(LLM):
       from langchain_openai import ChatOpenAI as OpenAI
       llm_model = model or "gpt-4o-2024-11-20"
       params = self._add_temperature(LlmTypes.OpenAI.name, llm_model, **llm_params)
+      params = _apply_default_llm_timeout(params)
       return OpenAI(
         openai_api_key=api_key,
         model_name=llm_model,
@@ -201,6 +220,7 @@ class LlmWrapper(LLM):
       from langchain_anthropic import ChatAnthropic as Claude
       llm_model = model or "claude-3-5-sonnet-20241022"
       params = self._add_temperature(LlmTypes.Anthropic.name, llm_model, **llm_params)
+      params = _apply_default_llm_timeout(params)
       return Claude(
         anthropic_api_key=api_key,
         model=llm_model,
@@ -210,6 +230,7 @@ class LlmWrapper(LLM):
       from langchain_google_genai import ChatGoogleGenerativeAI
       llm_model = model or "gemini-2.0-flash-exp"
       params = self._add_temperature(LlmTypes.Google.name, llm_model, **llm_params)
+      params = _apply_default_llm_timeout(params)
       return ChatGoogleGenerativeAI(
         google_api_key=api_key,
         model=llm_model,
@@ -240,6 +261,7 @@ class LlmWrapper(LLM):
       from langchain_openai import AzureChatOpenAI
       llm_model = model or "gpt-4o-2024-11-20"
       params = self._add_temperature(LlmTypes.AzureOpenAI.name, llm_model, **llm_params)
+      params = _apply_default_llm_timeout(params)
 
       azure_endpoint = pop_param_value(params, ['azure_endpoint', 'llm_endpoint', 'endpoint'], default=config.llm_endpoint)
       azure_api_version = pop_param_value(params, ['azure_api_version', 'llm_api_version', 'api_version'], default=config.llm_api_version)
@@ -287,6 +309,7 @@ class LlmWrapper(LLM):
       from langchain_google_vertexai import ChatVertexAI
       llm_model = model or "gemini-2.5-flash-lite"
       params = self._add_temperature(LlmTypes.VertexAI.name, llm_model, **llm_params)
+      params = _apply_default_llm_timeout(params)
 
       project = pop_param_value(params, ['vertex_project', 'llm_project', 'project'])
       if project:
@@ -333,6 +356,14 @@ class LlmWrapper(LLM):
       provider = pop_param_value(params, ['provider', 'bedrock_provider', 'llm_provider'])
       if provider and llm_model.startswith('arn:'):
         params['provider'] = provider
+
+      # botocore defaults read_timeout to 60s, shorter than LLM_TIMEOUT, which cuts
+      # off legitimately slow generations. A caller-supplied Config is left as given:
+      # botocore always populates read_timeout, so an explicit 60 is indistinguishable
+      # from the default and we cannot tell whether the caller meant it.
+      if params.get('config') is None:
+        from botocore.config import Config as BotoConfig
+        params['config'] = BotoConfig(read_timeout=config.llm_timeout)
 
       return ChatBedrockConverse(
         model=llm_model,

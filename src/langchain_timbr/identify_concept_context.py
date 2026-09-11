@@ -28,7 +28,8 @@ The catalog is hierarchical:
 Properties and sub-type hints are **always** filtered to the question via the
 trigram matcher, so the rendered catalog is question-conditioned at every stage.
 The in-memory `_Catalog` model itself is query-independent and cached per
-ontology version (`_load_catalog`); only the rendering depends on the question.
+ontology version (`_load_catalog`) — per caller, since the view half of it is
+permission-filtered; only the rendering depends on the question.
 
 Candidate registration and the ontology header stay in `determine_concept`; this
 module only produces the descriptive lines, and only when
@@ -44,7 +45,7 @@ from . import config
 from . import ontology_metadata as om
 from . import trigram
 from .kbclient import render_object_rules
-from .utils.timbr_utils import run_query, cache_with_version_check
+from .utils.timbr_utils import run_query, cache_with_version_check, get_views_only
 
 
 
@@ -195,19 +196,55 @@ def _build_catalog(rows: dict) -> _Catalog:
 
 
 @cache_with_version_check
-def _load_catalog(conn_params: dict) -> _Catalog:
-    """Fetch + assemble the catalog for one ontology, cached per ontology version."""
+def _load_shared_catalog_rows(conn_params: dict) -> dict:
+    """The catalog sections that are the same for every caller.
+
+    Concepts, properties, concept properties and relationships: not
+    permission-filtered, so one fetch per ontology version serves everyone.
+    """
     def run_sql(sql):
         return run_query(sql, conn_params)
 
     # Version + caching are handled by the decorator, so the inner fetch runs the
     # queries directly (get_version returns None -> no extra SHOW VERSION call).
-    rows = om.fetch_catalog_rows(
+    return om.fetch_catalog_rows(
         conn_params.get("ontology", ""),
         run_sql,
         get_version=lambda _o: None,
         cache=None,
+        queries=om.SHARED_CATALOG_QUERIES,
     )
+
+
+@cache_with_version_check(per_user=True)
+def _load_view_properties(conn_params: dict) -> list:
+    """Property rows of views and cubes — permission-filtered, so per caller.
+
+    Isolated the same way `fetch_catalog_rows` isolates its sections: an absent
+    SYS_VIEW_PROPERTIES on an older backend yields an empty section rather than
+    aborting the whole catalog.
+    """
+    try:
+        return run_query(om.VIEW_PROPERTIES_SQL, conn_params) or []
+    except Exception:
+        return []
+
+
+@cache_with_version_check(per_user=True)
+def _load_catalog(conn_params: dict) -> _Catalog:
+    """Fetch + assemble the catalog for one ontology, cached per ontology version.
+
+    Per caller, because the view half is permission-filtered — the concept half
+    comes from the shared fetch above and the view list from the same
+    `get_views_only` the rest of the package reads.
+    """
+    rows = dict(_load_shared_catalog_rows(conn_params))
+    try:
+        rows["views"] = get_views_only(conn_params=conn_params)
+    except Exception:
+        rows["views"] = []
+    rows["view_properties"] = _load_view_properties(conn_params)
+
     return _build_catalog(rows)
 
 

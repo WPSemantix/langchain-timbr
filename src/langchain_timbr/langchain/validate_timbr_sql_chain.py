@@ -235,6 +235,10 @@ class ValidateTimbrSqlChain(Chain):
         return list(dict.fromkeys(self.input_keys + base))
 
 
+    def _refresh_ontology_version(self) -> None:
+        """Refresh the ontology version once per question."""
+        self._refresh_version_for(self._get_conn_params())
+
     def _get_conn_params(self) -> dict:
         return {
             "url": self._url,
@@ -296,6 +300,32 @@ class ValidateTimbrSqlChain(Chain):
                 _log_ctx.current_step = "generating_sql"
                 log_agent_step(_log_ctx)
 
+            # Knowledge-base context for the regeneration. Resolved here rather
+            # than up front so a valid SQL pays for none of it; when this chain
+            # runs after another, the memory already on the shared chain context
+            # is reused instead of re-resolved.
+            from ..utils.memory import resolve_memory, MemoryContext
+            from ..kbclient import fetch_rules
+
+            _chain_ctx = self._received_chain_context
+            if _chain_ctx.get("memory") is None and (self._enable_memory or config.enable_knowledge_base):
+                _chain_ctx["memory"] = resolve_memory(
+                    llm=self._llm,
+                    conn_params=self._get_conn_params(),
+                    conversation_id=conversation_id,
+                    prompt=prompt,
+                    enable_memory=self._enable_memory,
+                    memory_window_size=self._memory_window_size,
+                    concept_names=self._concepts_list,
+                    agent=self._agent,
+                    ontology=self._ontology,
+                )
+            memory_ctx = _chain_ctx.get("memory")
+            memory_ctx = memory_ctx if isinstance(memory_ctx, MemoryContext) else None
+            kb_rules = fetch_rules(
+                self._get_conn_params(), agent=self._agent, ontology=self._ontology
+            )
+
             prompt_extension = self._note + '\n' if self._note else ""
             generate_res = generate_sql(
                 question=prompt,
@@ -320,6 +350,8 @@ class ValidateTimbrSqlChain(Chain):
                 debug=self._debug,
                 metadata_context_mode=self._metadata_context_mode,
                 metadata_context_max_tokens=self._metadata_context_max_tokens,
+                memory_context=memory_ctx,
+                rules=kb_rules,
             )
             sql = generate_res.get("sql", "")
             schema = generate_res.get("schema", self._schema)

@@ -432,11 +432,12 @@ class TestEndToEndSqlGeneration:
         assert sql, f"Static-mode SQL gen produced empty SQL; error={result.get('error')!r}"
 
     def test_filter_llm_called_at_most_once_per_invoke(self, config):
-        """Memoization regression: handle_validate_generate_sql's retry loop
-        rebuilds the SQL context, which would otherwise re-invoke the Step 1
-        filter LLM (doubling token spend). The shared Ontology + filtered-
-        result cache must ensure Step 1 is called at most ONCE per chain
-        invocation regardless of how many SQL-validation retries occur."""
+        """Memoization regression: a reasoning retry rebuilds the SQL context,
+        which would otherwise re-invoke the Step 1 filter LLM (doubling token
+        spend). The shared Ontology + filtered-result cache must ensure Step 1
+        is called at most ONCE per chain invocation, regardless of how many
+        retries occur. (Validation retries no longer rebuild the context at
+        all, so they cannot reach Step 1 in the first place.)"""
         from langchain_timbr.ontology_context.context_builder import (
             build_filtered as _bf_mod,
         )
@@ -562,7 +563,7 @@ class TestDeterminismAndCaching:
     def test_two_runs_share_one_ontology_cache(self, config, llm):
         real = TimbrOntologyClient(_conn_params(config, ontology=CRUNCHBASE_ONTOLOGY))
         counting = _CountingClient(real)
-        ontology = Ontology(counting, version_ttl_seconds=3600)
+        ontology = Ontology(counting)
 
         cfg = _dynamic_config()
         result_a = build_filtered_metadata(

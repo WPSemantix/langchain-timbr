@@ -1,8 +1,12 @@
 """Edge-index wrapper over Plan 1's Ontology.
 
 Builds EdgeMeta objects on demand by:
-  1. Calling Ontology.get_concept_metadata(concept) (cached lazily by Plan 1).
+  1. Calling Ontology.outbound_relationships(concept).
   2. Calling Ontology.cardinality_of(concept, rel_name) for each relationship.
+
+Both read the bulk sys_* lookups the Ontology fetches once per version, so
+walking the graph costs no `describe concept` at all — those are paid later,
+only for the concepts that survive filtering and get serialized.
 
 Caches the per-concept outbound-edge list and a global (from, rel, to) lookup
 incrementally as BFS visits concepts. Never issues SQL of its own.
@@ -54,21 +58,12 @@ class EdgeIndex:
         return self._edge_map.get(key)
 
     def _materialize(self, concept: str) -> List[EdgeMeta]:
-        try:
-            meta = self._ontology.get_concept_metadata(concept)
-        except Exception:
-            # If the concept can't be described (e.g. logical concept without
-            # describe support), surface as empty outbound rather than raise —
-            # BFS will simply not expand from it.
-            return []
-        # cardinality_of() describes the target of every relationship. Warm them
-        # in one parallel wave first so the loop below runs entirely from cache
-        # instead of paying a round-trip per relationship.
-        self._ontology.prefetch(
-            rel.target_concept for rel in meta.relationships.values()
-        )
+        # No describe here: the whole edge set comes from the two bulk fetches
+        # the Ontology already does once per version. A concept with no rows
+        # yields an empty list, so BFS simply doesn't expand from it.
+        relationships = self._ontology.outbound_relationships(concept)
         edges: List[EdgeMeta] = []
-        for rel in meta.relationships.values():
+        for rel in relationships.values():
             try:
                 cardinality = self._ontology.cardinality_of(concept, rel.name)
             except Exception:

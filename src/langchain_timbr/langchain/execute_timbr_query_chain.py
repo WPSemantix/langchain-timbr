@@ -263,6 +263,10 @@ class ExecuteTimbrQueryChain(Chain):
         return list(dict.fromkeys(self.input_keys + base))
 
 
+    def _refresh_ontology_version(self) -> None:
+        """Refresh the ontology version once per question."""
+        self._refresh_version_for(self._get_conn_params())
+
     def _get_conn_params(self) -> dict:
         return {
             "url": self._url,

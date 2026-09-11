@@ -93,7 +93,8 @@ class GenerateTimbrSqlChain(Chain):
         :param conversation_id: Optional conversation ID to associate with this chain's execution for tracking and logging in multi-turn conversations.
         :param enable_technical_context: Whether to enable technical context enrichment (default is True).
         :param technical_context_mode: Technical context mode - 'include_all', 'filter_matched', or 'auto' (default is 'auto').
-        :param technical_context_max_tokens: Maximum token budget for technical context (default is 3000).
+        :param technical_context_max_tokens: Maximum token budget for technical context (default is 3000,
+            hard cap 20000). Larger values are clamped to the cap; 0 or less disables technical context.
         :param kwargs: Additional arguments to pass to the base
         
         ## Example
@@ -257,6 +258,10 @@ class GenerateTimbrSqlChain(Chain):
         ]
         return list(dict.fromkeys(self.input_keys + base))
 
+
+    def _refresh_ontology_version(self) -> None:
+        """Refresh the ontology version once per question."""
+        self._refresh_version_for(self._get_conn_params())
 
     def _get_conn_params(self) -> dict:
         return {
@@ -423,6 +428,8 @@ class GenerateTimbrSqlChain(Chain):
             "output_tokens": _sum_token_field(usage_metadata, "output_tokens"),
         }
 
+        _tc_error = generate_res.get("technical_context_error")
+
         if _log_ctx:
             if concept:
                 _log_ctx.concept = concept
@@ -455,7 +462,12 @@ class GenerateTimbrSqlChain(Chain):
                 concept=concept,
                 schema=schema,
                 generated_sql=sql,
-                chain_output={"generate_sql_reason": generate_res.get("generate_sql_reason")},
+                chain_output={
+                    "generate_sql_reason": generate_res.get("generate_sql_reason"),
+                    # Only present when the technical-context pass was skipped, so the trace
+                    # can explain a prompt that went out without statistics.
+                    **({"technical_context_error": _tc_error} if _tc_error else {}),
+                },
                 is_sql_valid=is_sql_valid,
                 error=error if not is_sql_valid else None,
                 reasoning_status=reasoning_status,

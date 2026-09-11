@@ -180,8 +180,12 @@ Technical context enriches SQL generation prompts with per-column statistical an
   - `include_all` — annotate every column that has statistics
   - `filter_matched` — annotate only columns whose values match the user's question
   - `auto` (default) — choose automatically based on token budget
-- **`TECHNICAL_CONTEXT_MAX_TOKENS`** - Maximum token budget allocated for technical context annotations (default: `3000`)
+- **`TECHNICAL_CONTEXT_MAX_TOKENS`** - Maximum token budget allocated for technical context annotations (default: `3000`, hard cap: `20000`). The annotations are trimmed to the largest number of values per column that fits the budget, so raising it adds values. A value above the cap is clamped to it (logged as a warning) rather than rejected, and `0` or less disables technical context.
 - **`TECHNICAL_CONTEXT_PROPERTIES`** - Comma-separated whitelist of property names to fetch statistics for. When set, **only** these properties will have statistics loaded from the ontology. Properties not in this list are skipped, reducing query cost and response size. Empty (default) means all properties are fetched.
+
+
+- **`TIMBR_MATCH_MAX_PER_TOKEN`** - How many distinct values one prompt token may fuzzy-match within a column (integer, default: `5`).
+- **`TIMBR_MATCH_MAX_PER_COLUMN`** - Ceiling on fuzzy-matched values contributed by one column across all tokens (integer, default: `20`). A backstop: matched columns are exempt from prompt trimming, so this is what bounds them.
 
 These options can also be passed directly to chain/node constructors:
 
@@ -208,7 +212,7 @@ chain = ExecuteTimbrQueryChain(
 | --- | --- | --- | --- |
 | `enable_technical_context` | `Optional[bool]` | `True` | Enable/disable technical context enrichment |
 | `technical_context_mode` | `Optional[str]` | `"auto"` | Column annotation strategy (`include_all`, `filter_matched`, `auto`) |
-| `technical_context_max_tokens` | `Optional[int]` | `3000` | Maximum token budget for annotations |
+| `technical_context_max_tokens` | `Optional[int]` | `3000` | Maximum token budget for annotations. Hard cap `20000`; larger values are clamped to it, `0` or less disables the feature |
 | `technical_context_properties` | `Optional[list\|str]` | `[]` (all) | Whitelist of property names to fetch statistics for. Empty = no restriction |
 | `exclude_properties` | `Optional[list\|str]` | `['entity_id', 'entity_type', 'entity_label']` | Properties excluded from schema display and statistics fetching |
 

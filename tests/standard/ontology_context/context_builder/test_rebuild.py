@@ -73,6 +73,20 @@ class _FakeOntology:
             raise KeyError(name)
         return self._concepts[name]
 
+    def relationship_description(self, from_concept: str, rel_name: str) -> str:
+        """Mirror Ontology.relationship_description.
+
+        The real one reads sys_concept_relationships; this fake has no such
+        table, so it reads the same descriptions off its concept fixtures.
+        """
+        concept = self._concepts.get(from_concept)
+        if concept is None:
+            return ""
+        rel = concept.relationships.get(rel_name)
+        if rel is None:
+            return ""
+        return rel.description or ""
+
 
 def _seg(a, r, b):
     return PathSegment(**{"from": a, "rel": r, "to": b})

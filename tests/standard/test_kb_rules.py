@@ -10,7 +10,8 @@ Injection matrix under test:
   filter (in-subgraph rels)   -> relationship SELECTION_RULE
   generate_sql concept        -> INSTRUCTION + VALIDATION (never SELECTION)
   generate_sql prop/meas/rel  -> SELECTION_RULE + INSTRUCTION + VALIDATION
-  reasoning                   -> concept VALIDATION only
+  reasoning                   -> concept INSTRUCTION + VALIDATION, plus any rule
+                                 target named in the SQL under evaluation
 """
 
 import pytest
@@ -35,6 +36,7 @@ from langchain_timbr.utils.timbr_llm_utils import (
     _append_rules_subblock,
     _build_columns_str,
     _build_rel_columns_str,
+    _collect_reasoning_rules,
     _rule_meta_items,
 )
 
@@ -332,22 +334,23 @@ def test_generate_sql_backward_compat_without_rules():
 
 
 # --------------------------------------------------------------------------- #
-# Stage: reasoning — concept VALIDATION only
+# Stage: reasoning — concept INSTRUCTION + VALIDATION, plus SQL-named objects
 # --------------------------------------------------------------------------- #
-def test_reasoning_appends_only_validation():
+def test_reasoning_appends_concept_instruction_and_validation():
     rs = _sample_ruleset()
-    txt = kb.render_object_rules(rs.rules_for("orders", ("concept", "view", "cube"), {"validation"}))
-    assert txt == "validation_rules: reject cancelled"
+    txt = _collect_reasoning_rules(rs, "orders", "SELECT 1 FROM dtimbr.`orders`")
+    assert "use gross amount" in txt      # instruction — the evaluator needs what was mandated
+    assert "reject cancelled" in txt      # validation
 
     msgs = [HumanMessage(content="base")]
-    _append_reasoning_context_blocks(msgs, validation_rules=txt)
-    assert "Knowledge Base Validation Rules" in msgs[0].content
+    _append_reasoning_context_blocks(msgs, kb_rules=txt)
+    assert "Knowledge Base Rules" in msgs[0].content
     assert "reject cancelled" in msgs[0].content
 
 
 def test_reasoning_backward_compat_without_rules():
     msgs = [HumanMessage(content="base")]
-    _append_reasoning_context_blocks(msgs, validation_rules="")
+    _append_reasoning_context_blocks(msgs, kb_rules="")
     assert msgs[0].content == "base"
 
 

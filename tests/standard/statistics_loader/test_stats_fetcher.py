@@ -1,5 +1,8 @@
 """Tests for stats_fetcher module."""
 
+import threading
+import time
+
 import pytest
 from unittest.mock import patch, call
 from datetime import datetime
@@ -9,6 +12,7 @@ from langchain_timbr.technical_context.statistics_loader.stats_fetcher import (
     fetch_stats_for_view,
 )
 from langchain_timbr.technical_context.statistics_loader.config import StatisticsLoaderConfig
+from langchain_timbr.technical_context.statistics_loader.stats_cache import StatsCache
 
 
 class TestFetchStatsForMappings:
@@ -136,3 +140,102 @@ class TestFetchStatsForView:
             columns_type_map={},
         )
         assert result == []
+
+
+class TestSingleFlight:
+    """Concurrent cold callers must not each download the same statistics."""
+
+    @staticmethod
+    def _row(prop, mapping="map_a"):
+        return {
+            "property_name": prop,
+            "target_name": mapping,
+            "target_type": "mapping",
+            "distinct_count": 10,
+            "non_null_count": 10,
+            "stats": '{"top_k": [{"value": "x", "count": 1}]}',
+            "updated_at": "2024-01-15 10:00:00",
+        }
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_concurrent_cold_callers_produce_one_query(self, mock_run_query, conn_params):
+        """N threads, one cold cache, one fetch.
+
+        Without single-flight every thread misses the cache at the same instant
+        and each downloads the whole payload. The metadata path measured 150
+        queries for 50 threads before the same fix.
+        """
+        config = StatisticsLoaderConfig(
+            cache_validation_interval_seconds=10 ** 9,
+            cache_cold_validation_interval_seconds=10 ** 9,
+        )
+        cache = StatsCache(config, conn_params)
+
+        def slow_fetch(query, params=None, *args, **kwargs):
+            time.sleep(0.05)          # wide enough for every thread to pile up
+            return [self._row("col_a")]
+
+        mock_run_query.side_effect = slow_fetch
+
+        threads = 20
+        results = [None] * threads
+        barrier = threading.Barrier(threads)
+
+        def worker(i):
+            barrier.wait()            # release them all together
+            results[i] = fetch_stats_for_mappings(
+                {"map_a"}, conn_params, {"col_a": "varchar"}, config, cache,
+            )
+
+        workers = [threading.Thread(target=worker, args=(i,)) for i in range(threads)]
+        for w in workers:
+            w.start()
+        for w in workers:
+            w.join(timeout=30)
+
+        assert all(not w.is_alive() for w in workers), "a waiter never woke up"
+        assert mock_run_query.call_count == 1
+        assert all(len(r) == 1 and r[0].property_name == "col_a" for r in results)
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_gate_released_when_the_fetch_raises(self, mock_run_query, conn_params):
+        """A failed fetch must not leave every later caller waiting forever."""
+        config = StatisticsLoaderConfig(
+            cache_validation_interval_seconds=10 ** 9,
+            cache_cold_validation_interval_seconds=10 ** 9,
+        )
+        cache = StatsCache(config, conn_params)
+
+        mock_run_query.side_effect = Exception("boom")
+        with pytest.raises(Exception):
+            fetch_stats_for_mappings(
+                {"map_a"}, conn_params, {"col_a": "varchar"}, config, cache,
+            )
+
+        assert cache._inflight == {}
+
+        # The next caller gets through rather than blocking on a dead gate.
+        mock_run_query.side_effect = None
+        mock_run_query.return_value = [self._row("col_a")]
+        rows = fetch_stats_for_mappings(
+            {"map_a"}, conn_params, {"col_a": "varchar"}, config, cache,
+        )
+        assert len(rows) == 1
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_disabled_singleflight_still_correct(self, mock_run_query, conn_params):
+        """The kill switch changes query count, never results."""
+        config = StatisticsLoaderConfig(
+            cache_validation_interval_seconds=10 ** 9,
+            cache_cold_validation_interval_seconds=10 ** 9,
+            singleflight_enabled=False,
+        )
+        cache = StatsCache(config, conn_params)
+        mock_run_query.return_value = [self._row("col_a")]
+
+        rows = fetch_stats_for_mappings(
+            {"map_a"}, conn_params, {"col_a": "varchar"}, config, cache,
+        )
+
+        assert len(rows) == 1
+        assert cache._inflight == {}

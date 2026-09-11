@@ -14,7 +14,9 @@ from typing import Any, TYPE_CHECKING
 
 from ...utils import timbr_utils as _timbr_utils
 from .types import RawStatsRow, TopKEntry
-from .stats_parser import parse_stats_json
+from .stats_parser import (
+    parse_stats_json, classify_values, index_date_years, annotate_stripped_forms,
+)
 from .config import StatisticsLoaderConfig
 from .ontology_cache import load_mapping_properties_index
 
@@ -229,7 +231,9 @@ def fetch_stats_for_mappings(
     use_compound_filter = False
 
     if cache is not None:
-        cached_rows, missing = cache.get_many(ontology, target_keys, requested_properties)
+        cached_rows, missing = cache.get_many(
+            ontology, target_keys, requested_properties, conn_params,
+        )
         if not missing:
             return cached_rows
 
@@ -244,66 +248,91 @@ def fetch_stats_for_mappings(
         if has_partial_hit:
             use_compound_filter = True
 
-    # Load property index to know what actually exists per mapping in the DB.
-    # This is cached until ontology version changes (typically 1 round-trip).
-    props_index: dict[str, set[str]] | None = None
-    if use_compound_filter:
-        props_index = load_mapping_properties_index(conn_params)
-
-    # Fetch missing from DB (chunked)
-    fetched: list[RawStatsRow] = []
-    chunk_size = config.in_clause_chunk_size
-
-    for i in range(0, len(names_to_fetch), chunk_size):
-        chunk = names_to_fetch[i : i + chunk_size]
-
-        if use_compound_filter and props_index is not None:
-            # Build compound OR filter: per-mapping property IN-clauses
-            query = _build_compound_mapping_query(
-                chunk, per_mapping_missing, props_index,
-                include_properties, exclude_properties,
+    # Single-flight: the first caller for this ontology does the fetch and the
+    # rest wait, then re-read the cache and fetch only what it did not cover.
+    # Keyed on the ontology alone, so a waiter whose mappings the winner did not
+    # fetch pays one extra round-trip — never a wrong answer.
+    owns_fetch = False
+    if cache is not None:
+        owns_fetch = cache.claim_or_wait(ontology)
+        if not owns_fetch:
+            cached_rows, missing = cache.get_many(
+                ontology, target_keys, requested_properties, conn_params,
             )
-            if query is _EMPTY_STATS_QUERY:
-                # The cache already holds every requested property for this
-                # chunk — the query is known-empty, so skip the round-trip.
-                continue
-        else:
-            # Simple query: all mappings with a single property filter
-            in_clause = ", ".join(f"'{name}'" for name in chunk)
-            if include_properties:
-                # Subtract exclude from include — single IN-clause is sufficient
-                effective = sorted(set(include_properties) - set(exclude_properties or []))
-                safe_names = _validate_property_names(effective)
-                if safe_names:
-                    prop_in = ", ".join(f"'{n}'" for n in safe_names)
-                    prop_filter = f" AND property_name IN ({prop_in})"
-                else:
-                    prop_filter = ""
+            if not missing:
+                return cached_rows
+            names_to_fetch = [name for (_, name, _) in missing]
+            per_mapping_missing = {name: props for _, name, props in missing}
+            use_compound_filter = bool(cached_rows)
+
+    try:
+        # Load property index to know what actually exists per mapping in the DB.
+        # This is cached until ontology version changes (typically 1 round-trip).
+        props_index: dict[str, set[str]] | None = None
+        if use_compound_filter:
+            props_index = load_mapping_properties_index(conn_params)
+
+        # Fetch missing from DB (chunked)
+        fetched: list[RawStatsRow] = []
+        # One memo for the whole fetch: the same value shows up in many mappings'
+        # top-K lists, and without this each occurrence would carry its own copy
+        # of the normalized strings.
+        norm_memo: dict[str, tuple[str, str]] = {}
+        chunk_size = config.in_clause_chunk_size
+
+        for i in range(0, len(names_to_fetch), chunk_size):
+            chunk = names_to_fetch[i : i + chunk_size]
+
+            if use_compound_filter and props_index is not None:
+                # Build compound OR filter: per-mapping property IN-clauses
+                query = _build_compound_mapping_query(
+                    chunk, per_mapping_missing, props_index,
+                    include_properties, exclude_properties,
+                )
+                if query is _EMPTY_STATS_QUERY:
+                    # The cache already holds every requested property for this
+                    # chunk — the query is known-empty, so skip the round-trip.
+                    continue
             else:
-                # No include — only apply exclude if present
-                prop_filter = _build_property_filter_clause(None, exclude_properties)
-            query = (
-                f"SELECT {_STATS_COLUMNS} "
-                f"FROM timbr.sys_properties_statistics "
-                f"WHERE target_type = 'mapping' AND target_name IN ({in_clause})"
-                f"{prop_filter}"
-            )
+                # Simple query: all mappings with a single property filter
+                in_clause = ", ".join(f"'{name}'" for name in chunk)
+                if include_properties:
+                    # Subtract exclude from include — single IN-clause is sufficient
+                    effective = sorted(set(include_properties) - set(exclude_properties or []))
+                    safe_names = _validate_property_names(effective)
+                    if safe_names:
+                        prop_in = ", ".join(f"'{n}'" for n in safe_names)
+                        prop_filter = f" AND property_name IN ({prop_in})"
+                    else:
+                        prop_filter = ""
+                else:
+                    # No include — only apply exclude if present
+                    prop_filter = _build_property_filter_clause(None, exclude_properties)
+                query = (
+                    f"SELECT {_STATS_COLUMNS} "
+                    f"FROM timbr.sys_properties_statistics "
+                    f"WHERE target_type = 'mapping' AND target_name IN ({in_clause})"
+                    f"{prop_filter}"
+                )
 
-        try:
-            rows = _timbr_utils.run_query(query, conn_params)
-        except Exception:
-            raise  # db_executor errors propagate
+            try:
+                rows = _timbr_utils.run_query(query, conn_params)
+            except Exception:
+                raise  # db_executor errors propagate
 
-        for row in rows:
-            parsed = _parse_row(row, columns_type_map)
-            if parsed:
-                fetched.append(parsed)
+            for row in rows:
+                parsed = _parse_row(row, columns_type_map, norm_memo)
+                if parsed:
+                    fetched.append(parsed)
 
-    # Cache fetched rows
-    if cache is not None and fetched:
-        cache.put_many(ontology, fetched)
+        # Cache fetched rows
+        if cache is not None and fetched:
+            cache.put_many(ontology, fetched)
 
-    return cached_rows + fetched
+        return cached_rows + fetched
+    finally:
+        if owns_fetch and cache is not None:
+            cache.end_fetch(ontology)
 
 def fetch_stats_for_view(
     view_name: str,
@@ -350,54 +379,82 @@ def fetch_stats_for_view(
     missing_props: set[str] | None = None  # None = fetch all
 
     if cache is not None:
-        cached_rows, missing = cache.get_many(ontology, target_keys, requested_properties)
+        cached_rows, missing = cache.get_many(
+            ontology, target_keys, requested_properties, conn_params,
+        )
         if not missing:
             return cached_rows
         # Extract missing_props from the single target
         _, _, missing_props = missing[0]
 
-    # Build property filter for DB query
-    # Only narrow the filter when we have an explicit whitelist OR a
-    # partial cache hit (not everything is missing).  On a full miss
-    # without include_properties we fetch all columns — no IN-clause.
-    if missing_props is not None and (
-        include_properties or missing_props != requested_properties
-    ):
-        safe_names = _validate_property_names(list(missing_props))
-        if safe_names:
-            prop_in = ", ".join(f"'{n}'" for n in safe_names)
-            fetch_prop_filter = f" AND property_name IN ({prop_in})"
-        else:
-            fetch_prop_filter = ""
-    else:
-        fetch_prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
-
-    query = (
-        f"SELECT {_STATS_COLUMNS} "
-        f"FROM timbr.sys_properties_statistics "
-        f"WHERE target_name = '{view_name}' AND target_type = 'view'"
-        f"{fetch_prop_filter}"
-    )
+    # Single-flight, as in fetch_stats_for_mappings.
+    owns_fetch = False
+    if cache is not None:
+        owns_fetch = cache.claim_or_wait(ontology)
+        if not owns_fetch:
+            cached_rows, missing = cache.get_many(
+                ontology, target_keys, requested_properties, conn_params,
+            )
+            if not missing:
+                return cached_rows
+            _, _, missing_props = missing[0]
 
     try:
-        rows = _timbr_utils.run_query(query, conn_params)
-    except Exception:
-        raise  # db_executor errors propagate
+        # Build property filter for DB query
+        # Only narrow the filter when we have an explicit whitelist OR a
+        # partial cache hit (not everything is missing).  On a full miss
+        # without include_properties we fetch all columns — no IN-clause.
+        if missing_props is not None and (
+            include_properties or missing_props != requested_properties
+        ):
+            safe_names = _validate_property_names(list(missing_props))
+            if safe_names:
+                prop_in = ", ".join(f"'{n}'" for n in safe_names)
+                fetch_prop_filter = f" AND property_name IN ({prop_in})"
+            else:
+                fetch_prop_filter = ""
+        else:
+            fetch_prop_filter = _build_property_filter_clause(include_properties, exclude_properties)
 
-    fetched: list[RawStatsRow] = []
-    for row in rows:
-        parsed = _parse_row(row, columns_type_map)
-        if parsed:
-            fetched.append(parsed)
+        query = (
+            f"SELECT {_STATS_COLUMNS} "
+            f"FROM timbr.sys_properties_statistics "
+            f"WHERE target_name = '{view_name}' AND target_type = 'view'"
+            f"{fetch_prop_filter}"
+        )
 
-    if cache is not None and fetched:
-        cache.put_many(ontology, fetched)
+        try:
+            rows = _timbr_utils.run_query(query, conn_params)
+        except Exception:
+            raise  # db_executor errors propagate
 
-    return cached_rows + fetched
+        fetched: list[RawStatsRow] = []
+        norm_memo: dict[str, tuple[str, str]] = {}
+        for row in rows:
+            parsed = _parse_row(row, columns_type_map, norm_memo)
+            if parsed:
+                fetched.append(parsed)
+
+        if cache is not None and fetched:
+            cache.put_many(ontology, fetched)
+
+        return cached_rows + fetched
+    finally:
+        if owns_fetch and cache is not None:
+            cache.end_fetch(ontology)
 
 
-def _parse_row(row: dict, columns_type_map: dict[str, str]) -> RawStatsRow | None:
-    """Parse a single result row into a RawStatsRow."""
+def _parse_row(
+    row: dict,
+    columns_type_map: dict[str, str],
+    norm_memo: dict[str, tuple[str, str]] | None = None,
+) -> RawStatsRow | None:
+    """Parse a single result row into a RawStatsRow.
+
+    ``norm_memo`` is shared across the rows of one fetch so a value appearing in
+    several mappings' top-K lists holds one copy of its normalized forms rather
+    than one per occurrence.
+    """
     property_name = row.get("property_name")
     if not property_name:
         return None
@@ -412,7 +469,20 @@ def _parse_row(row: dict, columns_type_map: dict[str, str]) -> RawStatsRow | Non
     # Parse stats JSON
     stats_str = row.get("stats")
     sql_type = columns_type_map.get(property_name)
-    top_k, min_value, max_value = parse_stats_json(stats_str, sql_type)
+    top_k, min_value, max_value = parse_stats_json(stats_str, sql_type, norm_memo)
+
+    # Classify the column's values once, here, and derive what depends on it.
+    # Numeric columns get the zero-stripped form so `10` can find `000010`;
+    # date columns get a year index instead of anyone listing their dates.
+    value_kind = "text"
+    date_years = None
+    if top_k:
+        values = [e.value for e in top_k]
+        value_kind = classify_values(values)
+        if value_kind == "numeric":
+            annotate_stripped_forms(top_k)
+        elif value_kind == "date":
+            date_years = index_date_years(values)
 
     # Parse updated_at
     updated_at = _parse_datetime(row.get("updated_at"))
@@ -437,6 +507,8 @@ def _parse_row(row: dict, columns_type_map: dict[str, str]) -> RawStatsRow | Non
         max_value=max_value,
         raw_stats=raw_stats,
         updated_at=updated_at,
+        value_kind=value_kind,
+        date_years=date_years,
     )
 
 
