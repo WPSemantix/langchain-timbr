@@ -316,7 +316,12 @@ class StatsCache:
             self._config.cache_validation_interval_seconds if has_baseline
             else self._config.cache_cold_validation_interval_seconds
         )
-        if now - self._last_probe.get(ontology, 0.0) <= interval:
+        # "Never probed" is None, not 0.0: time.monotonic() counts from boot,
+        # so in a short-lived container it is smaller than the interval and a
+        # 0.0 default would suppress the very first probe of an ontology for
+        # the process's first `interval` seconds.
+        last_probe = self._last_probe.get(ontology)
+        if last_probe is not None and now - last_probe <= interval:
             return
         # Claim the interval before doing the work, so the scan below also runs
         # at most once per interval rather than on every request.

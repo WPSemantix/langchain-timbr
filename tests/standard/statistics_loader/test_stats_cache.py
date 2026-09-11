@@ -1,7 +1,6 @@
 """Tests for StatsCache: property-level caching, partial hits, eviction."""
 
 import time
-from dataclasses import replace
 from datetime import datetime
 from unittest.mock import patch, MagicMock
 
@@ -61,14 +60,14 @@ def _no_probe(cache: StatsCache) -> None:
     Replaces the old ``cache._last_validated[ontology] = time.monotonic()``
     idiom. Freshness is now tracked per target rather than per ontology, and the
     clock is stamped only for targets that already hold entries — so a
-    before-the-fact stamp no longer suppresses anything. Pushing the intervals
-    out of reach is order-independent and says plainly that the test is not
-    exercising freshness."""
-    cache._config = replace(
-        cache._config,
-        cache_validation_interval_seconds=10 ** 9,
-        cache_cold_validation_interval_seconds=10 ** 9,
-    )
+    before-the-fact stamp no longer suppresses anything.
+
+    Silencing the check itself, rather than pushing the intervals out of reach,
+    is order-independent and clock-independent: an unreachable interval only
+    suppressed the *first* probe back when "never probed" was stamped 0.0, which
+    read as recent only on a machine whose monotonic clock had passed the
+    interval. A never-probed ontology is now always due, as it should be."""
+    cache._check_freshness = lambda *args, **kwargs: None
 
 
 # ─── Full DB Fetch (no cache) ──────────────────────────────────────────────

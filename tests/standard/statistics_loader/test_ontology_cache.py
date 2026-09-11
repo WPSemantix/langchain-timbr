@@ -306,7 +306,15 @@ class TestPropertiesIndexFreshness:
 
     @staticmethod
     def _force_probe():
-        """Age every recorded probe past the interval."""
+        """Age every recorded probe past the interval.
+
+        Relative to ``now``, not an absolute 0.0: ``time.monotonic()`` counts
+        from boot, so on a freshly started CI runner it is smaller than the
+        probe interval and a 0.0 stamp would not read as stale.
+        """
+        import time
+        from langchain_timbr.config import props_index_probe_seconds
         from langchain_timbr.technical_context.statistics_loader import ontology_cache as oc
+        stale = time.monotonic() - props_index_probe_seconds - 1
         for key, (_, n, wm) in list(oc._index_probe_state.items()):
-            oc._index_probe_state[key] = (0.0, n, wm)
+            oc._index_probe_state[key] = (stale, n, wm)
