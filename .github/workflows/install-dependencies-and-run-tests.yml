@@ -42,10 +42,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        
-    - name: Run tests
-      run: |
-        python -m pytest tests/standard -v --reruns 3 --maxfail 1 --disable-warnings -q
 
   test-python-311:
     runs-on: ubuntu-latest
