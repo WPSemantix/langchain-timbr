@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from ...config import stats_cache_idle_seconds, stats_cache_max_mb
+from ...config import stats_cache_idle_seconds, stats_cache_max_mb, stats_singleflight
 
 
 @dataclass
@@ -40,7 +40,18 @@ class StatisticsLoaderConfig:
     """Enable in-memory caching of fetched RawStatsRow lists."""
 
     cache_validation_interval_seconds: int = 600
-    """Per-ontology TTL gate: batch validation query at most every N seconds."""
+    """Per-target gate: check a mapping/view's MAX(updated_at) at most every N
+    seconds once its watermark is known."""
+
+    cache_cold_validation_interval_seconds: int = 300
+    """Per-target gate for a target that holds entries but has no watermark yet
+    — e.g. rows cached before an explicit invalidation. Shorter than the warm
+    interval so a target without a baseline acquires one sooner. 0 means check on
+    every request, as with the warm interval."""
+
+    singleflight_enabled: bool = stats_singleflight
+    """Collapse concurrent cold statistics fetches for one ontology into a single
+    query. Env: TIMBR_STATS_SINGLEFLIGHT."""
 
     cache_idle_eviction_seconds: int = stats_cache_idle_seconds
     """Evict entries unused for longer than this (seconds). Checked on every request.

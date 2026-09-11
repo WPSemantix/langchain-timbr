@@ -1,5 +1,7 @@
 import os
+import re
 from typing import Optional, Any
+import inspect
 import threading
 import time
 import base64
@@ -10,27 +12,62 @@ from functools import wraps
 from cryptography.fernet import Fernet
 
 from ..config import (
-    cache_timeout, ignore_tags, ignore_tags_prefix,
-    http_keepalive, http_pool_maxsize,
+    cache_timeout, per_user_cache_ttl, ignore_tags, ignore_tags_prefix,
+    http_keepalive, http_pool_maxsize, http_connect_timeout, http_read_timeout,
 )
 from .general import to_boolean
 
-# Cache dictionary
-_cache = {}
-_ontology_version = None
-_last_version_check = 0
+class _Snapshot:
+    """One generation of cached entries for one ontology.
 
-# Concurrency guards for the cache above. Under a threaded server every request
-# thread misses a cold cache at the same moment and every one of them runs the
-# underlying query — measured at 150 Timbr queries for a single cached call with
-# 50 threads. ``_cache_lock`` makes the dict read/write atomic; ``_inflight``
-# turns each key into a single-flight, so the first thread computes and the rest
-# wait for its result instead of duplicating it. ``_version_lock`` is taken
-# non-blocking so the periodic SHOW VERSION probe is done by one thread and
-# never becomes a barrier the other 49 queue behind.
+    The three maps travel together and are swapped as a single reference. Keeping
+    ``inflight`` outside the snapshot would be a live bug rather than untidiness:
+    a waiter would block on a marker whose result is written into a generation it
+    no longer reads, and wait out the full ``waiter.wait(timeout=cache_timeout)``
+    — two minutes.
+    """
+
+    __slots__ = ("cache", "expiry", "inflight")
+
+    def __init__(self):
+        self.cache: dict = {}
+        # Absolute deadlines for the entries that have one (the per-user tier);
+        # shared entries are absent and live until the version changes.
+        self.expiry: dict = {}
+        self.inflight: dict = {}
+
+
+# Version-gated entries, one snapshot per ontology. A version change *replaces*
+# an ontology's snapshot; readers already holding the previous one finish against
+# it, so a slow call cannot write a pre-change result into the fresh generation.
+_snapshots: dict = {}
+
+# Entries declared ``version_gated=False`` — read from the statistics table,
+# which is recomputed on its own schedule. A DDL version bump is neither
+# necessary nor sufficient to invalidate them, so this store
+# is **never swapped**; its entries are governed by their own per-user TTL.
+_exempt_store: dict = {}
+
+# The version each ontology's snapshot was built against. A single scalar here
+# meant that with two ontologies in rotation the recorded version regularly
+# belonged to the other one, so the comparison failed and the whole process-wide
+# cache was dropped roughly every ``cache_timeout``.
+_ontology_version: dict = {}
+
+# Guards creation and replacement of snapshot objects — held only around dict
+# operations on the maps above, never across a call.
+_snapshots_lock = threading.Lock()
+
+# Guards the entry-level maps inside a snapshot. Under a threaded server every
+# request thread misses a cold cache at the same moment and every one of them
+# runs the underlying query — measured at 150 Timbr queries for a single cached
+# call with 50 threads. ``_cache_lock`` makes the read/write atomic; each
+# snapshot's ``inflight`` turns a key into a single-flight, so the first thread
+# computes and the rest wait for its result instead of duplicating it.
+#
+# This is a **leaf lock**: nothing is ever called while it is held, which is what
+# keeps it out of any deadlock cycle. Keep it that way.
 _cache_lock = threading.Lock()
-_inflight: dict = {}
-_version_lock = threading.Lock()
 
 # --- Timbr SQL transport -----------------------------------------------------
 # pytimbr_api issues every query through the module-level ``requests.post``,
@@ -126,6 +163,7 @@ def _run_query_pooled(
         headers=headers,
         data=query.encode('utf-8') if isinstance(query, str) else query,
         verify=verify_ssl,
+        timeout=(http_connect_timeout, http_read_timeout),
     )
     return timbr_http_connector._parse_response(response)
 
@@ -143,10 +181,21 @@ def build_server_url(url: str, thrift_host: str, thrift_port: int) -> str:
 
 
 def clear_cache():
-    """Clear the cache and reset the ontology version."""
-    global _cache, _ontology_version
-    _cache.clear()
-    _ontology_version = None
+    """Drop every cached entry, in both stores, for every ontology.
+
+    An explicit, process-wide reset. Note what it is *not*: the ontology-version
+    path no longer comes through here — a version change replaces one ontology's
+    snapshot (``_swap_snapshot``) and leaves every other ontology, and the exempt
+    store, untouched.
+
+    A thread already holding a snapshot finishes its call against it. That is the
+    point of replacing rather than emptying, so this is not an immediate barrier
+    for work already in flight.
+    """
+    with _snapshots_lock:
+        _snapshots.clear()
+        _exempt_store.clear()
+        _ontology_version.clear()
 
 
 def _get_ontology_version(conn_params) -> str:
@@ -154,6 +203,204 @@ def _get_ontology_version(conn_params) -> str:
     query = "SHOW VERSION"
     res = run_query(query, conn_params)
     return res[0].get("id") if res else "unknown"
+
+
+# --- shared ontology-version probe -------------------------------------------
+# Two consumers ask the server "what version is this ontology?" — this module's
+# query cache and ontology_context's Ontology graph — and each used to throttle
+# its own SHOW VERSION independently, so a cold run paid the round-trip twice.
+# They now share one probe. Only the *fetch* is shared: each consumer keeps its
+# own recorded version and its own decision about what to invalidate.
+#
+# Keyed on the ontology identity, not the version id: to find the entry for an
+# incoming request we have only conn_params, and learning the version requires
+# the probe itself. Same triple as ontology_context.shared._cache_key.
+_version_probe: dict = {}                 # identity -> (version_id, fetched_at)
+# When a probe last *failed*, per ontology. Without this, a server that is down
+# would add a full ``http_connect_timeout`` to every question, because the
+# once-per-question refresh bypasses the throttle by design. After a failure we
+# back off for ``cache_timeout`` and behave exactly as the throttled path did.
+_version_probe_failed: dict = {}
+_version_probe_lock = threading.Lock()
+
+
+def _ontology_identity(conn_params) -> tuple:
+    """The (url, ontology, jwt_tenant_id) triple a version belongs to.
+
+    Mirrors ``ontology_context.ontology.shared._cache_key``. Datasource is out:
+    it selects where data is read from, not which DDL version is deployed.
+    """
+    if not isinstance(conn_params, dict):
+        return (None, None, None)
+    return (
+        conn_params.get("url"),
+        conn_params.get("ontology"),
+        conn_params.get("jwt_tenant_id"),
+    )
+
+
+def _probe_and_record(key: tuple, conn_params) -> str:
+    """Fetch the version, recording success or failure. Caller holds the lock."""
+    try:
+        version = _get_ontology_version(conn_params)
+    except Exception:
+        # Remember the failure so the next question backs off instead of paying
+        # the connect timeout again, then let the caller see the error — the
+        # throttled path has always propagated it.
+        _version_probe_failed[key] = time.time()
+        raise
+    _version_probe_failed.pop(key, None)
+    _version_probe[key] = (version, time.time())
+    return version
+
+
+def get_ontology_version(conn_params, force: bool = False) -> Optional[str]:
+    """Return the ontology's current version id, or ``None`` for "no opinion".
+
+    ``None`` means the probe holds no value and could not obtain one right now —
+    another thread is mid-fetch. Callers must treat it as "no information" and
+    leave their cache alone, which is exactly what the old non-blocking version
+    check did when it lost the race.
+
+    ``force=True`` bypasses the throttle for one call, for the once-per-question
+    refresh: concurrent forcing threads collapse onto a single fetch, since any
+    value produced after this call started is accepted.
+
+    The read path takes no lock — the gate fires on every decorated call and
+    from five sites in the Ontology graph, so making it contend would cost more
+    than the round-trip it saves. A plain dict get is atomic under CPython.
+    """
+    key = _ontology_identity(conn_params)
+    entry = _version_probe.get(key)
+
+    if not force and entry is not None and (time.time() - entry[1]) <= cache_timeout:
+        return entry[0]
+
+    # A recent failure means the server is not answering. Do not pay the connect
+    # timeout again on this question — serve what we have, or admit to nothing.
+    failed_at = _version_probe_failed.get(key)
+    if failed_at is not None and (time.time() - failed_at) <= cache_timeout:
+        return entry[0] if entry is not None else None
+
+    if force:
+        # Blocking: the caller explicitly asked for a fresh value. Whoever holds
+        # the lock is already fetching one, so waiting for it is cheaper than a
+        # second round-trip.
+        #
+        # "Did someone refresh while we waited?" is decided by tuple *identity*,
+        # not by comparing timestamps: entries are replaced wholesale, so a
+        # different object means a different fetch. Timestamps cannot answer it —
+        # time.time() has ~15ms resolution on Windows, so a refresh and the call
+        # that follows it routinely land on the same tick.
+        with _version_probe_lock:
+            current = _version_probe.get(key)
+            if current is not None and current is not entry:
+                return current[0]
+            version = _probe_and_record(key, conn_params)
+            return version
+
+    # Throttled path: non-blocking, so the thread that gets the lock refreshes
+    # for everyone and the rest carry on with what they have rather than
+    # queueing behind a network round-trip.
+    if _version_probe_lock.acquire(blocking=False):
+        try:
+            entry = _version_probe.get(key)
+            if entry is None or (time.time() - entry[1]) > cache_timeout:
+                return _probe_and_record(key, conn_params)
+            return entry[0]
+        finally:
+            _version_probe_lock.release()
+
+    entry = _version_probe.get(key)
+    return entry[0] if entry is not None else None
+
+
+def clear_version_probe() -> None:
+    """Drop every cached version and failure record. Intended for tests."""
+    with _version_probe_lock:
+        _version_probe.clear()
+        _version_probe_failed.clear()
+
+
+def _get_snapshot(identity: tuple, store: dict) -> _Snapshot:
+    """Return this ontology's snapshot from ``store``, creating it if absent."""
+    snap = store.get(identity)          # lock-free fast path; dict get is atomic
+    if snap is not None:
+        return snap
+    with _snapshots_lock:
+        snap = store.get(identity)
+        if snap is None:
+            snap = _Snapshot()
+            store[identity] = snap
+        return snap
+
+
+def _swap_snapshot(identity: tuple) -> None:
+    """Publish a fresh, empty snapshot for one ontology.
+
+    Nothing is copied out of the outgoing generation — not entries, not expiry
+    deadlines. Exempt entries are unaffected because they live in a different
+    store that is never swapped, so there is no filtering pass over a dict other
+    threads are still writing to, and therefore no
+    ``RuntimeError: dictionary changed size during iteration`` to avoid.
+    """
+    with _snapshots_lock:
+        _snapshots[identity] = _Snapshot()
+
+
+def _all_expiry_maps() -> list:
+    """Every expiry map across both stores. Test helper."""
+    return [s.expiry for s in (*_snapshots.values(), *_exempt_store.values())]
+
+
+def _all_cache_maps() -> list:
+    """Every entry map across both stores. Test helper."""
+    return [s.cache for s in (*_snapshots.values(), *_exempt_store.values())]
+
+
+# ``conn_params`` fields that never change a metadata response. ``token`` and the
+# impersonation header identify the *caller*, not the data: everything except the
+# mapping list and the view list is the same for every user with access to the
+# ontology, so they are projected out of the shared key. The rest say how the
+# caller reached the server, not what it can see. What survives is the data
+# identity — url, ontology, jwt_tenant_id, datasource, and any extra a caller
+# adds — so an unrecognised parameter fragments the cache rather than silently
+# colliding.
+_NON_IDENTITY_CONN_FIELDS = (
+    "token", "additional_headers",   # the caller
+    "verify_ssl", "enable_IPv6",     # transport
+    "is_jwt",                        # how the caller authenticated, not what it can see
+)
+_IMPERSONATE_HEADER = "x-api-impersonate-user"
+
+
+def _caller_identity(conn_params: dict) -> list:
+    """The caller identity the per-user tier keys on.
+
+    ``x-api-impersonate-user`` is a second token as far as visibility goes — it
+    selects whose mapping and view lists the server returns — so it keys the
+    per-user tier alongside the token itself. Header names are normalised the
+    same way the transport normalises them before sending.
+    """
+    headers = conn_params.get("additional_headers") or {}
+    impersonated = None
+    for key, value in headers.items():
+        if str(key).replace("_", "-").lower() == _IMPERSONATE_HEADER:
+            impersonated = value
+
+    return [conn_params.get("token"), impersonated]
+
+
+def _project_conn_params(conn_params: dict, per_user: bool) -> dict:
+    """Reduce ``conn_params`` to the fields that belong in a cache key."""
+    if not isinstance(conn_params, dict):
+        return conn_params
+
+    projected = {k: v for k, v in conn_params.items() if k not in _NON_IDENTITY_CONN_FIELDS}
+    if per_user:
+        projected["_caller"] = _caller_identity(conn_params)
+
+    return projected
 
 
 def _serialize_cache_key(*args, **kwargs):
@@ -206,43 +453,94 @@ def decrypt_prompt(token: bytes, key: bytes) -> str:
     return f.decrypt(token).decode()
 
 
-def cache_with_version_check(func):
-    """Decorator to cache function results and invalidate if ontology version changes."""
+def cache_with_version_check(func=None, *, per_user: bool = False, version_gated: bool = True):
+    """Decorator to cache function results and invalidate if ontology version changes.
+
+    Two tiers, because Timbr permission-filters some system tables:
+
+    - shared (default) — the key drops the caller identity (token,
+      ``x-api-impersonate-user``) and the transport-only connection fields, so
+      every user of an ontology version shares one entry.
+    - ``per_user=True`` — the key keeps the caller identity and the entry also
+      expires after ``per_user_cache_ttl``. Use it for anything whose rows the
+      server filters by permission (the mapping list, the view list); sharing
+      those across users hands one user another's rows.
+
+    ``version_gated=False`` exempts the entry from version-change eviction, for
+    data whose freshness is decided by its own source rather than by the DDL
+    version. It does **not** exempt it from the per-user TTL.
+
+    Usable bare (``@cache_with_version_check``) or called
+    (``@cache_with_version_check(per_user=True)``).
+    """
+    if func is None:
+        return lambda f: cache_with_version_check(f, per_user=per_user, version_gated=version_gated)
+
+    # Where ``conn_params`` sits in the signature, resolved once at decoration
+    # time so the wrapper can find it whether it was passed positionally or by
+    # keyword.
+    _params = list(inspect.signature(func).parameters)
+    conn_index = _params.index("conn_params") if "conn_params" in _params else None
+
+    def _conn_params_of(args, kwargs):
+        if "conn_params" in kwargs:
+            return kwargs["conn_params"]
+        if conn_index is not None and conn_index < len(args):
+            return args[conn_index]
+        return args[-1] if args else {}
+
+    def _key_of(args, kwargs):
+        """Cache key with conn_params reduced to its tier-appropriate identity."""
+        if "conn_params" in kwargs:
+            kwargs = {**kwargs, "conn_params": _project_conn_params(kwargs["conn_params"], per_user)}
+        elif conn_index is not None and conn_index < len(args):
+            args = list(args)
+            args[conn_index] = _project_conn_params(args[conn_index], per_user)
+
+        return (func.__name__, _serialize_cache_key(*args, **kwargs))
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        global _ontology_version, _last_version_check
+        # The throttle now lives inside the shared probe, so this runs on every
+        # call and is a dict read in the common case. ``None`` means the probe
+        # has no value and could not get one right now — no information, so
+        # leave the cache alone rather than treating it as a change.
+        conn_params = _conn_params_of(args, kwargs)
+        identity = _ontology_identity(conn_params)
+        current_version = get_ontology_version(conn_params)
+        if current_version is not None and _ontology_version.get(identity) != current_version:
+            # Only this ontology's gated snapshot is replaced. Every other
+            # ontology, and the exempt store, are untouched.
+            _swap_snapshot(identity)
+            _ontology_version[identity] = current_version
 
-        if (time.time() - _last_version_check) > cache_timeout:
-            # Non-blocking: whichever thread gets the lock refreshes the version
-            # for everyone; the others carry on with what they have rather than
-            # queueing behind a network round-trip.
-            if _version_lock.acquire(blocking=False):
-                try:
-                    if (time.time() - _last_version_check) > cache_timeout:
-                        conn_params = kwargs.get("conn_params") or args[-1]
-                        current_version = _get_ontology_version(conn_params)
-
-                        # If version changed, clear cache and set new version
-                        if _ontology_version != current_version:
-                            clear_cache()
-                            _ontology_version = current_version
-
-                        _last_version_check = time.time()
-                finally:
-                    _version_lock.release()
+        # Capture the snapshot ONCE, into a local, and read *and write* through
+        # this reference for the rest of the call. This single line is what makes
+        # the stale-write race structurally impossible: if the version moves
+        # while ``func`` is out, the result lands in the generation it was
+        # computed against — one nobody reads any more — instead of the fresh
+        # one. Reaching for the module global again anywhere below would silently
+        # reinstate the bug.
+        snap = _get_snapshot(identity, _snapshots if version_gated else _exempt_store)
 
         # Generate a cache key based on function name and arguments
-        cache_key = (func.__name__, _serialize_cache_key(*args, **kwargs))
+        cache_key = _key_of(args, kwargs)
 
         while True:
             with _cache_lock:
-                if cache_key in _cache:
-                    return _cache[cache_key]
-                waiter = _inflight.get(cache_key)
+                if cache_key in snap.cache:
+                    expires_at = snap.expiry.get(cache_key)
+                    if expires_at is None or expires_at > time.time():
+                        return snap.cache[cache_key]
+                    # Per-user entry past its TTL — drop it and re-fetch, so a
+                    # permission change that did not move the ontology version
+                    # is still picked up.
+                    del snap.cache[cache_key]
+                    del snap.expiry[cache_key]
+                waiter = snap.inflight.get(cache_key)
                 if waiter is None:
                     waiter = threading.Event()
-                    _inflight[cache_key] = waiter
+                    snap.inflight[cache_key] = waiter
                     break                     # this thread computes it
             # Someone else is already computing this key — wait, then re-check.
             waiter.wait(timeout=cache_timeout)
@@ -254,15 +552,42 @@ def cache_with_version_check(func):
             # round-trip per invoke for each such query.
             result = func(*args, **kwargs)
             with _cache_lock:
-                _cache[cache_key] = result
+                snap.cache[cache_key] = result
+                if per_user:
+                    snap.expiry[cache_key] = time.time() + per_user_cache_ttl
             return result
         finally:
             # Always release the waiters. On failure they find no cache entry
             # and no in-flight marker, so one of them retries the call.
             with _cache_lock:
-                _inflight.pop(cache_key, None)
+                snap.inflight.pop(cache_key, None)
             waiter.set()
 
+    def invalidate(*args, **kwargs) -> bool:
+        """Drop this caller's entry for these arguments. Returns True if one went.
+
+        Scoped exactly like a read: same ontology identity, same tier, same key.
+        A per-user entry therefore only ever drops for the caller whose
+        ``conn_params`` are passed, which is what lets a freshness probe act on
+        one user's view without touching anybody else's.
+        """
+        identity = _ontology_identity(_conn_params_of(args, kwargs))
+        store = _snapshots if version_gated else _exempt_store
+        snap = store.get(identity)
+        if snap is None:
+            return False
+        cache_key = _key_of(args, kwargs)
+        with _cache_lock:
+            snap.expiry.pop(cache_key, None)
+            return snap.cache.pop(cache_key, None) is not None
+
+    def cache_key(*args, **kwargs):
+        """The key these arguments resolve to, for callers that need to hang
+        their own per-entry state off the same identity."""
+        return _key_of(args, kwargs)
+
+    wrapper.invalidate = invalidate
+    wrapper.cache_key = cache_key
     return wrapper
 
 
@@ -271,6 +596,22 @@ def _send_query(**kwargs):
     if http_keepalive:
         return _run_query_pooled(**kwargs)
     return timbr_http_connector.run_query(**kwargs)
+
+
+# A read of a `timbr.sys_*` table, however the schema is quoted. The plain
+# ``'.SYS' in query`` test this replaces missed the backtick-quoted form —
+# ``timbr`.`sys_x`` puts a backtick between the dot and SYS — so those reads kept
+# the caller's results-limit and came back truncated. A partial metadata answer
+# is not a smaller answer, it is a wrong one: a missing sys_concept_relationships
+# row costs a relationship its is_mtm flag and its cardinality.
+#
+# Only reached when use_query_limit is False, i.e. for the library's own metadata
+# reads. Generated SQL runs with use_query_limit=True and is always capped,
+# whatever tables it happens to name.
+# The trailing underscore matters: every sys object is ``sys_<something>``, and
+# without it a data query selecting a column like ``t.system_id`` matched and
+# escaped its row cap.
+_SYS_TABLE_RE = re.compile(r'\.\s*[`"\[]?SYS_')
 
 
 def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use_query_limit = False) -> list[list]:
@@ -291,7 +632,7 @@ def run_query(sql: str, conn_params: dict, llm_prompt: Optional[str] = None, use
         # Remove results-limit
         if 'additional_headers' in conn_params and 'results-limit' in conn_params['additional_headers']:
             query_upper = query.strip().upper()
-            if query_upper.startswith('SHOW') or query_upper.startswith('DESC') or '.SYS' in query_upper:
+            if query_upper.startswith('SHOW') or query_upper.startswith('DESC') or _SYS_TABLE_RE.search(query_upper):
                 query_conn_params = conn_params.copy()
                 query_conn_params['additional_headers'] = conn_params['additional_headers'].copy()
                 del query_conn_params['additional_headers']['results-limit']
@@ -456,7 +797,25 @@ def _prepare_tags_dict(
 
 
 @cache_with_version_check
+def get_ontology_tags(conn_params: dict) -> list[dict]:
+    """Every tag row in the ontology.
+
+    ``SHOW TAGS`` takes no filter, so the server returns the same rows whatever
+    the caller means to keep — hence a key without ``include_tags``, and one
+    query per ontology version rather than one per distinct tag selection.
+    """
+    query = "SHOW TAGS"
+
+    return run_query(query, conn_params)
+
+
+@cache_with_version_check
 def get_tags(conn_params: dict, include_tags: Optional[Any] = None) -> dict:
+    """Tag rows pivoted per target type, keeping only ``include_tags``.
+
+    Still cached per selection so the pivot is not redone on every call; the
+    rows underneath it come from the one shared ``SHOW TAGS`` fetch.
+    """
     if not to_boolean(include_tags):
         return {
             "concept_tags": {},
@@ -465,8 +824,7 @@ def get_tags(conn_params: dict, include_tags: Optional[Any] = None) -> dict:
             # "relationship_tags": {},
         }
 
-    query = "SHOW TAGS"
-    ontology_tags = run_query(query, conn_params)
+    ontology_tags = get_ontology_tags(conn_params=conn_params)
 
     return {
         "concept_tags": _prepare_tags_dict('concept', ontology_tags, include_tags),
@@ -484,6 +842,7 @@ def _should_select_all(list: list[Any] | None) -> bool:
     return bool(list and len(list) == 1 and list[0] == '*')
 
 
+@cache_with_version_check(per_user=True)
 def _has_dtimbr_permissions(conn_params: dict) -> bool:
     has_perms = True
     dtimbr_query = "SHOW TABLES IN dtimbr"
@@ -497,71 +856,100 @@ def _has_dtimbr_permissions(conn_params: dict) -> bool:
 
 
 @cache_with_version_check
+def get_concepts_only(conn_params: dict, filter_concepts: str = "") -> list[dict]:
+    """Concept rows from timbr.sys_concepts.
+
+    Shared tier: access to an ontology grants access to every concept in it, so
+    these rows are identical for every caller on the same ontology version.
+    """
+    query = f"""
+        SELECT concept, description, 'false' AS is_view 
+        FROM timbr.sys_concepts{filter_concepts}
+        ORDER BY is_view ASC
+    """.strip()
+
+    return run_query(query, conn_params)
+
+
+@cache_with_version_check(per_user=True)
+def get_views_only(conn_params: dict) -> list[dict]:
+    """Every row of timbr.sys_views, unfiltered.
+
+    Per-user tier: the server filters this table by permission, so one caller's
+    view list is not another's. Fetched whole and once per (caller, ontology,
+    version) — ``get_concepts``, ``load_view_row_counts`` and the
+    identify-concept catalog all read it and each projects the columns it needs
+    in Python, so ``sys_views`` costs one query instead of three.
+    """
+    query = """
+        SELECT view_name, description, is_cube, tables, number_of_rows
+        FROM timbr.sys_views
+    """.strip()
+
+    return run_query(query, conn_params)
+
+
 def get_concepts(
     conn_params,
     concepts_list: Optional[list[Any]] = None,
     views_list: Optional[list[Any]] = None,
     include_logic_concepts: Optional[bool] = False,
 ) -> dict:
-    """Fetch concepts (or views) from timbr.sys_concepts and/or timbr.sys_views."""
-    joined_views = ','.join(f"'{v}'" for v in views_list) if views_list else ''
+    """Fetch concepts (or views) from timbr.sys_concepts and/or timbr.sys_views.
+
+    The two halves are fetched separately — concepts are shared across callers,
+    views are permission-filtered — and combined here, so the return value is
+    the same dict of ``{concept: {concept, description, is_view}}`` the single
+    UNION query produced: concepts first, views second, first name wins.
+    """
     should_ignore_concepts = _should_ignore_list(concepts_list) or not _has_dtimbr_permissions(conn_params)
     should_ignore_views = _should_ignore_list(views_list)
 
-    filter_concepts = " WHERE concept IN (SELECT DISTINCT concept FROM timbr.sys_concept_properties)" if not include_logic_concepts else ""
-    if concepts_list:
-        if should_ignore_concepts:
-            filter_concepts = " WHERE 1 = 0"
-        elif _should_select_all(concepts_list):
-            filter_concepts = ""
-        else:
-            joined_concepts = ','.join(f"'{c}'" for c in concepts_list) if concepts_list else ''
-            filter_concepts = f" WHERE concept IN ({joined_concepts})" if concepts_list else ""
+    # Which halves to read — mirrors the three branches the UNION query chose
+    # between. Anything the SQL would have filtered out with `WHERE 1 = 0` is
+    # simply not asked for.
+    only_concepts = bool(concepts_list) and not should_ignore_concepts and not views_list
+    only_views = bool(views_list) and not should_ignore_views and not concepts_list
 
-    filter_views = f" WHERE view_name IN ({joined_views})" if views_list else ""
-    if should_ignore_views:
-        filter_views = " WHERE 1 = 0"
-    elif _should_select_all(views_list):
-        filter_views = ""
+    rows = []
 
-    # if there is concepts_list and not views - filter only concepts
-    # if there is views_list and not concepts - filter only views
-    # if there is both or none - union the two tables
-    if concepts_list and not should_ignore_concepts and not views_list:
-        # Only fetch concepts
-        query = f"""
-            SELECT concept, description, 'false' AS is_view 
-            FROM timbr.sys_concepts{filter_concepts}
-            ORDER BY is_view ASC
-        """.strip()
-    elif views_list and not should_ignore_views and not concepts_list:
-        # Only fetch views
-        query = f"""
-            SELECT view_name AS concept, description, 'true' AS is_view
-            FROM timbr.sys_views{filter_views}
-            ORDER BY is_view ASC
-        """.strip()
-    else:
-        # Both or neither => union the two tables (existing logic)
-        query = f"""
-            SELECT * FROM (
-                SELECT concept, description, 'false' AS is_view 
-                FROM timbr.sys_concepts{filter_concepts}
-                UNION ALL
-                SELECT view_name AS concept, description, 'true' AS is_view 
-                FROM timbr.sys_views{filter_views}
-            ) AS combined
-            ORDER BY is_view ASC
-        """.strip()
+    if not only_views and not (concepts_list and should_ignore_concepts):
+        filter_concepts = " WHERE concept IN (SELECT DISTINCT concept FROM timbr.sys_concept_properties)" if not include_logic_concepts else ""
+        if concepts_list:
+            if _should_select_all(concepts_list):
+                filter_concepts = ""
+            else:
+                joined_concepts = ','.join(f"'{c}'" for c in concepts_list)
+                filter_concepts = f" WHERE concept IN ({joined_concepts})"
 
-    res = run_query(query, conn_params)
+        rows.extend(get_concepts_only(conn_params=conn_params, filter_concepts=filter_concepts))
+
+    if not only_concepts and not should_ignore_views:
+        view_rows = get_views_only(conn_params=conn_params)
+        if views_list and not _should_select_all(views_list):
+            wanted = set(views_list)
+            view_rows = [row for row in view_rows if row.get('view_name') in wanted]
+
+        rows.extend(
+            {
+                'concept': row.get('view_name'),
+                'description': row.get('description'),
+                'is_view': 'true',
+            }
+            for row in view_rows
+        )
+
     uniq_concepts = {}
-    for row in res:
+    for row in rows:
         concept = row.get('concept')
         if concept not in uniq_concepts and concept != 'thing':
-            uniq_concepts[concept] = row
+            # Copied: callers annotate these rows in place (see the `tags` key in
+            # timbr_llm_utils), and the concept half now lives in a cache shared
+            # by every user of the ontology.
+            uniq_concepts[concept] = dict(row)
 
     return uniq_concepts
+
 
 @cache_with_version_check
 def get_ontology_description(conn_params):

@@ -13,6 +13,19 @@ is_jwt = to_boolean(os.environ.get('IS_JWT', 'false'))
 jwt_tenant_id = os.environ.get('JWT_TENANT_ID', None)
 
 cache_timeout = to_integer(os.environ.get('CACHE_TIMEOUT', 120))
+# Force one ontology-version refresh at the start of each question, so an
+# ontology edit is visible to the *next* question instead of within
+# ``cache_timeout``.
+version_refresh_per_question = to_boolean(
+    os.environ.get('TIMBR_VERSION_REFRESH_PER_QUESTION', 'true')
+)
+
+# Per-user metadata tier (mapping list, view list, dtimbr permissions). Those are
+# permission-filtered by the server, so they cannot be shared between callers and
+# they can change without the ontology version moving — a grant is not an
+# ontology edit. Version-invalidated like everything else, plus this wall-clock
+# TTL so a permission change is picked up within the hour.
+per_user_cache_ttl = to_integer(os.environ.get('TIMBR_PER_USER_CACHE_TTL', 900))
 
 # Timbr SQL transport. When ON (default) every Timbr query goes through one
 # process-wide keep-alive connection pool instead of opening — and tearing down
@@ -20,16 +33,28 @@ cache_timeout = to_integer(os.environ.get('CACHE_TIMEOUT', 120))
 # three quarters of a second per request. Set TIMBR_HTTP_KEEPALIVE=false to fall
 # back to pytimbr_api's per-request connection behaviour.
 http_keepalive = to_boolean(os.environ.get('TIMBR_HTTP_KEEPALIVE', 'true'))
-# Sized for the concurrent metadata prefetch (see ontology/graph.py) plus headroom.
-http_pool_maxsize = to_integer(os.environ.get('TIMBR_HTTP_POOL_MAXSIZE', 16))
+# Sized for the serving thread count, not the metadata prefetch. urllib3 keeps at most
+# this many connections in the pool; beyond it, requests' adapter (pool_block=False)
+# opens a connection outside the pool, uses it once and discards it — silently giving
+# back the keep-alive win above. 
+http_pool_maxsize = to_integer(os.environ.get('TIMBR_HTTP_POOL_MAXSIZE', 100))
+# Socket bounds for every Timbr query. Without these a server that accepts the
+# connection and then stops answering parks the calling thread forever.
+http_connect_timeout = to_integer(os.environ.get('TIMBR_HTTP_CONNECT_TIMEOUT', 10))
+http_read_timeout = to_integer(os.environ.get('TIMBR_HTTP_READ_TIMEOUT', 300))
 
 # --- process-wide cache bounds ------------------------------------------------
 # Column statistics (top-K values, min/max, distinct counts). The largest thing
 # the pipeline holds, and shared across every ontology this process talks to.
 stats_cache_max_mb = to_integer(os.environ.get('TIMBR_STATS_CACHE_MB', 500))
 stats_cache_idle_seconds = to_integer(os.environ.get('TIMBR_STATS_CACHE_IDLE_SECONDS', 86400))
+# Collapse concurrent cold statistics fetches for one ontology into a single
+# query.
+stats_singleflight = to_boolean(os.environ.get('TIMBR_STATS_SINGLEFLIGHT', 'true'))
+# How often to ask whether the mapping->properties index is stale. 
+props_index_probe_seconds = to_integer(os.environ.get('TIMBR_PROPS_INDEX_PROBE_SECONDS', 600))
 # LLM candidate extraction: question -> the filter literals found in it.
-extraction_cache_size = to_integer(os.environ.get('TIMBR_EXTRACTION_CACHE_SIZE', 256))
+extraction_cache_size = to_integer(os.environ.get('TIMBR_EXTRACTION_CACHE_SIZE', 1000))
 # Dynamic metadata-context results, one entry per distinct question (~12 KB
 # each). Evicted on ontology version change; this bounds a long-lived worker
 # that never sees one.
@@ -46,6 +71,12 @@ llm_api_key = os.environ.get('TIMBR_LLM_API_KEY', os.environ.get('TIMBR_LLM_APIK
 llm_temperature = os.environ.get('LLM_TEMPERATURE', os.environ.get('TIMBR_LLM_TEMPERATURE', 0.0))
 llm_additional_params = os.environ.get('LLM_ADDITIONAL_PARAMS', os.environ.get('TIMBR_LLM_ADDITIONAL_PARAMS', ''))
 llm_timeout = to_integer(os.environ.get('LLM_TIMEOUT', os.environ.get('TIMBR_LLM_TIMEOUT', 120)))  # Default 120 seconds timeout
+
+# Worker cap for the process-wide LLM executor (utils/llm_executor.py). A timed-out
+# call abandons its worker, which stays busy until the provider's socket closes, so
+# the pool needs headroom above the serving thread count or abandoned work queues
+# ahead of live requests. Sized for ~100 threads.
+llm_executor_max_workers = to_integer(os.environ.get('TIMBR_LLM_EXECUTOR_MAX_WORKERS', 300))
 
 # Optional for Azure OpenAI with Service Principal authentication
 llm_tenant_id = os.environ.get('LLM_TENANT_ID', os.environ.get('TIMBR_LLM_TENANT_ID', None))
@@ -117,6 +148,25 @@ enable_technical_context = to_boolean(os.environ.get('ENABLE_TECHNICAL_CONTEXT',
 technical_context_mode = os.environ.get('TECHNICAL_CONTEXT_MODE', 'auto')
 technical_context_max_tokens = to_integer(os.environ.get('TECHNICAL_CONTEXT_MAX_TOKENS', 3000))
 technical_context_properties = parse_list(os.environ.get('TECHNICAL_CONTEXT_PROPERTIES', ''))
+# Build the technical context AFTER the planner has chosen its concepts, so
+# statistics are loaded only for the columns that survive into the prompt
+# instead of for every concept within graph_depth.
+defer_technical_context = to_boolean(os.environ.get('TIMBR_DEFER_TECHNICAL_CONTEXT', 'true'))
+
+# Fuzzy matching via`process.cdist` instead of `process.extractOne`.
+fuzzy_use_cdist = to_boolean(os.environ.get('TIMBR_FUZZY_USE_CDIST', 'true'))
+
+# Cache the per-column structures the matchers build
+cache_match_structures = to_boolean(os.environ.get('TIMBR_CACHE_MATCH_STRUCTURES', 'true'))
+
+# Unicode-aware value normalization. False restores the ASCII-only normalizer
+normalize_unicode = to_boolean(os.environ.get('TIMBR_NORMALIZE_UNICODE', 'true'))
+
+# How many distinct values one prompt token may fuzzy-match within one column.
+match_max_per_token = to_integer(os.environ.get('TIMBR_MATCH_MAX_PER_TOKEN', 5))
+# Backstop across all tokens for one column, so N tokens x the per-token cap
+# cannot flood a column that trimming is forbidden from shrinking.
+match_max_per_column = to_integer(os.environ.get('TIMBR_MATCH_MAX_PER_COLUMN', 20))
 
 # Dynamic metadata-context assembly (Plan 2). Default 'static' for backward
 # compatibility — the static path is bit-for-bit identical to current behavior.

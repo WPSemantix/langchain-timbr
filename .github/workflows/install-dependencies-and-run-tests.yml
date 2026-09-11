@@ -23,7 +23,6 @@ env:
   JWT_PASSWORD: ${{ secrets.JWT_PASSWORD }}
   JWT_SCOPE: ${{ secrets.JWT_SCOPE }}
   JWT_SECRET: ${{ secrets.JWT_SECRET }}
-  LLM_TIMEOUT: ${{ secrets.LLM_TIMEOUT }}
 
 jobs:
   test-python-310:
@@ -42,10 +41,10 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        
+
     - name: Run tests
       run: |
-        python -m pytest tests/standard -v --reruns 3 --maxfail 1 --disable-warnings -q
+        python -m pytest tests/standard -v --maxfail 1 --reruns 3 --disable-warnings -q
 
   test-python-311:
     runs-on: ubuntu-latest

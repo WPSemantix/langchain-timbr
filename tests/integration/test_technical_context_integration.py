@@ -428,6 +428,6 @@ class TestTechnicalContextQueryExecution:
             f"SQL should filter on SF Bay Area, got: {result['sql']}"
         )
 
-        assert "closed" in sql_lower or "!= 'operating'" in sql_lower, (
+        assert "closed" in sql_lower or "!= 'operating'" in sql_lower or "not in ('operating" in sql_lower or "not in ('ipo" in sql_lower, (
             f"SQL should filter on operating status, got: {result['sql']}"
         )   

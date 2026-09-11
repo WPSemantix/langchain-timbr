@@ -85,13 +85,26 @@ def merge_rows(
             # can't mutate the cached stats row).
             top_k = list(single)
         else:
-            # Union by value, sum counts
+            # Union by value, sum counts. The normalized forms are carried
+            # from the source entries rather than recomputed — same string, same
+            # answer, and recomputing here would undo the point of deriving them
+            # once at parse time.
             merged: dict[str, int] = defaultdict(int)
+            norms: dict[str, tuple[str | None, str | None]] = {}
             for r in rows:
                 for entry in (r.top_k or []):
                     merged[entry.value] += entry.count
+                    if entry.value not in norms:
+                        norms[entry.value] = (entry.norm, entry.norm_space)
             top_k = sorted(
-                [TopKEntry(value=v, count=c) for v, c in merged.items()],
+                [
+                    TopKEntry(
+                        value=v, count=c,
+                        norm=norms.get(v, (None, None))[0],
+                        norm_space=norms.get(v, (None, None))[1],
+                    )
+                    for v, c in merged.items()
+                ],
                 key=lambda e: -e.count,
             )
     elif has_minmax:
@@ -112,6 +125,25 @@ def merge_rows(
     updated_ats = [r.updated_at for r in rows if r.updated_at is not None]
     updated_at = max(updated_ats) if updated_ats else None
 
+    # Value kind: only claim numeric/date when every contributing mapping agrees.
+    # One text mapping makes the merged column text, which is the safe direction —
+    # it just means the column keeps the full matcher cascade.
+    kinds = {r.value_kind for r in rows}
+    value_kind = kinds.pop() if len(kinds) == 1 else "text"
+
+    # Year index: union the months, sum the counts.
+    date_years = None
+    if value_kind == "date":
+        acc: dict[str, tuple[set, int]] = {}
+        for r in rows:
+            for year, (months, count) in (r.date_years or {}).items():
+                if year in acc:
+                    acc[year][0].update(months)
+                    acc[year] = (acc[year][0], acc[year][1] + count)
+                else:
+                    acc[year] = (set(months), count)
+        date_years = {y: (frozenset(m), n) for y, (m, n) in acc.items()} or None
+
     return ColumnStatistics(
         distinct_count=distinct_count,
         non_null_count=non_null_count,
@@ -119,6 +151,8 @@ def merge_rows(
         min_value=min_value,
         max_value=max_value,
         updated_at=updated_at,
+        value_kind=value_kind,
+        date_years=date_years,
         approx_union=(len(rows) > 1),
         total_source_rows=mapping_set.total_rows,
         contributing_mappings=[r.target_name for r in rows],

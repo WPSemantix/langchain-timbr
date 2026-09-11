@@ -55,6 +55,11 @@ class RelationshipLookupEntry:
     description: str | None
     source_join_keys: tuple[str, ...]
     target_join_keys: tuple[str, ...]
+    # sys_concept_relationships also carries the edge itself. Keeping these two
+    # is what lets the graph be walked without describing every concept to find
+    # out where its relationships point.
+    target_concept: str | None = None
+    transitivity: int = 1
 
 
 @dataclass(frozen=True)

@@ -29,6 +29,7 @@ from langchain_timbr.ontology_context.context_builder.prompts.filter_prompt impo
     build_filter_messages,
 )
 from langchain_timbr.ontology_context.ontology.graph import Ontology
+from .._bulk_fixtures import bulk_rows_from_describe
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +177,7 @@ class FakeClient:
     def __init__(self, concepts, version="v1"):
         self._concepts = concepts
         self._version = version
+        self._onto_rows, self._rel_rows = bulk_rows_from_describe(concepts)
 
     def fetch_version_id(self):
         return self._version
@@ -184,10 +186,10 @@ class FakeClient:
         return list(self._concepts.get(name, []))
 
     def fetch_relationships_meta(self):
-        return []
+        return list(self._rel_rows)
 
     def fetch_inheritance_meta(self):
-        return []
+        return list(self._onto_rows)
 
 
 def _simple_ontology():

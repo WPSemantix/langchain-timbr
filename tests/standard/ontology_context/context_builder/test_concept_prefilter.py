@@ -23,6 +23,7 @@ from langchain_timbr.ontology_context.context_builder.concept_prefilter import (
 from langchain_timbr.ontology_context.context_builder.metadata_config import (
     MetadataContextConfig,
 )
+from .._bulk_fixtures import bulk_rows_from_describe
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +450,7 @@ class TestPrefilterNeverStandalone:
         class _FakeClient:
             def __init__(self, concepts):
                 self._concepts = concepts
+                self._onto_rows, self._rel_rows = bulk_rows_from_describe(concepts)
 
             def fetch_version_id(self):
                 return "v1"
@@ -457,10 +459,10 @@ class TestPrefilterNeverStandalone:
                 return list(self._concepts.get(name, []))
 
             def fetch_relationships_meta(self):
-                return []
+                return list(self._rel_rows)
 
             def fetch_inheritance_meta(self):
-                return []
+                return list(self._onto_rows)
 
         def _row(col):
             return {

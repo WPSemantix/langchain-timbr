@@ -54,6 +54,22 @@ def _conn_params(ontology: str = "test_ontology") -> dict:
     return {"url": "http://localhost:11000", "token": "t", "ontology": ontology}
 
 
+def _no_probe(cache: StatsCache) -> None:
+    """Turn the freshness probe off for a cache under test.
+
+    Replaces the old ``cache._last_validated[ontology] = time.monotonic()``
+    idiom. Freshness is now tracked per target rather than per ontology, and the
+    clock is stamped only for targets that already hold entries — so a
+    before-the-fact stamp no longer suppresses anything.
+
+    Silencing the check itself, rather than pushing the intervals out of reach,
+    is order-independent and clock-independent: an unreachable interval only
+    suppressed the *first* probe back when "never probed" was stamped 0.0, which
+    read as recent only on a machine whose monotonic clock had passed the
+    interval. A never-probed ontology is now always due, as it should be."""
+    cache._check_freshness = lambda *args, **kwargs: None
+
+
 # ─── Full DB Fetch (no cache) ──────────────────────────────────────────────
 
 
@@ -75,7 +91,7 @@ class TestFullFetchFromDB:
     def test_requested_properties_none_returns_cached_and_marks_missing(self):
         """requested_properties=None returns any cached rows but also marks target missing."""
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
         # Pre-populate cache
         cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
 
@@ -113,7 +129,7 @@ class TestFullCacheHit:
             _make_row("col_b", "map_a"),
         ]
         cache.put_many("test_ontology", rows)
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         cached, missing = cache.get_many(
             "test_ontology", [("mapping", "map_a")], {"col_a", "col_b"},
@@ -131,7 +147,7 @@ class TestFullCacheHit:
             _make_row("col_a", "map_b"),
         ]
         cache.put_many("test_ontology", rows)
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         cached, missing = cache.get_many(
             "test_ontology",
@@ -147,7 +163,7 @@ class TestFullCacheHit:
         cache = StatsCache(_make_config(), _conn_params())
         rows = [_make_row("col_a", "map_a"), _make_row("col_b", "map_a")]
         cache.put_many("test_ontology", rows)
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         with patch("langchain_timbr.utils.timbr_utils.run_query") as mock_rq:
             from langchain_timbr.technical_context.statistics_loader.stats_fetcher import (
@@ -171,7 +187,7 @@ class TestFullCacheHit:
         cache.put_many("test_ontology", [
             _make_row("col_x", "my_view", "view"),
         ])
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         with patch("langchain_timbr.utils.timbr_utils.run_query") as mock_rq:
             from langchain_timbr.technical_context.statistics_loader.stats_fetcher import (
@@ -199,7 +215,7 @@ class TestPartialCacheHit:
     def test_partial_properties_returns_cached_and_missing(self):
         cache = StatsCache(_make_config(), _conn_params())
         cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         cached, missing = cache.get_many(
             "test_ontology", [("mapping", "map_a")], {"col_a", "col_b", "col_c"},
@@ -218,7 +234,7 @@ class TestPartialCacheHit:
             _make_row("col_a", "map_a"),
             _make_row("col_b", "map_a"),
         ])
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         cached, missing = cache.get_many(
             "test_ontology",
@@ -241,7 +257,7 @@ class TestPartialCacheHit:
 
         cache = StatsCache(_make_config(), _conn_params())
         cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         # Property index: map_a has both col_a and col_b in the stats table
         mock_props_index.return_value = {"map_a": {"col_a", "col_b"}}
@@ -287,7 +303,7 @@ class TestPartialCacheHit:
         )
 
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         # First call — everything from DB
         mock_run_query.return_value = [
@@ -360,7 +376,7 @@ class TestIncludeExcludeLogic:
         ]
 
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         result = fetch_stats_for_mappings(
             mapping_names={"map_a"},
@@ -385,7 +401,7 @@ class TestIncludeExcludeLogic:
         mock_run_query.return_value = []
 
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         fetch_stats_for_mappings(
             mapping_names={"map_a"},
@@ -409,7 +425,7 @@ class TestIncludeExcludeLogic:
             fetch_stats_for_mappings,
         )
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         mock_run_query.return_value = [
             {
@@ -450,7 +466,7 @@ class TestIncludeExcludeLogic:
         mock_run_query.return_value = []
 
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
 
         fetch_stats_for_mappings(
             mapping_names={"map_a"},
@@ -477,7 +493,7 @@ class TestLRUSizeEviction:
         """With a tiny budget, inserting new entries evicts oldest."""
         config = _make_config()
         cache = StatsCache(config, _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
         # Hack: directly set the max to a tiny amount
         max_one_entry = 250  # fits 1 entry (200 bytes) but not 2 (400 bytes)
         cache._config.cache_max_total_mb = max_one_entry / (1024 * 1024)
@@ -504,7 +520,7 @@ class TestLRUSizeEviction:
         """Most recently used entry should not be evicted."""
         config = _make_config()
         cache = StatsCache(config, _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
         # Budget fits 2 entries but not 3
         entry_size = _estimate_row_size_bytes(_make_row("x"))
         cache._config.cache_max_total_mb = (entry_size * 2 + 50) / (1024 * 1024)
@@ -547,6 +563,25 @@ class TestLRUSizeEviction:
 
 class TestIdleEviction:
     """Test that entries unused for > cache_idle_eviction_seconds are swept."""
+
+    def test_size_estimate_counts_the_normalized_forms(self):
+        """The derived forms live in the cache too, so the 500 MB budget must
+        count them — otherwise the process holds far more than it thinks."""
+        bare = RawStatsRow(
+            property_name="col_a", target_name="map_a", target_type="mapping",
+            distinct_count=1, non_null_count=1,
+            top_k=[TopKEntry(value="Good Place", count=9)],
+            min_value=None, max_value=None, raw_stats=None, updated_at=None,
+        )
+        carried = RawStatsRow(
+            property_name="col_a", target_name="map_a", target_type="mapping",
+            distinct_count=1, non_null_count=1,
+            top_k=[TopKEntry(value="Good Place", count=9,
+                             norm="goodplace", norm_space="good place")],
+            min_value=None, max_value=None, raw_stats=None, updated_at=None,
+        )
+
+        assert _estimate_row_size_bytes(carried) > _estimate_row_size_bytes(bare)
 
     def test_idle_entries_evicted(self):
         """Entries older than idle threshold are removed on next get_many."""
@@ -621,144 +656,287 @@ class TestIdleEviction:
         assert cache.stats()["entries"] == 0
 
 
-# ─── Batch Validation Eviction ──────────────────────────────────────────────
+# ─── Freshness (per-target watermark) ───────────────────────────────────────
 
 
-class TestBatchValidation:
-    """Test per-property staleness check via batch validation queries."""
+def _probe_reply(rows_by_query):
+    """run_query side effect dispatching on which statement was issued."""
+    def _dispatch(query, conn_params=None, *args, **kwargs):
+        if "MAX(updated_at)" in query:
+            return rows_by_query.get("probe", [])
+        return rows_by_query.get("changed", [])
+    return _dispatch
+
+
+class TestFreshnessWatermark:
+    """Per-target MAX(updated_at) check: only changed properties are dropped."""
 
     @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_stale_entry_invalidated(self, mock_run_query):
-        """Entry with older updated_at than DB should be evicted."""
-        config = _make_config(cache_validation_interval_seconds=0)  # always validate
+    def test_changed_target_drops_only_changed_properties(self, mock_run_query):
+        """A target whose max moved loses just the properties that moved."""
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
         cache = StatsCache(config, _conn_params())
-
-        # Cache a row with updated_at = 2024-01-15
         cache.put_many("test_ontology", [
             _make_row("col_a", "map_a", updated_at=datetime(2024, 1, 15)),
+            _make_row("col_b", "map_a", updated_at=datetime(2024, 1, 15)),
         ])
 
-        # DB returns newer updated_at
-        mock_run_query.return_value = [
-            {"target_name": "map_a", "property_name": "col_a",
-             "updated_at": datetime(2024, 2, 1)},
-        ]
-
-        cached, missing = cache.get_many(
-            "test_ontology", [("mapping", "map_a")], {"col_a"},
-        )
-
-        # Entry should be invalidated (stale)
-        assert cached == []
-        assert len(missing) == 1
-
-    @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_fresh_entry_kept(self, mock_run_query):
-        """Entry with same updated_at as DB should survive validation."""
-        config = _make_config(cache_validation_interval_seconds=0)
-        cache = StatsCache(config, _conn_params())
-
-        ts = datetime(2024, 1, 15, 10, 0, 0)
-        cache.put_many("test_ontology", [
-            _make_row("col_a", "map_a", updated_at=ts),
-        ])
-
-        # DB returns same timestamp
-        mock_run_query.return_value = [
-            {"target_name": "map_a", "property_name": "col_a", "updated_at": ts},
-        ]
-
-        cached, missing = cache.get_many(
-            "test_ontology", [("mapping", "map_a")], {"col_a"},
-        )
-
-        assert len(cached) == 1
-        assert cached[0].property_name == "col_a"
-        assert missing == []
-
-    @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_deleted_property_evicted(self, mock_run_query):
-        """If property no longer exists in DB, it's evicted from cache."""
-        config = _make_config(cache_validation_interval_seconds=0)
-        cache = StatsCache(config, _conn_params())
-        cache.put_many("test_ontology", [
-            _make_row("col_a", "map_a"),
-            _make_row("col_b", "map_a"),
-        ])
-
-        # DB only has col_a, col_b was deleted
-        mock_run_query.return_value = [
-            {"target_name": "map_a", "property_name": "col_a",
-             "updated_at": datetime(2024, 1, 15, 10, 0, 0)},
-        ]
+        mock_run_query.side_effect = _probe_reply({
+            "probe": [{"target_name": "map_a", "mx": datetime(2024, 2, 1)}],
+            "changed": [{"target_type": "mapping", "target_name": "map_a",
+                         "property_name": "col_b"}],
+        })
 
         cached, missing = cache.get_many(
             "test_ontology", [("mapping", "map_a")], {"col_a", "col_b"},
         )
 
-        assert len(cached) == 1
-        assert cached[0].property_name == "col_a"
+        assert [r.property_name for r in cached] == ["col_a"]
         assert len(missing) == 1
-        _, _, miss_props = missing[0]
-        assert "col_b" in miss_props
+        assert missing[0][2] == {"col_b"}
 
     @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_deleted_target_evicts_all_properties(self, mock_run_query):
-        """If target has no rows in DB at all, all its cached entries are evicted."""
-        config = _make_config(cache_validation_interval_seconds=0)
+    def test_unchanged_target_keeps_everything_and_asks_once(self, mock_run_query):
+        """Max unchanged: one probe, no second query, nothing evicted."""
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
         cache = StatsCache(config, _conn_params())
-        cache.put_many("test_ontology", [
-            _make_row("col_a", "map_deleted"),
-            _make_row("col_b", "map_deleted"),
-        ])
+        ts = datetime(2024, 1, 15, 10, 0, 0)
+        cache.put_many("test_ontology", [_make_row("col_a", "map_a", updated_at=ts)])
 
-        # DB returns empty — target not found
-        mock_run_query.return_value = []
-
-        cached, missing = cache.get_many(
-            "test_ontology", [("mapping", "map_deleted")], {"col_a", "col_b"},
-        )
-
-        assert cached == []
-        assert cache.stats()["entries"] == 0
-
-    @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def skip_test_validation_interval_prevents_repeated_queries(self, mock_run_query):
-        """Validation only runs once per interval, not on every get_many."""
-        config = _make_config(cache_validation_interval_seconds=600)
-        cache = StatsCache(config, _conn_params())
-        cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
-
-        mock_run_query.return_value = [
-            {"target_name": "map_a", "property_name": "col_a",
-             "updated_at": datetime(2024, 1, 15, 10, 0, 0)},
-        ]
-
-        # First call triggers validation
-        cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
-        assert mock_run_query.call_count == 1
-
-        # Second call within interval — no validation query
-        mock_run_query.reset_mock()
-        cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
-        mock_run_query.assert_not_called()
-
-    @patch("langchain_timbr.utils.timbr_utils.run_query")
-    def test_validation_query_failure_keeps_cache(self, mock_run_query):
-        """If validation query fails, cached entries remain."""
-        config = _make_config(cache_validation_interval_seconds=0)
-        cache = StatsCache(config, _conn_params())
-        cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
-
-        mock_run_query.side_effect = Exception("DB connection failed")
+        mock_run_query.side_effect = _probe_reply({
+            "probe": [{"target_name": "map_a", "mx": ts}],
+        })
 
         cached, missing = cache.get_many(
             "test_ontology", [("mapping", "map_a")], {"col_a"},
         )
 
-        # Entry should remain (fail-open)
         assert len(cached) == 1
         assert missing == []
+        assert mock_run_query.call_count == 1  # the probe only
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_target_absent_from_probe_is_left_alone(self, mock_run_query):
+        """Ruling: absence is not staleness.
+
+        A target that does not come back is either invisible to this caller or
+        has no statistics. Neither is a reason to throw away what we hold. This
+        is the branch that used to delete every cached entry.
+        """
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        cache = StatsCache(config, _conn_params())
+        cache.put_many("test_ontology", [
+            _make_row("col_a", "map_hidden"),
+            _make_row("col_b", "map_hidden"),
+        ])
+
+        mock_run_query.side_effect = _probe_reply({"probe": []})
+
+        cached, missing = cache.get_many(
+            "test_ontology", [("mapping", "map_hidden")], {"col_a", "col_b"},
+        )
+
+        assert len(cached) == 2
+        assert missing == []
+        assert cache.stats()["entries"] == 2
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_unreadable_timestamp_is_unknown_not_stale(self, mock_run_query):
+        """A max that will not parse must not evict anything."""
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        cache = StatsCache(config, _conn_params())
+        cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
+
+        mock_run_query.side_effect = _probe_reply({
+            "probe": [{"target_name": "map_a", "mx": "not-a-timestamp"}],
+        })
+
+        cached, _ = cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
+
+        assert len(cached) == 1
+        assert cache.stats()["entries"] == 1
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_probe_failure_keeps_cache(self, mock_run_query):
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        cache = StatsCache(config, _conn_params())
+        cache.put_many("test_ontology", [_make_row("col_a", "map_a")])
+
+        mock_run_query.side_effect = Exception("DB connection failed")
+
+        cached, _ = cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
+
+        assert len(cached) == 1
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_probe_not_repeated_within_interval(self, mock_run_query):
+        config = _make_config(cache_validation_interval_seconds=600)
+        cache = StatsCache(config, _conn_params())
+        ts = datetime(2024, 1, 15, 10, 0, 0)
+        cache.put_many("test_ontology", [_make_row("col_a", "map_a", updated_at=ts)])
+
+        mock_run_query.side_effect = _probe_reply({
+            "probe": [{"target_name": "map_a", "mx": ts}],
+        })
+
+        cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
+        assert mock_run_query.call_count == 1
+
+        mock_run_query.reset_mock()
+        cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
+        mock_run_query.assert_not_called()
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_absent_target_is_not_reprobed_every_request(self, mock_run_query):
+        """The clock advances even for targets that did not come back."""
+        config = _make_config(cache_validation_interval_seconds=600)
+        cache = StatsCache(config, _conn_params())
+        cache.put_many("test_ontology", [_make_row("col_a", "map_hidden")])
+
+        mock_run_query.side_effect = _probe_reply({"probe": []})
+
+        cache.get_many("test_ontology", [("mapping", "map_hidden")], {"col_a"})
+        assert mock_run_query.call_count == 1
+
+        mock_run_query.reset_mock()
+        cache.get_many("test_ontology", [("mapping", "map_hidden")], {"col_a"})
+        mock_run_query.assert_not_called()
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_uncached_target_is_never_probed(self, mock_run_query):
+        """Nothing cached for a target means nothing to invalidate."""
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        cache = StatsCache(config, _conn_params())
+
+        cache.get_many("test_ontology", [("mapping", "map_never_seen")], {"col_a"})
+
+        mock_run_query.assert_not_called()
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_probe_uses_caller_conn_params_not_the_cache_own(self, mock_run_query):
+        """C1: a process-wide cache must not query as whoever created it.
+
+        The singleton is built once, with the first request's credentials and
+        ontology. Validating a second caller's entries with those would read the
+        wrong ontology and apply the wrong permissions.
+        """
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        first_caller = _conn_params("ontology_a")
+        cache = StatsCache(config, first_caller)
+        cache.put_many("ontology_b", [_make_row("col_a", "map_b")])
+
+        mock_run_query.side_effect = _probe_reply({"probe": []})
+
+        second_caller = {**_conn_params("ontology_b"), "token": "second-token"}
+        cache.get_many("ontology_b", [("mapping", "map_b")], {"col_a"}, second_caller)
+
+        assert mock_run_query.call_count == 1
+        _, used_params = mock_run_query.call_args[0][:2]
+        assert used_params is second_caller
+        assert used_params["ontology"] == "ontology_b"
+        assert used_params["token"] == "second-token"
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_many_targets_checked_in_one_query(self, mock_run_query):
+        """One probe covers every target of the request, not one query each."""
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        cache = StatsCache(config, _conn_params())
+        ts = datetime(2024, 1, 15, 10, 0, 0)
+        cache.put_many("test_ontology", [
+            _make_row("col_a", "map_a", updated_at=ts),
+            _make_row("col_a", "map_b", updated_at=ts),
+            _make_row("col_a", "map_c", updated_at=ts),
+        ])
+
+        mock_run_query.side_effect = _probe_reply({
+            "probe": [{"target_name": n, "mx": ts} for n in ("map_a", "map_b", "map_c")],
+        })
+
+        cache.get_many(
+            "test_ontology",
+            [("mapping", "map_a"), ("mapping", "map_b"), ("mapping", "map_c")],
+            {"col_a"},
+        )
+
+        assert mock_run_query.call_count == 1
+        query = mock_run_query.call_args[0][0]
+        for name in ("map_a", "map_b", "map_c"):
+            assert f"'{name}'" in query
+
+    @patch("langchain_timbr.utils.timbr_utils.run_query")
+    def test_clock_is_per_ontology_not_per_target(self, mock_run_query):
+        """A second request within the interval does not re-probe, even for
+        targets the first request never mentioned."""
+        config = _make_config(cache_validation_interval_seconds=600)
+        cache = StatsCache(config, _conn_params())
+        ts = datetime(2024, 1, 15, 10, 0, 0)
+        cache.put_many("test_ontology", [
+            _make_row("col_a", "map_a", updated_at=ts),
+            _make_row("col_a", "map_b", updated_at=ts),
+        ])
+
+        mock_run_query.side_effect = _probe_reply({
+            "probe": [{"target_name": "map_a", "mx": ts}],
+        })
+
+        cache.get_many("test_ontology", [("mapping", "map_a")], {"col_a"})
+        assert mock_run_query.call_count == 1
+
+        mock_run_query.reset_mock()
+        cache.get_many("test_ontology", [("mapping", "map_b")], {"col_a"})
+        mock_run_query.assert_not_called()
+
+    def test_put_many_seeds_and_only_raises_the_watermark(self):
+        """A fetch doubles as a probe; a partial fetch must not lower the mark."""
+        cache = StatsCache(_make_config(), _conn_params())
+        target = ("test_ontology", "mapping", "map_a")
+
+        cache.put_many("test_ontology", [
+            _make_row("col_a", "map_a", updated_at=datetime(2024, 3, 1)),
+        ])
+        assert cache._target_watermark[target] == datetime(2024, 3, 1)
+
+        # An older row for the same target must not drag the watermark back.
+        cache.put_many("test_ontology", [
+            _make_row("col_b", "map_a", updated_at=datetime(2024, 1, 1)),
+        ])
+        assert cache._target_watermark[target] == datetime(2024, 3, 1)
+
+    def test_counts_only_row_caches_and_returns_its_counts(self):
+        """A row with no top_k and no min/max is data, not a failure.
+
+        A null stats JSON means either every value in the column is null or the
+        top-k computation failed; the counts are still valid and still useful.
+        """
+        config = _make_config(cache_validation_interval_seconds=0,
+                              cache_cold_validation_interval_seconds=0)
+        cache = StatsCache(config, _conn_params())
+        _no_probe(cache)
+        counts_only = RawStatsRow(
+            property_name="col_a", target_name="map_a", target_type="mapping",
+            distinct_count=7, non_null_count=68, top_k=None,
+            min_value=None, max_value=None, raw_stats=None,
+            updated_at=datetime(2024, 1, 15),
+        )
+        cache.put_many("test_ontology", [counts_only])
+
+        cached, missing = cache.get_many(
+            "test_ontology", [("mapping", "map_a")], {"col_a"},
+        )
+
+        assert missing == []
+        assert len(cached) == 1
+        assert cached[0].distinct_count == 7
+        assert cached[0].non_null_count == 68
+        assert cached[0].top_k is None
 
 
 # ─── Invalidate & Clear ─────────────────────────────────────────────────────
@@ -769,8 +947,7 @@ class TestInvalidateAndClear:
 
     def test_invalidate_ontology_removes_only_target_ontology(self):
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["ontology_a"] = time.monotonic()
-        cache._last_validated["ontology_b"] = time.monotonic()
+        _no_probe(cache)
         cache.put_many("ontology_a", [_make_row("col_a", "map_a")])
         cache.put_many("ontology_b", [_make_row("col_b", "map_b")])
         assert cache.stats()["entries"] == 2
@@ -790,7 +967,7 @@ class TestInvalidateAndClear:
 
         cache.clear()
 
-        assert cache.stats() == {"entries": 0, "total_mb": 0.0, "ontologies_validated": 0}
+        assert cache.stats() == {"entries": 0, "total_mb": 0.0, "targets_watermarked": 0}
 
 
 # ─── put_many / get_many Correctness ───────────────────────────────────────
@@ -801,7 +978,7 @@ class TestPutGetCorrectness:
 
     def test_put_overwrites_existing_entry(self):
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
         row_v1 = _make_row("col_a", "map_a", distinct_count=100)
         row_v2 = _make_row("col_a", "map_a", distinct_count=999)
 
@@ -815,7 +992,7 @@ class TestPutGetCorrectness:
 
     def test_different_targets_same_property_stored_separately(self):
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
         cache.put_many("test_ontology", [
             _make_row("col_a", "map_a", distinct_count=10),
             _make_row("col_a", "map_b", distinct_count=20),
@@ -830,7 +1007,7 @@ class TestPutGetCorrectness:
 
     def test_view_and_mapping_same_name_stored_separately(self):
         cache = StatsCache(_make_config(), _conn_params())
-        cache._last_validated["test_ontology"] = time.monotonic()
+        _no_probe(cache)
         cache.put_many("test_ontology", [
             _make_row("col_a", "shared_name", "mapping", distinct_count=1),
             _make_row("col_a", "shared_name", "view", distinct_count=2),

@@ -343,7 +343,7 @@ class TestKnowledgeBaseRulesInjection:
         result = self._run(chain, "Show total revenue by market")
 
         # 1) Injected into the reasoning prompt.
-        reasoning_prompt = self._stage_prompt(capture_prompts, "**Knowledge Base Validation Rules:**")
+        reasoning_prompt = self._stage_prompt(capture_prompts, "**Knowledge Base Rules:**")
         assert reasoning_prompt is not None, "reasoning prompt was not produced (enable_reasoning?)"
         assert "always filter by order_status" in reasoning_prompt
 
@@ -352,3 +352,86 @@ class TestKnowledgeBaseRulesInjection:
         assert re.search(r"order_status.{0,20}['\"]complete", result["sql"], re.IGNORECASE | re.DOTALL), (
             f"order_status='COMPLETE' filter not applied to generated SQL:\n{result['sql']}"
         )
+    # ---- rules survive regeneration (the reported failure) -----------------
+    @staticmethod
+    def _prompt_for_step(result, step_key):
+        """Exact prompt for one generation step, recovered from its p_hash."""
+        meta = (result or {}).get("generate_sql_usage_metadata") or {}
+        p_hash = (meta.get(step_key) or {}).get("p_hash")
+        assert p_hash, (
+            f"no p_hash for step {step_key!r} (debug=True?); steps present: {sorted(meta)}"
+        )
+        return decrypt_prompt(p_hash, generate_key())
+
+    def test_property_selection_survives_validation_retry(self, config, llm, rules_enabled, monkeypatch):
+        """The reported failure, live: a rule honored by the first pass was
+        dropped by the regeneration, which then silently chose another column.
+
+        Only ``validate_sql`` is stubbed, to fail once so exactly one retry
+        runs. Everything else is live -- the rule comes from the real
+        ``sys_knowledgebase_rules``, the context is really built, and the prompt
+        is the real server template.
+        """
+        self._sanity_rule(config, "order_date", ("property",), {"selection"}, "order_date")
+
+        from langchain_timbr.utils import timbr_llm_utils as tu
+
+        original = tu.validate_sql
+        calls = {"n": 0}
+
+        def fail_once(sql, conn_params):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return False, "forced failure to exercise the retry path", sql
+            return original(sql, conn_params)
+
+        monkeypatch.setattr(tu, "validate_sql", fail_once)
+
+        chain = self._generate_chain(
+            config, llm, concept="order", metadata_context_mode="static", debug=True,
+        )
+        result = self._run(chain, "Show orders over time")
+
+        assert calls["n"] >= 2, "the validation retry never ran"
+        for step in ("generate_sql", "generate_sql_validation_regen_1"):
+            assert "Use order_date" in self._prompt_for_step(result, step), (
+                f"order_date SELECTION rule missing from the {step} prompt"
+            )
+
+    def test_property_selection_survives_reasoning_retry(self, config, llm, rules_enabled, monkeypatch):
+        """Same guarantee on the reasoning path. Only the evaluator's verdict is
+        stubbed, to 'partial' once so one regeneration runs; the regeneration
+        itself -- context build, template, LLM call -- is live."""
+        self._sanity_rule(config, "order_date", ("property",), {"selection"}, "order_date")
+
+        from langchain_timbr.utils import timbr_llm_utils as tu
+
+        original = tu._evaluate_sql_enable_reasoning
+        calls = {"n": 0}
+
+        def partial_once(**kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {
+                    "evaluation": {
+                        "assessment": "partial",
+                        "reasoning": "forced verdict to exercise the regeneration path",
+                    },
+                    "apx_token_count": 0,
+                    "usage_metadata": {},
+                }
+            return original(**kwargs)
+
+        monkeypatch.setattr(tu, "_evaluate_sql_enable_reasoning", partial_once)
+
+        chain = self._generate_chain(
+            config, llm, concept="order", metadata_context_mode="static",
+            enable_reasoning=True, reasoning_steps=2, debug=True,
+        )
+        result = self._run(chain, "Show orders over time")
+
+        assert calls["n"] >= 1, "the reasoning evaluator never ran"
+        for step in ("generate_sql", "generate_sql_reasoning_step_1"):
+            assert "Use order_date" in self._prompt_for_step(result, step), (
+                f"order_date SELECTION rule missing from the {step} prompt"
+            )

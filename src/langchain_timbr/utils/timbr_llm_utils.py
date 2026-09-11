@@ -28,6 +28,7 @@ from .prompt_service import (
     get_qa_prompt_template
 )
 from .memory import apply_memory_question_expansion
+from .llm_executor import get_llm_executor
 from ..kbclient import RuleSet, render_object_rules
 from .. import config
 from .. import ontology_metadata
@@ -110,14 +111,15 @@ def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 120) -> Any:
     def _llm_call():
         return ctx.run(llm.invoke, prompt)
 
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        future = executor.submit(_llm_call)
-        try:
-            return future.result(timeout=timeout)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(f"LLM call timed out after {timeout} seconds")
-        except Exception as e:
-            raise e
+    future = get_llm_executor().submit(_llm_call)
+    try:
+        return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        # Abandon the future rather than joining it: the worker finishes on its
+        # own and returns to the pool, and the caller is released now.
+        raise TimeoutError(f"LLM call timed out after {timeout} seconds")
+    except Exception as e:
+        raise e
 
 MEASURES_DESCRIPTION = "The following columns are calculated measures and can only be aggregated with an aggregate function: COUNT/SUM/AVG/MIN/MAX (count distinct is not allowed)"
 TRANSITIVE_RELATIONSHIP_DESCRIPTION = "Transitive relationship columns match pattern \"<relationship>[<concept>*N].<column>\". The *N is a PLACEHOLDER you must rewrite: if the question specifies a depth set N to that number; otherwise keep the schema's N. Use the SAME N across the query. Example: if schema shows `<rel>[<concept>*2].<col>` and the question asks for 3 levels, write `<rel>[<concept>*3].<col>`. Do NOT add `<relationship>_transitivity_level BETWEEN 1 AND N` — *N already bounds traversal. Only filter `<relationship>_transitivity_level` to exclude levels: =1 for direct only, >1 for indirect only."
@@ -968,12 +970,64 @@ def _parse_json_from_llm_response(response: Any) -> dict:
     return json.loads(content)
 
 
+def _collect_reasoning_rules(rules, concept: Optional[str], sql: Optional[str]) -> str:
+    """Render the knowledge-base rules the reasoning evaluator needs to see.
+
+    Two parts, because the evaluator fails in two different ways without them:
+
+    * the anchor concept's INSTRUCTION + VALIDATION rules, **unconditionally** —
+      an evaluator that cannot see what was mandated reads a rule-compliant
+      query as arbitrary and returns 'partial', which is what creates the
+      regeneration in the first place. Gating this on SQL presence would
+      re-open exactly that hole, since the SQL at risk is the one that dropped
+      the mandated object;
+    * every other rule target named in the SQL under evaluation, all kinds — the
+      long tail of property/relationship rules, kept in budget by only carrying
+      the ones actually in play.
+
+    Matching uses lookaround boundaries rather than a substring test so a rule
+    on ``load`` does not fire for ``download_count``. Returns ``""`` when no
+    rule applies, which keeps the appendix (and the prompt) byte-identical.
+    """
+    if rules is None or rules.is_empty():
+        return ""
+
+    blocks: list[str] = []
+
+    def _emit(label: str, rendered: str) -> None:
+        if rendered:
+            blocks.append(f"{label}:\n" + "\n".join(f"  {line}" for line in rendered.splitlines()))
+
+    anchor = (concept or "").strip().lower()
+    _emit(
+        f"concept `{concept}`",
+        render_object_rules(rules.rules_for(concept, _CVC_TYPES, ("instruction", "validation"))),
+    )
+
+    sql_text = (sql or "").lower()
+    for target_type, target_name in sorted(rules.by_target):
+        if target_type in _CVC_TYPES and target_name == anchor:
+            continue  # already emitted above, unconditionally
+        if not re.search(rf"(?<!\w){re.escape(target_name)}(?!\w)", sql_text):
+            continue
+        _emit(
+            f"{target_type} `{target_name}`",
+            render_object_rules(
+                rules.rules_for(
+                    target_name, (target_type,), ("selection", "instruction", "validation")
+                )
+            ),
+        )
+
+    return "\n".join(blocks)
+
+
 def _append_reasoning_context_blocks(
     prompt: Any,
     note: Optional[str] = None,
     generate_sql_reason: Optional[str] = None,
     decisions: Optional[list] = None,
-    validation_rules: Optional[str] = None,
+    kb_rules: Optional[str] = None,
 ) -> None:
     """
     Append context blocks (note, generator reasoning, decision trace) to the
@@ -1001,8 +1055,8 @@ def _append_reasoning_context_blocks(
         decisions_str = json.dumps(decisions, indent=2)
         blocks.append(f"**Generated SQL Decision Trace:**\n{decisions_str}")
 
-    if validation_rules and validation_rules.strip():
-        blocks.append(f"**Knowledge Base Validation Rules:**\n{validation_rules.strip()}")
+    if kb_rules and kb_rules.strip():
+        blocks.append(f"**Knowledge Base Rules:**\n{kb_rules.strip()}")
 
     if not blocks:
         return
@@ -1060,10 +1114,7 @@ def _evaluate_sql_enable_reasoning(
         note=note,
         generate_sql_reason=generate_sql_reason,
         decisions=decisions,
-        validation_rules=(
-            render_object_rules(rules.rules_for(concept, _CVC_TYPES, {"validation"}))
-            if rules is not None and concept else ""
-        ),
+        kb_rules=_collect_reasoning_rules(rules, concept, sql_query),
     )
 
     apx_token_count = _calculate_token_count(llm, prompt)
@@ -1381,24 +1432,28 @@ def _apply_dynamic_metadata_context(
                     norm = _strip_transitivity_marker(name)
                     if norm and norm not in seen and norm not in missing:
                         missing[norm] = col.get("data_type", "")
-        # Reanchored flat columns are new to TC too (the static pass processed
-        # the OLD anchor's columns). Gather them so they get stats as well.
-        if reanchored:
-            for col in list(filtered_columns) + list(filtered_measures):
-                if not isinstance(col, dict):
-                    continue
-                norm = _strip_transitivity_marker(col.get("name"))
-                if norm and norm not in seen and norm not in missing:
-                    missing[norm] = col.get("data_type", "")
+        # Flat anchor columns are gathered ALWAYS, not only after a reanchor.
+        # When TC is deferred (Plan 05) the upfront pass never ran, so the
+        # anchor's own columns are as new to TC as the rebuilt ones; after a
+        # reanchor they are new for a second reason — the upfront pass, if it
+        # ran at all, processed the OLD anchor's columns. Statically-sourced
+        # flat dicts key on ``col_name``; reanchor-rebuilt ones on ``name``.
+        for col in list(filtered_columns) + list(filtered_measures):
+            if not isinstance(col, dict):
+                continue
+            norm = _strip_transitivity_marker(col.get("name") or col.get("col_name"))
+            if norm and norm not in seen and norm not in missing:
+                missing[norm] = col.get("data_type", "")
         if missing:
             try:
-                # After a reanchor, bare direct columns of the new anchor must
-                # resolve their stats against IT (the original concept the
-                # closure captured is wrong for them). Relationship columns in
-                # the same batch resolve via their prefix regardless.
+                # The bare direct columns in this batch must resolve their
+                # stats against the concept that is the SQL FROM root: the
+                # effective anchor, which a reanchor may have swapped (it equals
+                # ``anchor`` when it did not). Relationship columns in the same
+                # batch resolve via their prefix regardless.
                 extra = tc_topup(
                     [{"name": n, "type": t} for n, t in missing.items()],
-                    bound_concept=effective_anchor_for_rebuild if reanchored else None,
+                    bound_concept=effective_anchor_for_rebuild,
                 )
                 if extra:
                     tc_annotations = {**(tc_annotations or {}), **extra}
@@ -1411,16 +1466,17 @@ def _apply_dynamic_metadata_context(
     # the why.
     if tc_annotations:
         _inject_tc_annotations_into_rebuild(filtered_relationships, tc_annotations)
-        # The reanchored flat columns were built fresh here (not by the caller),
-        # so inject their annotations too. Flat names carry no transitivity
-        # markers, so an exact name match against tc_annotations is correct.
-        if reanchored:
-            for col in list(filtered_columns) + list(filtered_measures):
-                if not isinstance(col, dict):
-                    continue
-                name = col.get("name")
-                if name and name in tc_annotations:
-                    col["technical_context"] = tc_annotations[name]
+        # Flat columns are injected ALWAYS, matching the gather above: with TC
+        # deferred their annotations were computed here, and after a reanchor
+        # the dicts themselves were built here. Re-writing an annotation the
+        # upfront pass already baked on is a no-op. Flat names carry no
+        # transitivity markers, so an exact name match is correct.
+        for col in list(filtered_columns) + list(filtered_measures):
+            if not isinstance(col, dict):
+                continue
+            name = col.get("name") or col.get("col_name")
+            if name and name in tc_annotations:
+                col["technical_context"] = tc_annotations[name]
 
     # Parity with the static path's descriptions (properties_desc / SYS_PROPERTIES);
     # the constructor only had the ontology's describe-concept comments, often
@@ -1631,8 +1687,9 @@ def _build_sql_generation_context(
     # ``duration_sink`` accumulates their wall-clock ms under the same keys.
     usage_sink: Optional[dict] = None,
     duration_sink: Optional[dict] = None,
-    # Set to a dict to be told when the dynamic metadata-context came back
-    # degraded (relationship-free). None ⇒ nobody is asking.
+    # Set to a dict to be told when an optional enrichment degraded instead of running:
+    # "<feature>_degraded" / "<feature>_error" for metadata_context (relationship-free
+    # rebuild) and technical_context (skipped entirely). None ⇒ nobody is asking.
     status_sink: Optional[dict] = None,
 ) -> dict:
     """
@@ -1690,12 +1747,43 @@ def _build_sql_generation_context(
             # the original top-level-keyed dict shape.
             pass
 
+    # Dynamic metadata-context gate (Plan 2). Schema gate: dtimbr only — non-dtimbr
+    # schemas (vtimbr views/cubes) skip the pipeline. Mode gate: 'static' is a
+    # strict no-op. Resolved here, above the technical-context block, because the
+    # deferral decision below depends on whether the dynamic pipeline will run.
+    from ..ontology_context import normalize_mode
+    _dynamic_mode = normalize_mode(metadata_context_mode or config.metadata_context_mode)
+    _dynamic_enabled = schema == 'dtimbr' and _dynamic_mode == 'dynamic'
+
     # Enrich column dicts with technical context annotations (stats + question matching)
     tc_annotations: dict[str, str] = {}
     # Closure the dynamic rebuild uses to top-up TC for columns the static-depth
     # pass never saw (concepts deeper than graph_depth). None when TC is off.
     tc_topup = None
     tc_seen_names: set | None = None
+    # The planner never reads annotations (its Compact DDL is rendered from the
+    # ontology graph), so building them here loads statistics for every concept
+    # within graph_depth and throws away all but the 3-4 the planner keeps.
+    # When the dynamic pipeline will run, hand it an EMPTY ``tc_seen_names``
+    # instead: its top-up then gathers every surviving column — relationship
+    # AND flat — and builds TC over exactly that set. That top-up is the ONLY
+    # TC build on this path. TIMBR_DEFER_TECHNICAL_CONTEXT=false restores the
+    # upfront pass.
+    _defer_tc = _dynamic_enabled and config.defer_technical_context
+    # Runs the upfront pass on demand. The dynamic-failure fallback below calls it
+    # to annotate the static strings TC was deferred away from. None when TC is off.
+    _run_static_tc = None
+    # A non-positive budget is an explicit "off", not a broken setting. Gate it here, with a
+    # log line, so the intent is visible and the config constructor never sees a value it
+    # would reject into the swallow below.
+    if enable_technical_context and (technical_context_max_tokens or 0) <= 0:
+        import logging
+        logging.getLogger(__name__).info(
+            "Technical context disabled: technical_context_max_tokens=%s is not a positive "
+            "token budget.",
+            technical_context_max_tokens,
+        )
+        enable_technical_context = False
     if enable_technical_context:
         try:
             import copy
@@ -1705,15 +1793,6 @@ def _build_sql_generation_context(
             measures = copy.deepcopy(measures)
             relationships = copy.deepcopy(relationships)
 
-            all_col_dicts = columns + measures
-            for rel in relationships.values():
-                all_col_dicts += rel.get('columns', []) + rel.get('measures', [])
-            tc_columns = [{"name": c.get("name") or c.get("col_name", ""), "type": c.get("data_type", "")} for c in all_col_dicts]
-            # Normalized names the static pass processes — the "already covered"
-            # set the dynamic top-up uses to detect genuinely-new deeper columns.
-            tc_seen_names = {
-                _strip_transitivity_marker(c["name"]) for c in tc_columns if c["name"]
-            }
             tc_config = TechnicalContextConfig(
                 mode=technical_context_mode,
                 max_tokens=technical_context_max_tokens,
@@ -1727,11 +1806,13 @@ def _build_sql_generation_context(
                 ranking is preserved), at the cost of a second candidate
                 extraction when the mode is LLM-backed.
 
-                A reanchor swaps the SQL FROM root: BARE direct columns of the new
-                anchor must resolve their stats against IT, so the caller passes
-                the effective anchor as ``bound_concept``. Relationship columns
-                resolve via their prefix regardless of the bound concept, so a
-                mixed batch is safe."""
+                BARE direct columns of the anchor must resolve their stats against
+                the concept that is the SQL FROM root, which a Tier 2 reanchor may
+                have swapped — so the caller passes the effective anchor as
+                ``bound_concept``. Relationship columns resolve via their prefix
+                regardless of the bound concept, so a mixed batch is safe."""
+                import time as _time
+                _topup_start = _time.monotonic()
                 r = build_technical_context(
                     question=question,
                     columns=topup_columns,
@@ -1741,43 +1822,77 @@ def _build_sql_generation_context(
                     config=tc_config,
                     llm=_tc_llm,
                 )
+                if duration_sink is not None:
+                    duration_sink["technical_context"] = duration_sink.get("technical_context", 0) + int(
+                        (_time.monotonic() - _topup_start) * 1000
+                    )
                 return dict(r.column_annotations or {})
 
-            import time as _time
-            _tc_start = _time.monotonic()
-            tc_result = build_technical_context(
-                question=question,
-                columns=tc_columns,
-                schema=schema,
-                concept=concept,
-                conn_params=conn_params,
-                config=tc_config,
-                llm=_tc_llm,
-            )
-            if duration_sink is not None:
+            def _run_static_tc():
+                """Annotate every column within graph_depth, in place — the
+                pre-Plan-05 behaviour. Runs when the dynamic pipeline will not,
+                and from its failure fallback."""
+                nonlocal tc_annotations, tc_seen_names
+                all_col_dicts = columns + measures
+                for rel in relationships.values():
+                    all_col_dicts += rel.get('columns', []) + rel.get('measures', [])
+                tc_columns = [{"name": c.get("name") or c.get("col_name", ""), "type": c.get("data_type", "")} for c in all_col_dicts]
+                # Normalized names the static pass processes — the "already covered"
+                # set the dynamic top-up uses to detect genuinely-new deeper columns.
+                tc_seen_names = {
+                    _strip_transitivity_marker(c["name"]) for c in tc_columns if c["name"]
+                }
                 import time as _time
-                duration_sink["technical_context"] = duration_sink.get("technical_context", 0) + int(
-                    (_time.monotonic() - _tc_start) * 1000
+                _tc_start = _time.monotonic()
+                tc_result = build_technical_context(
+                    question=question,
+                    columns=tc_columns,
+                    schema=schema,
+                    concept=concept,
+                    conn_params=conn_params,
+                    config=tc_config,
+                    llm=_tc_llm,
                 )
-            tc_annotations = dict(tc_result.column_annotations or {})
-            for c in all_col_dicts:
-                name = c.get('name') or c.get('col_name', '')
-                if name and name in tc_annotations:
-                    c['technical_context'] = tc_annotations[name]
-        except Exception:
-            pass  # Technical context failure must not break SQL generation
+                if duration_sink is not None:
+                    duration_sink["technical_context"] = duration_sink.get("technical_context", 0) + int(
+                        (_time.monotonic() - _tc_start) * 1000
+                    )
+                tc_annotations = dict(tc_result.column_annotations or {})
+                for c in all_col_dicts:
+                    name = c.get('name') or c.get('col_name', '')
+                    if name and name in tc_annotations:
+                        c['technical_context'] = tc_annotations[name]
+
+            if _defer_tc:
+                # Empty seen-set: the top-up gathers the whole surviving set.
+                tc_seen_names = set()
+            else:
+                _run_static_tc()
+        except Exception as _tc_exc:
+            # Technical context failure must not break SQL generation — but it must not be
+            # invisible either: silently skipping it looks exactly like an ontology with no
+            # statistics. Same status_sink convention as the metadata-context fallback.
+            import logging
+            logging.getLogger(__name__).warning(
+                "Technical context skipped (%s); the prompt keeps its columns but carries no "
+                "statistics.",
+                _tc_exc,
+                exc_info=True,
+            )
+            if status_sink is not None:
+                status_sink["technical_context_degraded"] = True
+                status_sink.setdefault(
+                    "technical_context_error", f"{type(_tc_exc).__name__}: {_tc_exc}"[:500]
+                )
 
     columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties, rules=rules, target_type="property")
     measures_str = _build_columns_str(measures, tags, exclude=exclude_properties, rules=rules, target_type="measure")
     rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties, rules=rules)
 
     # --- Plan 2 — dynamic metadata-context (safe, opt-in) -----------------
-    # Schema gate: dtimbr only; non-dtimbr schemas (vtimbr views/cubes) skip.
-    # Mode gate: 'static' is a strict no-op (initial release default).
-    # Errors anywhere inside this block fall back to the static strings above.
-    from ..ontology_context import normalize_mode
-    _dynamic_mode = normalize_mode(metadata_context_mode or config.metadata_context_mode)
-    if schema == 'dtimbr' and _dynamic_mode == 'dynamic':
+    # Gated by _dynamic_enabled above. Errors anywhere inside this block fall
+    # back to the static strings above.
+    if _dynamic_enabled:
         try:
             import time as _time
             _mc_start = _time.monotonic()
@@ -1848,6 +1963,18 @@ def _build_sql_generation_context(
             if status_sink is not None:
                 status_sink["metadata_context_degraded"] = True
                 status_sink["metadata_context_error"] = str(_dyn_exc)
+            # Plan 05 — TC was deferred to the dynamic pipeline that just
+            # failed, so the static strings above carry no annotations. Run the
+            # upfront pass here and re-render them, or this path reaches the
+            # prompt with no technical context at all.
+            if _defer_tc and _run_static_tc is not None:
+                try:
+                    _run_static_tc()
+                    columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties, rules=rules, target_type="property")
+                    measures_str = _build_columns_str(measures, tags, exclude=exclude_properties, rules=rules, target_type="measure")
+                    rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties, rules=rules)
+                except Exception:
+                    pass  # Technical context failure must not break SQL generation
 
     if rel_prop_str:
         measures_str += f"\n{rel_prop_str}"
@@ -1969,7 +2096,6 @@ def handle_generate_sql_reasoning(
     usage_metadata: dict,
     timeout: int,
     debug: bool,
-    previous_token_count,
     enable_technical_context: bool = True,
     technical_context_mode: str = "auto",
     technical_context_max_tokens: int = 3000,
@@ -1979,6 +2105,11 @@ def handle_generate_sql_reasoning(
     generate_sql_reasons: Optional[list] = None,
     usage_sink: Optional[dict] = None,
     duration_sink: Optional[dict] = None,
+    status_sink: Optional[dict] = None,
+    # Set to a dict to receive the context the LAST regeneration was built from,
+    # under "current_context". The validation retry reuses it so it regenerates
+    # against the same schema view this pass ended on, not the first pass's.
+    context_sink: Optional[dict] = None,
     # Plan 2 — dynamic metadata-context propagation (None ⇒ inherit from config)
     metadata_context_mode: Optional[str] = None,
     metadata_context_max_tokens: Optional[int] = None,
@@ -1986,10 +2117,14 @@ def handle_generate_sql_reasoning(
     include_logic_concepts: Optional[bool] = None,
     memory_context=None,
     rules=None,
-) -> tuple[str, int, str, int]:
+) -> tuple[str, str, int]:
+    """Evaluate the generated SQL and regenerate it while the evaluator objects.
+
+    Each regeneration rebuilds the context at the SAME ``graph_depth`` the first
+    pass used.
+    """
     import time as _time
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params, True)
-    context_graph_depth = graph_depth
     reasoned_sql = sql_query
     reasoned_sql_reason = None
     _reasoning_start = _time.monotonic()
@@ -2026,13 +2161,10 @@ def handle_generate_sql_reasoning(
                 break
             
             # Step 2: Regenerate SQL with feedback
-            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {reasoned_sql_reason or '*could not determine cause*'}. Please provide a corrected SQL query that better answers the question: '{question}'.\n\nCRITICAL: Return ONLY the SQL query without any explanation or comments."
-            
-            # Increase graph depth for 2nd+ reasoning attempts, up to max of 3
-            context_graph_depth = min(max_graph_depth, graph_depth)
-
-            if (metadata_context_mode == "static" and step >= 1 and type(max_graph_depth) == int and previous_token_count > 0 and previous_token_count < 20000):
-                context_graph_depth = min(max_graph_depth, context_graph_depth + 1)
+            # No output-shape instruction here: the response contract belongs to
+            # the template, which asks for a 'reason' + 'result' JSON object.
+            # Telling the model to return bare SQL contradicted it.
+            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {reasoned_sql_reason or '*could not determine cause*'}. Please provide a corrected SQL query that better answers the question: '{question}'."
 
             # Build the regeneration context first so a degraded build can be
             # detected BEFORE spending a second SQL-generation call on it.
@@ -2043,7 +2175,7 @@ def handle_generate_sql_reasoning(
                 schema=schema,
                 concept=concept,
                 concept_metadata=concept_metadata,
-                graph_depth=context_graph_depth,
+                graph_depth=graph_depth,
                 include_tags=include_tags,
                 exclude_properties=exclude_properties,
                 db_is_case_sensitive=db_is_case_sensitive,
@@ -2059,10 +2191,16 @@ def handle_generate_sql_reasoning(
                 include_logic_concepts=include_logic_concepts,
                 note=evaluation_note,
                 memory_context=memory_context,
+                rules=rules,
                 usage_sink=usage_sink,
                 duration_sink=duration_sink,
                 status_sink=_context_status,
             )
+            # The per-step dict drives the control flow below; the caller's sink collects
+            # what happened, first occurrence winning.
+            if status_sink is not None:
+                for _status_key, _status_val in _context_status.items():
+                    status_sink.setdefault(_status_key, _status_val)
             if _context_status.get("metadata_context_degraded"):
                 # The rebuild lost its relationship context (most often the
                 # planner answered with something unparseable). Regenerating
@@ -2087,6 +2225,8 @@ def handle_generate_sql_reasoning(
                 debug=debug,
                 memory_context=memory_context,
             )
+            if context_sink is not None:
+                context_sink["current_context"] = regen_context
 
             reasoned_sql = regen_result['sql']
             reasoned_sql_reason = regen_result['generate_sql_reason']
@@ -2105,7 +2245,6 @@ def handle_generate_sql_reasoning(
                 "approximate": regen_result['apx_token_count'],
                 **regen_result['usage_metadata'],
             }
-            previous_token_count = regen_result['apx_token_count']
 
             if debug and 'p_hash' in regen_result:
                 usage_metadata[step_key]['p_hash'] = regen_result['p_hash']
@@ -2120,90 +2259,72 @@ def handle_generate_sql_reasoning(
             break
     
     _reasoning_duration_ms = int((_time.monotonic() - _reasoning_start) * 1000)
-    return reasoned_sql, context_graph_depth, reasoned_sql_reason, _reasoning_duration_ms
+    return reasoned_sql, reasoned_sql_reason, _reasoning_duration_ms
 
 def handle_validate_generate_sql(
     sql_query: str,
     question: str,
     llm: LLM,
     conn_params: dict,
-    generate_sql_prompt: Any,
-    schema: str,
-    concept: str,
-    concept_metadata: dict,
-    include_tags: bool,
-    exclude_properties: list,
-    db_is_case_sensitive: bool,
-    max_limit: int,
-    graph_depth: int,
+    current_context: dict,
     retries: int,
     timeout: int,
     debug: bool,
     usage_metadata: dict,
-    enable_technical_context: bool = True,
-    technical_context_mode: str = "auto",
-    technical_context_max_tokens: int = 3000,
-    technical_context_properties: Optional[list] = None,
-    # Plan 2 — dynamic metadata-context. None ⇒ inherit from config.
-    metadata_context_mode: Optional[str] = None,
-    metadata_context_max_tokens: Optional[int] = None,
-    max_graph_depth: Optional[int] = None,
-    include_logic_concepts: Optional[bool] = None,
-    # Conversation memory + caller notes — forwarded to context_builder LLM
-    # prompts so the validation-retry regeneration sees the same prior-turn
-    # context the original generate_sql call did.
+    # Conversation memory + caller notes — carried into the retry prompt so it
+    # sees the same prior-turn context and KB examples the original
+    # generate_sql call did.
     note: Optional[str] = None,
     memory_context=None,
     generate_sql_reasons: Optional[list] = None,
-    usage_sink: Optional[dict] = None,
     duration_sink: Optional[dict] = None,
 ) -> tuple[bool, str, str]:
+    """Validate the SQL and, while it is invalid, regenerate from the SAME context.
+
+    The retry deliberately does NOT rebuild the generation context. The SQL came
+    back syntactically invalid — the context was not the problem, so rebuilding
+    it re-ran the planner and the technical-context pass for an identical
+    result. Worse, the rebuild had to be handed every context input again, and
+    one that was missed (``rules``) silently produced a thinner prompt than the
+    pass being corrected: a concept instruction honored by the first pass simply
+    stopped existing on the retry. Reusing ``current_context`` makes that class
+    of drift unrepresentable.
+
+    ``current_context`` is the context the SQL under validation was generated
+    from — the first pass's, or the reasoning pass's when reasoning regenerated.
+    """
     import time as _vtime
     _v_start = _vtime.monotonic()
     is_sql_valid, error, sql_query = validate_sql(sql_query, conn_params)
     if duration_sink is not None:
         duration_sink["validate_sql"] = duration_sink.get("validate_sql", 0) + int((_vtime.monotonic() - _v_start) * 1000)
     validation_attempt = 0
-  
+    # The post-validation template variant drops the 'reason' field: the first
+    # pass already explained the approach, and re-deriving it costs a slow
+    # generation on the retry path. Fetched lazily so a run that never retries
+    # does not pay for the template round-trip.
+    validate_regen_prompt = None
+
     while validation_attempt < retries and not is_sql_valid:
         validation_attempt += 1
         validation_err_txt = f"\nThe generated SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query that achieves the intended result." if error and "snowflake" not in llm._llm_type else ""
 
+        if validate_regen_prompt is None:
+            validate_regen_prompt = get_generate_sql_prompt_template(
+                conn_params, after_validate=True
+            )
+
         regen_result = _generate_sql_with_llm(
             question=question,
             llm=llm,
-            generate_sql_prompt=generate_sql_prompt,
-            current_context=_build_sql_generation_context(
-                question=question,
-                conn_params=conn_params,
-                schema=schema,
-                concept=concept,
-                concept_metadata=concept_metadata,
-                graph_depth=graph_depth,
-                include_tags=include_tags,
-                exclude_properties=exclude_properties,
-                db_is_case_sensitive=db_is_case_sensitive,
-                max_limit=max_limit,
-                llm=llm,
-                enable_technical_context=enable_technical_context,
-                technical_context_mode=technical_context_mode,
-                technical_context_max_tokens=technical_context_max_tokens,
-                technical_context_properties=technical_context_properties,
-                metadata_context_mode=metadata_context_mode,
-                metadata_context_max_tokens=metadata_context_max_tokens,
-                max_graph_depth=max_graph_depth,
-                include_logic_concepts=include_logic_concepts,
-                note=note,
-                memory_context=memory_context,
-                usage_sink=usage_sink,
-                duration_sink=duration_sink,
-            ),
+            generate_sql_prompt=validate_regen_prompt,
+            current_context=current_context,
             note=(note if note is not None else "") + validation_err_txt,
             timeout=timeout,
             debug=debug,
             memory_context=memory_context,
         )
-        
+
         regen_error = regen_result['error']
         sql_query = regen_result['sql']
 
@@ -2381,40 +2502,55 @@ def generate_sql(
     generate_sql_reason = None
     generate_sql_reasons = []
     _ctx_builder_durations = {}
+    # Degradations the context builders swallow so SQL generation can proceed. Reported back
+    # to the caller so the chain trace can show why a prompt came out thinner than expected.
+    _ctx_builder_status = {}
+    # Only None means "not set": a caller asking for 0 (or less) is turning technical context
+    # off, which falsy-coalescing to the config default would silently override.
+    _resolved_tc_max_tokens = (
+        config.technical_context_max_tokens
+        if technical_context_max_tokens is None
+        else technical_context_max_tokens
+    )
     is_sql_valid = True  # Assume valid by default; set to False only if validation fails
     error = ''
 
     try:
+        # Kept in a local: the validation retry regenerates from this exact
+        # context rather than rebuilding one, so every input reaching the first
+        # pass reaches the retry by construction.
+        sql_gen_context = _build_sql_generation_context(
+            question=question,
+            conn_params=conn_params,
+            schema=schema,
+            concept=concept,
+            concept_metadata=concept_metadata,
+            graph_depth=graph_depth,
+            include_tags=include_tags,
+            exclude_properties=exclude_properties,
+            db_is_case_sensitive=db_is_case_sensitive,
+            max_limit=max_limit,
+            llm=llm,
+            enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
+            technical_context_mode=technical_context_mode or config.technical_context_mode,
+            technical_context_max_tokens=_resolved_tc_max_tokens,
+            technical_context_properties=technical_context_properties,
+            metadata_context_mode=metadata_context_mode,
+            metadata_context_max_tokens=metadata_context_max_tokens,
+            max_graph_depth=max_graph_depth,
+            include_logic_concepts=include_logic_concepts,
+            note=note,
+            memory_context=memory_context,
+            rules=rules,
+            usage_sink=usage_metadata,
+            duration_sink=_ctx_builder_durations,
+            status_sink=_ctx_builder_status,
+        )
         result = _generate_sql_with_llm(
             question=question,
             llm=llm,
             generate_sql_prompt=generate_sql_prompt,
-            current_context=_build_sql_generation_context(
-                question=question,
-                conn_params=conn_params,
-                schema=schema,
-                concept=concept,
-                concept_metadata=concept_metadata,
-                graph_depth=graph_depth,
-                include_tags=include_tags,
-                exclude_properties=exclude_properties,
-                db_is_case_sensitive=db_is_case_sensitive,
-                max_limit=max_limit,
-                llm=llm,
-                enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
-                technical_context_mode=technical_context_mode or config.technical_context_mode,
-                technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
-                technical_context_properties=technical_context_properties,
-                metadata_context_mode=metadata_context_mode,
-                metadata_context_max_tokens=metadata_context_max_tokens,
-                max_graph_depth=max_graph_depth,
-                include_logic_concepts=include_logic_concepts,
-                note=note,
-                memory_context=memory_context,
-                rules=rules,
-                usage_sink=usage_metadata,
-                duration_sink=_ctx_builder_durations,
-            ),
+            current_context=sql_gen_context,
             note=note,
             timeout=timeout,
             debug=debug,
@@ -2439,8 +2575,13 @@ def generate_sql(
         if error:
             raise Exception(error)
 
+        # Receives the context of the last reasoning regeneration, if any, so the
+        # validation retry below corrects against the schema view the reasoning
+        # pass ended on rather than the first pass's.
+        _reasoning_context: dict = {}
+
         if enable_reasoning and sql_query is not None:
-            sql_query, graph_depth, generate_sql_reason, reasoning_duration = handle_generate_sql_reasoning(
+            sql_query, generate_sql_reason, reasoning_duration = handle_generate_sql_reasoning(
                 sql_query=sql_query,
                 question=question,
                 llm=llm,
@@ -2458,16 +2599,17 @@ def generate_sql(
                 usage_metadata=usage_metadata,
                 timeout=timeout,
                 debug=debug,
-                previous_token_count=result['apx_token_count'],
                 enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
                 technical_context_mode=technical_context_mode or config.technical_context_mode,
-                technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
+                technical_context_max_tokens=_resolved_tc_max_tokens,
                 technical_context_properties=technical_context_properties,
                 generate_sql_reason=generate_sql_reason,
                 decisions=decisions,
                 generate_sql_reasons=generate_sql_reasons,
                 usage_sink=usage_metadata,
                 duration_sink=_ctx_builder_durations,
+                status_sink=_ctx_builder_status,
+                context_sink=_reasoning_context,
                 metadata_context_mode=metadata_context_mode,
                 metadata_context_max_tokens=metadata_context_max_tokens,
                 max_graph_depth=max_graph_depth,
@@ -2484,31 +2626,14 @@ def generate_sql(
                 question=question,
                 llm=llm,
                 conn_params=conn_params,
-                generate_sql_prompt=generate_sql_prompt,
-                schema=schema,
-                concept=concept,
-                concept_metadata=concept_metadata,
-                include_tags=include_tags,
-                exclude_properties=exclude_properties,
-                db_is_case_sensitive=db_is_case_sensitive,
-                max_limit=max_limit,
-                graph_depth=graph_depth,
+                current_context=_reasoning_context.get("current_context") or sql_gen_context,
                 retries=validate_retries,
                 timeout=timeout,
                 debug=debug,
                 usage_metadata=usage_metadata,
-                enable_technical_context=enable_technical_context if enable_technical_context is not None else config.enable_technical_context,
-                technical_context_mode=technical_context_mode or config.technical_context_mode,
-                technical_context_max_tokens=technical_context_max_tokens or config.technical_context_max_tokens,
-                technical_context_properties=technical_context_properties,
-                metadata_context_mode=metadata_context_mode,
-                metadata_context_max_tokens=metadata_context_max_tokens,
-                max_graph_depth=max_graph_depth,
-                include_logic_concepts=include_logic_concepts,
                 note=note,
                 memory_context=memory_context,
                 generate_sql_reasons=generate_sql_reasons,
-                usage_sink=usage_metadata,
                 duration_sink=_ctx_builder_durations,
             )
     except TimeoutError as e:
@@ -2531,6 +2656,7 @@ def generate_sql(
         "reasoning_duration": reasoning_duration,
         "identify_concept_chain_duration": identify_concept_chain_duration,
         "technical_context_duration": _ctx_builder_durations.get("technical_context", 0),
+        "technical_context_error": _ctx_builder_status.get("technical_context_error"),
         "metadata_context_duration": _ctx_builder_durations.get("metadata_context", 0),
         "validate_sql_duration": _ctx_builder_durations.get("validate_sql", 0),
         "usage_metadata": usage_metadata,

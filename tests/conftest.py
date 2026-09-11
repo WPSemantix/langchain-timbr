@@ -7,6 +7,10 @@ import os
 # Must be set before the first langchain_timbr import so config.py bakes in False.
 os.environ["ENABLE_TECHNICAL_CONTEXT"] = "false"
 os.environ["ENABLE_KNOWLEDGE_BASE"] = "false"
+# Unit tests point chains at unreachable hosts, and the once-per-question
+# version refresh would make every invoke pay a real connect attempt. Tests that
+# exercise the refresh itself turn it back on explicitly.
+os.environ["TIMBR_VERSION_REFRESH_PER_QUESTION"] = "false"
 
 from langchain_timbr import LlmWrapper
 

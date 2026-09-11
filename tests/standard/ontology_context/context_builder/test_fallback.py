@@ -18,6 +18,7 @@ from __future__ import annotations
 from langchain_timbr.ontology_context.context_builder.edge_index import EdgeIndex
 from langchain_timbr.ontology_context.context_builder.fallback import generate_fallback_paths
 from langchain_timbr.ontology_context.ontology.graph import Ontology
+from .._bulk_fixtures import bulk_rows_from_describe, merge_rel_rows
 
 
 def _row(col_name, **extras):
@@ -29,7 +30,9 @@ def _row(col_name, **extras):
 class FakeClient:
     def __init__(self, concepts, relationships=None, version="v1"):
         self._concepts = concepts
-        self._relationships = relationships or []
+        _onto_rows, _rel_rows = bulk_rows_from_describe(concepts)
+        self._relationships = merge_rel_rows(relationships, _rel_rows)
+        self._onto_rows = _onto_rows
         self._version = version
 
     def fetch_version_id(self):
@@ -42,7 +45,7 @@ class FakeClient:
         return list(self._relationships)
 
     def fetch_inheritance_meta(self):
-        return []
+        return list(self._onto_rows)
 
 
 def _segments(path):

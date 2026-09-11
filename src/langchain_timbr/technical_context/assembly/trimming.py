@@ -1,11 +1,13 @@
 """Token-budget trimming for technical context annotations.
 
 Operates on STRUCTURED ColumnPayloads (not formatted strings).
-Reduces K per column (200→100→50→20→10→5) before dropping any column.
+Searches for the largest per-column value cap that fits the budget before giving up
+any column's values.
 
 Two-tier budget:
-- max_tokens (soft): trigger K reduction per column
-- safety_ceiling (hard): trigger column dropping as last resort
+- max_tokens (soft): the cap the search aims at
+- safety_ceiling (hard): the fallback target when even one value per column misses the
+  soft budget, and the bar the last-resort degradation has to clear
 """
 
 from __future__ import annotations
@@ -30,7 +32,8 @@ def trim_to_budget(
     """Trim per-column value payloads to fit within token budget.
 
     Operates on STRUCTURED PAYLOADS, not formatted strings.
-    Reduces K per column (trim_sequence) before dropping any column.
+    Searches for the largest per-column value cap that fits before any column gives up
+    its values, so every budget increase shows up in the output.
 
     PROTECTED COLUMNS (never trimmed, never dropped):
     - Columns in matched_keys (had at least one match)
@@ -39,87 +42,148 @@ def trim_to_budget(
     TRIMMABLE COLUMNS:
     - Only those with format_hint == "top_k" AND not in matched_keys
 
-    PHASE 1 — Reduce K per column:
-    Walk trim_sequence. For each step k, reduce trimmable columns
-    (highest band first, then highest cardinality) until under max_tokens.
+    PHASE 1 — Largest uniform cap that fits max_tokens:
+    Binary search the per-column cap. Uniform across trimmable columns: the priority
+    order decides who is sacrificed in Phase 3, not who keeps more values here.
 
-    PHASE 2 — Check safety_ceiling:
-    If total <= safety_ceiling after Phase 1, return as-is.
+    PHASE 2 — One value per column:
+    Reached when the budget is unreachable — even a single value each misses it, or the
+    protected columns alone exceed it. Emitting the minimum beats both emitting more than
+    was asked for and gutting the context. Accepted if it clears safety_ceiling.
 
-    PHASE 3 — Drop columns entirely:
-    Replace lowest-priority non-protected columns with None until under safety_ceiling.
+    PHASE 3 — Give up values, lowest priority first:
+    With every trimmable column already down to one value and still over the hard cap,
+    degrade the lowest-priority columns — first to their distinct count alone, then to
+    the bare column name — until the total clears the cap.
 
     Args:
         payloads: Column name -> ColumnPayload (structured, pre-format).
         column_refs: Column name -> ColumnRef (for priority_band, distinct_count).
         matched_keys: Column names that had at least one match.
-        config: Configuration with max_tokens, safety_ceiling, trim_sequence.
+        config: Configuration with max_tokens and safety_ceiling.
 
     Returns:
-        Modified payloads dict (may have fewer entries or reduced values).
+        Modified payloads dict (values reduced, and in Phase 3 some payloads replaced).
     """
     if not payloads:
         return payloads
 
     # Quick check: if already within soft budget, no trimming needed
-    total = _estimate_total_tokens(payloads)
-    if total <= config.max_tokens:
+    if _estimate_total_tokens(payloads) <= config.max_tokens:
         return payloads
 
-    # Identify trimmable columns: top_k hint AND not matched
+    # Identify trimmable columns: top_k hint AND not matched. Lowest priority first.
     trimmable = _get_trimmable_sorted(payloads, column_refs, matched_keys)
+    if not trimmable:
+        return payloads
 
-    # PHASE 1: Reduce K per column through trim_sequence
-    # Check budget once per K level (not per column) to reduce tiktoken calls.
-    for k in config.trim_sequence:
-        changed = False
+    # The search moves the cap both up and down, so it cannot slice in place the way a
+    # one-way walk can — keep every original list to re-slice from.
+    originals = {name: list(payloads[name].values) for name in trimmable}
+    max_k = max((len(values) for values in originals.values()), default=0)
+
+    # PHASE 1: largest uniform cap that fits the soft budget.
+    k = _largest_k_within(payloads, originals, trimmable, max_k, config.max_tokens)
+    if k >= 1:
+        _apply_k(payloads, originals, trimmable, k)
+        return payloads
+
+    # PHASE 2: the budget is unreachable — one value per column already misses it, or the
+    # protected columns alone exceed it. Emit the least we can (one value each) rather than
+    # more than was asked for, and accept it as long as it clears the hard cap.
+    _apply_k(payloads, originals, trimmable, 1)
+    if _estimate_total_tokens(payloads) <= config.safety_ceiling:
+        return payloads
+
+    # PHASE 3: even one value per column is over the hard cap. Keep that one value for as
+    # many columns as fit and sacrifice the lowest-priority ones, in two steps.
+    for degrade in (_to_count_only, _to_bare):
         for col_name in trimmable:
-            payload = payloads.get(col_name)
-            if payload is None:
-                continue
-            if len(payload.values) > k:
-                # Simple slicing preserves matched values at front
-                # (assembly guarantees matched-first ordering)
-                payload.values = payload.values[:k]
-                changed = True
-
-        if changed:
             total = _estimate_total_tokens(payloads)
-            if total <= config.max_tokens:
+            if total <= config.safety_ceiling:
                 return payloads
+            degrade(payloads, col_name)
 
-    # After full trim_sequence, recompute
     total = _estimate_total_tokens(payloads)
-    if total <= config.max_tokens:
-        return payloads
-
-    # PHASE 2: Accept if under safety_ceiling
-    if total <= config.safety_ceiling:
-        return payloads
-
-    # PHASE 3: Replace columns with name_only fallback (lowest priority first)
-    # Preserves column visibility for the LLM while dropping all values.
-    droppable = _get_trimmable_sorted(payloads, column_refs, matched_keys)
-    for col_name in droppable:
-        if col_name not in payloads:
-            continue
-        payloads[col_name] = ColumnPayload(
-            format_hint="name_only",
-            values=[],
-            distinct_count=payloads[col_name].distinct_count,
-        )
-        total = _estimate_total_tokens(payloads)
-        if total <= config.safety_ceiling:
-            break
-
     if total > config.safety_ceiling:
         logger.warning(
             "Could not trim below safety_ceiling (%d tokens estimated, ceiling=%d). "
-            "All droppable columns exhausted.",
+            "Every trimmable column is already reduced — the protected columns alone "
+            "exceed the ceiling.",
             total, config.safety_ceiling,
         )
 
     return payloads
+
+
+def _apply_k(
+    payloads: dict[str, ColumnPayload],
+    originals: dict[str, list],
+    trimmable: list[str],
+    k: int,
+) -> None:
+    """Re-slice every trimmable column from its ORIGINAL list to k values.
+
+    Slicing from the original (not from the current, already-sliced list) is what lets
+    the search raise the cap again after overshooting. Front-of-list slicing preserves
+    matched values — assembly guarantees matched-first ordering.
+    """
+    for col_name in trimmable:
+        payload = payloads.get(col_name)
+        if payload is not None:
+            payload.values = originals[col_name][:k]
+
+
+def _largest_k_within(
+    payloads: dict[str, ColumnPayload],
+    originals: dict[str, list],
+    trimmable: list[str],
+    max_k: int,
+    budget: int,
+) -> int:
+    """Largest uniform per-column cap whose rendered total fits ``budget``.
+
+    Returns 0 when not even one value per column fits. Costs ~log2(max_k) tiktoken
+    calls — the same order as the fixed six-level walk this replaces.
+
+    Rendered length grows with the cap, so the fit is monotonic apart from the
+    "(N distinct total)" suffix, which a column drops once the cap reaches its own full
+    length (~5 tokens each). The untrimmed case is already returned by the caller's quick
+    check, so that can only cost a value or two of precision in a mixed-length set.
+    """
+    lo, hi, best = 1, max_k, 0
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        _apply_k(payloads, originals, trimmable, mid)
+        if _estimate_total_tokens(payloads) <= budget:
+            best, lo = mid, mid + 1
+        else:
+            hi = mid - 1
+    return best
+
+
+def _to_count_only(payloads: dict[str, ColumnPayload], col_name: str) -> None:
+    """Give up a column's values but keep its cardinality hint."""
+    payload = payloads.get(col_name)
+    if payload is None or payload.format_hint == "count_only":
+        return
+    payloads[col_name] = ColumnPayload(
+        format_hint="count_only",
+        values=[],
+        distinct_count=payload.distinct_count,
+    )
+
+
+def _to_bare(payloads: dict[str, ColumnPayload], col_name: str) -> None:
+    """Give up everything but the column itself, which the DDL still lists."""
+    payload = payloads.get(col_name)
+    if payload is None:
+        return
+    payloads[col_name] = ColumnPayload(
+        format_hint="name_only",
+        values=[],
+        distinct_count=payload.distinct_count,
+    )
 
 
 def _is_protected(col_name: str, payload: ColumnPayload, matched_keys: set[str]) -> bool:

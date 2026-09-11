@@ -224,3 +224,81 @@ class TestMergeRows:
         """total_source_rows comes from mapping_set.total_rows."""
         result = merge_rows([], mapping_set)
         assert result.total_source_rows == 1500
+
+
+class TestMergePreservesNormalizedForms:
+    """The union across mappings must carry the normalized forms, not drop them.
+
+    Dropping them would silently push the work back into the matcher for every
+    merged column — the exact cost this design removes.
+    """
+
+    def test_union_carries_norms_from_source_entries(self, mapping_set):
+        rows = [
+            RawStatsRow(
+                property_name="p", target_name="map_a", target_type="mapping",
+                distinct_count=2, non_null_count=2,
+                top_k=[TopKEntry(value="Test1", count=4,
+                                 norm="test1", norm_space="test1")],
+                min_value=None, max_value=None, raw_stats=None, updated_at=None,
+            ),
+            RawStatsRow(
+                property_name="p", target_name="map_b", target_type="mapping",
+                distinct_count=2, non_null_count=2,
+                top_k=[TopKEntry(value="Test1", count=2,
+                                 norm="test1", norm_space="test1")],
+                min_value=None, max_value=None, raw_stats=None, updated_at=None,
+            ),
+        ]
+
+        merged = merge_rows(rows, mapping_set)
+
+        assert len(merged.top_k) == 1
+        assert merged.top_k[0].value == "Test1"
+        assert merged.top_k[0].count == 6           # counts summed
+        assert merged.top_k[0].norm == "test1"   # and the derived form kept
+        assert merged.top_k[0].norm_space == "test1"
+
+    def test_single_row_fast_path_keeps_entries_intact(self, mapping_set):
+        entry = TopKEntry(value="Good Place", count=9,
+                          norm="goodplace", norm_space="good place")
+        rows = [RawStatsRow(
+            property_name="p", target_name="map_a", target_type="mapping",
+            distinct_count=1, non_null_count=1, top_k=[entry],
+            min_value=None, max_value=None, raw_stats=None, updated_at=None,
+        )]
+
+        merged = merge_rows(rows, mapping_set)
+
+        assert merged.top_k[0].norm == "goodplace"
+        assert merged.top_k[0].norm_space == "good place"
+
+
+class TestMergeCarriesValueKind:
+
+    def _row(self, target, kind, top_k, years=None):
+        return RawStatsRow(
+            property_name="p", target_name=target, target_type="mapping",
+            distinct_count=1, non_null_count=1, top_k=top_k,
+            min_value=None, max_value=None, raw_stats=None, updated_at=None,
+            value_kind=kind, date_years=years,
+        )
+
+    def test_agreeing_rows_keep_the_kind(self, mapping_set):
+        rows = [self._row("a", "numeric", [TopKEntry(value="1", count=1)]),
+                self._row("b", "numeric", [TopKEntry(value="2", count=1)])]
+        assert merge_rows(rows, mapping_set).value_kind == "numeric"
+
+    def test_one_text_mapping_makes_the_column_text(self, mapping_set):
+        """Safe direction: the column just keeps the full matcher cascade."""
+        rows = [self._row("a", "numeric", [TopKEntry(value="1", count=1)]),
+                self._row("b", "text", [TopKEntry(value="one", count=1)])]
+        assert merge_rows(rows, mapping_set).value_kind == "text"
+
+    def test_year_index_unions_months_and_sums_counts(self, mapping_set):
+        rows = [self._row("a", "date", [TopKEntry(value="2024-01-05", count=1)],
+                          {"2024": (frozenset({"01"}), 3)}),
+                self._row("b", "date", [TopKEntry(value="2024-06-05", count=1)],
+                          {"2024": (frozenset({"06"}), 2)})]
+        merged = merge_rows(rows, mapping_set)
+        assert merged.date_years["2024"] == (frozenset({"01", "06"}), 5)

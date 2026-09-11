@@ -17,30 +17,57 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from ...config import normalize_unicode
+
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]")
 _NON_ALNUM_SPACE_RE = re.compile(r"[^a-z0-9]+")
 
+# Unicode-aware equivalents. ``\w`` under Python 3 is already Unicode-aware, so
+# it keeps CJK, Cyrillic, Greek and the rest; ``_`` is excluded explicitly
+# because it is punctuation for our purposes, not a letter.
+_NON_WORD_RE = re.compile(r"[\W_]", re.UNICODE)
+_NON_WORD_SPACE_RE = re.compile(r"[\W_]+", re.UNICODE)
+
+
+def _fold(text: str) -> str:
+    """NFKC -> casefold -> strip accents, preserving non-Latin scripts.
+
+    The accent strip is NFKD (decompose) -> drop combining marks -> NFC
+    (recompose). The recompose matters: NFKD splits Hangul syllables into jamo,
+    which are letters rather than combining marks, so they survive the drop and
+    would leave Korean text decomposed. Latin accents do not come back, because
+    their combining mark is gone — which is the point.
+    """
+    result = unicodedata.normalize("NFKC", text)
+    result = result.casefold()
+    decomposed = unicodedata.normalize("NFKD", result)
+    stripped = "".join(c for c in decomposed if not unicodedata.combining(c))
+    return unicodedata.normalize("NFC", stripped)
+
 # Bounded memo caches. Entries are short strings; the bound keeps worst-case
 # footprint predictable on very wide ontologies.
-_CACHE_MAX = 250_000
-_NORM_CACHE: dict[str, str] = {}
-_NORM_SPACE_CACHE: dict[str, str] = {}
-
-
 def clear_normalize_cache() -> None:
-    """Drop every memoized normalization. Used by tests for isolation."""
-    _NORM_CACHE.clear()
-    _NORM_SPACE_CACHE.clear()
+    """No-op, kept for callers that still invoke it.
+
+    Normalization used to be memoized in two process-wide dicts that wiped
+    themselves wholesale on overflow — so a single request bigger than the cap
+    thrashed and retained nothing. Values are now normalized once where they are
+    parsed and carried on ``TopKEntry``; prompt tokens are normalized once per
+    request. Nothing is memoized here any more, so there is nothing to clear.
+    """
 
 
 def normalize(text: str) -> str:
-    """Normalize a string for matching: NFKC + casefold + strip non-alphanumerics.
+    """Normalize a string for matching: fold case and accents, keep alphanumerics.
+
+    "Alphanumeric" means Unicode alphanumeric. The previous implementation kept
+    only ASCII ``[a-z0-9]``, which silently destroyed international values
 
     Args:
         text: Input string (may be None or empty).
 
     Returns:
-        Normalized lowercase alphanumeric-only string.
+        Normalized lowercase alphanumeric string.
 
     Examples:
         >>> normalize("Café Latte")
@@ -49,22 +76,24 @@ def normalize(text: str) -> str:
         'usa'
         >>> normalize("  Hello World  ")
         'helloworld'
+        >>> normalize("Müller GmbH")
+        'mullergmbh'
     """
     if not text:
         return ""
-    cached = _NORM_CACHE.get(text)
-    if cached is not None:
-        return cached
-    # NFKC: normalize unicode (e.g., ﬁ → fi, ² → 2)
-    result = unicodedata.normalize("NFKC", text)
-    # Casefold: aggressive lowercase (e.g., ß → ss)
-    result = result.casefold()
-    # Strip non-alphanumeric
-    result = _NON_ALNUM_RE.sub("", result)
-    if len(_NORM_CACHE) >= _CACHE_MAX:
-        _NORM_CACHE.clear()
-    _NORM_CACHE[text] = result
-    return result
+    # Fast path, and it is the overwhelmingly common one: 99% of the values in
+    # the captured fixture are pure ASCII, where every step of the Unicode
+    # pipeline is a no-op — NFKC, NFKD and NFC are all identities, there are no
+    # combining marks to strip, and `[\W_]` and `[^a-z0-9]` select the same
+    # characters once casefolded. Skipping it is exact, not an approximation.
+    # Without this the fix cost 3.6x on normalization, which parse time pays for
+    # every statistics value.
+    if text.isascii():
+        return _NON_ALNUM_RE.sub("", text.casefold())
+    if not normalize_unicode:
+        result = unicodedata.normalize("NFKC", text).casefold()
+        return _NON_ALNUM_RE.sub("", result)
+    return _NON_WORD_RE.sub("", _fold(text))
 
 
 def normalize_keep_spaces(text: str) -> str:
@@ -78,14 +107,9 @@ def normalize_keep_spaces(text: str) -> str:
     """
     if not text:
         return ""
-    cached = _NORM_SPACE_CACHE.get(text)
-    if cached is not None:
-        return cached
-    result = unicodedata.normalize("NFKC", text)
-    result = result.casefold()
-    # Replace non-alnum with space, collapse multiple spaces
-    result = _NON_ALNUM_SPACE_RE.sub(" ", result).strip()
-    if len(_NORM_SPACE_CACHE) >= _CACHE_MAX:
-        _NORM_SPACE_CACHE.clear()
-    _NORM_SPACE_CACHE[text] = result
-    return result
+    if text.isascii():  # see the note in normalize()
+        return _NON_ALNUM_SPACE_RE.sub(" ", text.casefold()).strip()
+    if not normalize_unicode:
+        result = unicodedata.normalize("NFKC", text).casefold()
+        return _NON_ALNUM_SPACE_RE.sub(" ", result).strip()
+    return _NON_WORD_SPACE_RE.sub(" ", _fold(text)).strip()

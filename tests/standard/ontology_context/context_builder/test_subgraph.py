@@ -11,6 +11,7 @@ from langchain_timbr.ontology_context.context_builder.subgraph import (
     serialize_compact_ddl,
     should_skip_static_build,
 )
+from .._bulk_fixtures import bulk_rows_from_describe, merge_rel_rows
 
 
 # ---- FakeClient for synthetic ontologies -----------------------------------
@@ -32,8 +33,11 @@ class FakeClient:
 
     def __init__(self, concepts, relationships=None, version="v1", inheritance_rows=None):
         self._concepts = concepts
-        self._relationships = relationships or []
-        self._inheritance_rows = inheritance_rows or []
+        _onto_rows, _rel_rows = bulk_rows_from_describe(concepts)
+        self._relationships = merge_rel_rows(relationships, _rel_rows)
+        self._inheritance_rows = (
+            inheritance_rows if inheritance_rows is not None else _onto_rows
+        )
         self._version = version
 
     def fetch_version_id(self):

@@ -334,6 +334,12 @@ _VIEW_PROP_SQL = (
 # tables are irrelevant to anchor-concept selection and are deliberately excluded.
 _CATALOG_QUERIES = _SEMANTIC + [("view_properties", _VIEW_PROP_SQL)]
 
+# The same set split by who may see it: everything but views is the same for every
+# caller on an ontology version, while SYS_VIEWS and SYS_VIEW_PROPERTIES are
+# permission-filtered and have to be fetched per caller.
+SHARED_CATALOG_QUERIES = [(section, sql) for section, sql in _SEMANTIC if section != "views"]
+VIEW_PROPERTIES_SQL = _VIEW_PROP_SQL
+
 
 def parse_view_concepts(tables: str) -> list[str]:
     """Extract the connected concept/view axis of a view from its `tables` column.
@@ -391,14 +397,15 @@ def parse_parents(inheritance: str) -> list[str]:
     return out
 
 
-def fetch_catalog_rows(ontology, run_sql, get_version, cache=None) -> dict:
+def fetch_catalog_rows(ontology, run_sql, get_version, cache=None, queries=None) -> dict:
     """Fetch the raw sys_* rows the identify-concept catalog is built from.
 
     Returns `{section -> rows}` for concepts, properties, concept_properties,
-    relationships, views and view_properties. Each section query is isolated —
-    a failing/absent table (e.g. SYS_VIEW_PROPERTIES on an older backend) yields
-    an empty section rather than aborting the whole catalog. Cached per ontology
-    version so trigram/inheritance derivation happens at most once per version.
+    relationships, views and view_properties, or for whichever `queries` subset
+    is passed instead. Each section query is isolated — a failing/absent table
+    (e.g. SYS_VIEW_PROPERTIES on an older backend) yields an empty section rather
+    than aborting the whole catalog. Cached per ontology version so
+    trigram/inheritance derivation happens at most once per version.
     """
     version = get_version(ontology)
     key = f"catalog:{ontology}:{version}"
@@ -409,7 +416,7 @@ def fetch_catalog_rows(ontology, run_sql, get_version, cache=None) -> dict:
             return hit
 
     out: dict = {}
-    for section, sql in _CATALOG_QUERIES:
+    for section, sql in (queries if queries is not None else _CATALOG_QUERIES):
         try:
             out[section] = run_sql(sql) or []
         except Exception:

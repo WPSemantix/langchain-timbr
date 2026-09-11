@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -14,7 +17,11 @@ class TechnicalContextConfig:
     """
     mode: Literal["include_all", "filter_matched", "auto"] = "auto"
     max_tokens: int = 3000
-    safety_ceiling: int = 10000
+    """Soft token budget for the annotations. Values above ``safety_ceiling`` are
+    clamped to it (with a warning) rather than rejected — an oversized budget must
+    never turn the feature off."""
+    safety_ceiling: int = 20000
+    """Hard cap on the annotation token total. Also the largest accepted ``max_tokens``."""
     max_values_per_column: int = 20
     show_all_under: int = 50
 
@@ -39,16 +46,23 @@ class TechnicalContextConfig:
     exclude_properties: list = field(default_factory=list)
     """Blacklist of property names to exclude from stats fetching."""
 
-    # Trim sequence (per-band, highest-cardinality first within band)
-    trim_sequence: tuple = (200, 100, 50, 20, 10, 5)
-
     def __post_init__(self):
         if self.max_tokens <= 0:
+            # Callers disable the feature by not asking for it (a non-positive budget is
+            # gated as "off" before this constructor is reached), so reaching here is a
+            # programming error rather than a misconfiguration.
             raise ValueError("max_tokens must be > 0")
         if self.safety_ceiling <= 0:
             raise ValueError("safety_ceiling must be > 0")
-        if self.max_tokens >= self.safety_ceiling:
-            raise ValueError("max_tokens must be < safety_ceiling")
+        if self.max_tokens > self.safety_ceiling:
+            # A budget past the cap is a misconfiguration, not a reason to drop the whole
+            # technical context: clamp it and let the trimmer fit the content to the cap.
+            logger.warning(
+                "technical context max_tokens=%d exceeds the hard cap of %d; clamping to the "
+                "cap. The context is trimmed to fit it instead of being dropped.",
+                self.max_tokens, self.safety_ceiling,
+            )
+            self.max_tokens = self.safety_ceiling
         if self.max_values_per_column <= 0:
             raise ValueError("max_values_per_column must be > 0")
         if self.show_all_under < 0:
@@ -71,5 +85,3 @@ class TechnicalContextConfig:
             )
         if self.mode not in ("include_all", "filter_matched", "auto"):
             raise ValueError(f"mode must be include_all, filter_matched, or auto; got {self.mode}")
-        if not self.trim_sequence:
-            raise ValueError("trim_sequence must not be empty")

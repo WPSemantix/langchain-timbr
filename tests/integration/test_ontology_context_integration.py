@@ -354,7 +354,7 @@ class TestDefaultOntologyOrder:
 
 
 class TestLiveCacheBehavior:
-    """Sanity-checks that the lazy cache and TTL throttling work end-to-end."""
+    """Sanity-checks that the lazy metadata cache works end-to-end."""
 
     def test_repeat_calls_share_one_describe_call(self, config):
         # Wrap a real client in a counting proxy so we can observe call counts.
@@ -382,7 +382,7 @@ class TestLiveCacheBehavior:
                 return self.inner.fetch_relationships_meta()
 
         counting = CountingClient(real_client)
-        ontology = Ontology(counting, version_ttl_seconds=3600)
+        ontology = Ontology(counting)
         ontology.get_concept_metadata("company")
         ontology.get_concept_metadata("company")
         ontology.get_concept_metadata("company")
@@ -392,8 +392,10 @@ class TestLiveCacheBehavior:
         assert counting.rels_calls == 1, (
             "Relationship lookup must be built once per ontology version"
         )
-        assert counting.version_calls == 1, (
-            "Version check must be throttled within the TTL window"
+        assert counting.version_calls == 0, (
+            "Ontology must do no version I/O of its own — the shared factory "
+            "resolves the version and hands it to the constructor, and the "
+            "instance is replaced rather than revalidated (see shared.py)"
         )
 
     def test_invalidate_forces_refetch(self, config):

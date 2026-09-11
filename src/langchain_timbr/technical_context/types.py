@@ -43,7 +43,7 @@ class MatchResult:
     column_name: str
     matched_value: str  # the value from statistics that matched
     score: int  # 0-100
-    match_type: Literal["exact", "substring", "fuzzy"]
+    match_type: Literal["exact", "substring", "fuzzy", "year"]
     candidate: str  # what from the prompt matched
 
 

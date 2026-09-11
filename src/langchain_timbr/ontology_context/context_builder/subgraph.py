@@ -104,8 +104,10 @@ def retrieve_subgraph(
     frontier: List[str] = [anchor]
 
     for _ in range(hop_ceiling):
-        # One parallel wave per BFS level instead of a round-trip per concept.
-        edge_index.ontology.prefetch(frontier)
+        # No warm-up wave here: the walk reads the bulk relationship lookup, not
+        # describe output, so warming the frontier would fetch metadata for
+        # concepts that may never be rendered. The concepts that do survive are
+        # warmed in one wave before the pre-filter and before serialization.
         next_frontier: List[str] = []
         for concept in frontier:
             for edge in edge_index.outbound_edges(concept):
@@ -224,9 +226,12 @@ def serialize_compact_ddl(
     # description, and the cascade re-renders up to four times. Warm every
     # concept that can render in one parallel wave rather than a round-trip
     # apiece, mid-render.
-    ontology.prefetch(
-        list(concepts) + expand_minimal_list + list(menu_concepts or [])
-    )
+    #
+    # Menu concepts are deliberately NOT warmed: the menu band emits bare names
+    # (``## REACHABLE: a, b, c``) and reads no metadata at all, so describing
+    # them buys nothing. One that is later promoted via ``expand_to`` arrives
+    # here in ``expand_minimal_concepts`` on the next render and is warmed then.
+    ontology.prefetch(list(concepts) + expand_minimal_list)
     hop_inputs = list(concepts) + [
         c for c in expand_minimal_list if c not in concepts
     ]

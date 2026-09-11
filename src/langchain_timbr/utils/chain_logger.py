@@ -220,10 +220,8 @@ def log_agent_history(
     wall_clock_ms = int((end_time - ctx.start_time).total_seconds() * 1000)
     _sub_total_ms = sum(
         d for d in [
-            identify_concept_chain_duration,
             generate_sql_chain_duration,
-            answer_chain_duration,
-            reasoning_duration,
+            answer_chain_duration
         ]
         if d is not None
     )

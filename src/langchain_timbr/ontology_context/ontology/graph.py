@@ -1,18 +1,21 @@
 """Ontology graph — version-keyed lazy cache over concept describe output.
 
 A single Ontology instance should be shared per (conn_params) tuple. The version
-check is throttled to once per `cache_timeout` seconds (env: CACHE_TIMEOUT,
-default 120s) so cache hits are pure in-memory dict lookups.
+check itself is *not* throttled here: it delegates to the client, and the real
+client routes it through the shared probe in ``utils.timbr_utils``, which holds
+the only throttle (env: CACHE_TIMEOUT, default 120s). Keeping two throttles —
+one here and one there — would compound them, so a version change could take up
+to twice the window to be noticed.
 """
 
 from __future__ import annotations
 
-import time
+import threading
 from collections import OrderedDict
 
-from ...config import cache_timeout, filtered_cache_size, metadata_prefetch_workers
+from ...config import filtered_cache_size, metadata_prefetch_workers
 from .cardinality import derive_cardinality
-from .models import ConceptMetadata, RelationshipLookupEntry
+from .models import ConceptMetadata, RelationshipLookupEntry, RelationshipMeta
 from .parser import parse_describe_output
 
 
@@ -24,6 +27,19 @@ def _split_csv(value) -> list[str]:
     else:
         items = str(value).split(",")
     return [s.strip() for s in items if s and str(s).strip()]
+
+
+def _normalize_transitivity(value) -> int:
+    """Coerce sys_concept_relationships.transitivity to a positive hop count.
+
+    The column uses ``-1`` for "default" — taken literally it makes every edge
+    look different from the describe-derived one, which reports 1.
+    """
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return 1 if depth <= 0 else depth
 
 
 def _to_bool(value) -> bool:
@@ -46,13 +62,17 @@ class Ontology:
     Ontology per connection rather than instantiating directly in consumers.
     """
 
-    def __init__(self, client, version_ttl_seconds: int | None = None):
+    def __init__(self, client, version_id: str | None = None):
         self._client = client
-        self._version_id: str | None = None
-        self._last_version_check: float = 0.0
-        self._version_ttl: int = (
-            version_ttl_seconds if version_ttl_seconds is not None else cache_timeout
-        )
+        # The version this instance belongs to. It never changes: an Ontology is
+        # built for one version and is *replaced* when that moves (see
+        # shared.get_shared_ontology), rather than emptying itself in place while
+        # other threads are reading it.
+        self._version_id: str | None = version_id
+        # Single-flight for the lazy lookup build. Without it, a fresh instance
+        # is handed to every in-flight thread at once and each one runs its own
+        # sys_concept_relationships + sys_ontology fetch.
+        self._build_lock = threading.Lock()
         self._cache: dict[str, ConceptMetadata] = {}
         # Concepts whose describe output failed to parse. Without this, a single
         # malformed concept costs a fresh `describe concept` round-trip on every
@@ -60,11 +80,24 @@ class Ontology:
         # ask again for each relationship pointing at it. Cleared with _cache.
         self._failed: dict[str, Exception] = {}
         self._rel_lookup: dict[tuple[str, str], RelationshipLookupEntry] | None = None
+        # The same entries indexed by owning concept, so assembling a concept's
+        # edge set is a dict hit rather than a scan of every relationship in the
+        # ontology. Built together with _rel_lookup; both are read-only after.
+        self._rel_by_concept: dict[str, dict[str, RelationshipLookupEntry]] | None = None
+        # Memoized outbound_relationships() results — inheritance expansion runs
+        # once per concept, not once per BFS visit and again per cardinality call.
+        self._outbound_rels: dict[str, dict[str, RelationshipMeta]] = {}
         # concept_name -> tuple of parent concepts (root-to-direct order trimmed
         # below). Populated lazily alongside _rel_lookup. Empty tuple means
         # "no inheritance info" (either not in sys_ontology or the column is
         # blank for that concept).
         self._inheritance_lookup: dict[str, tuple[str, ...]] | None = None
+        # concept_name -> tuple of its *directly declared* primary-key property
+        # names, from sys_ontology.primary_keys. Blank for a concept whose PK is
+        # inherited, which is why ``_pks_of`` walks the inheritance chain rather
+        # than reading this directly. Populated in the same pass as
+        # _inheritance_lookup — one sys_ontology fetch serves both.
+        self._pk_lookup: dict[str, tuple[str, ...]] | None = None
         # Side cache for Plan 2 filtered-metadata results (Step 0+1 outputs).
         # Keyed by an arbitrary tuple (question, anchor, graph_depth, ...) chosen
         # by the caller. Invalidated together with concept cache on version change.
@@ -74,6 +107,15 @@ class Ontology:
         self._filtered_cache: "OrderedDict[tuple, object]" = OrderedDict()
 
     # ---- public API --------------------------------------------------------
+
+    @property
+    def version_id(self) -> str | None:
+        """The version this instance was built for, without triggering a build.
+
+        ``get_shared_ontology`` compares against this to decide whether the
+        instance is still current, so it must not do any work.
+        """
+        return self._version_id
 
     def show_version(self) -> str:
         self._ensure_version()
@@ -181,30 +223,128 @@ class Ontology:
         ]
         return sorted(out)
 
+    def pks_of(self, concept: str) -> set[str]:
+        """Return ``concept``'s effective primary-key property names.
+
+        Read from ``sys_ontology.primary_keys`` (fetched once per version), not
+        from ``describe concept`` — so this costs no round-trip. The column holds
+        only *directly declared* keys and is blank for a concept that inherits
+        its PK, so fall through the inheritance chain and take the first
+        non-empty entry: a child's own keys override its parent's.
+
+        Returns an empty set for a concept with no entry anywhere in the chain.
+        ``derive_cardinality`` then degrades that relationship to its default
+        rather than raising — cardinality is ranking input, never correctness.
+        """
+        self._ensure_version()
+        own = (self._pk_lookup or {}).get(concept)
+        if own:
+            return set(own)
+        for parent in (self._inheritance_lookup or {}).get(concept, ()):
+            inherited = (self._pk_lookup or {}).get(parent)
+            if inherited:
+                return set(inherited)
+        return set()
+
+    def relationship_description(self, from_concept: str, rel_name: str) -> str:
+        """Return the relationship's description, or ``''``.
+
+        Reads ``_rel_lookup`` (sys_concept_relationships) directly. This is the
+        *only* source of relationship descriptions — ``parse_describe_output``
+        populates ``RelationshipMeta.description`` from exactly this lookup, so
+        describing the concept to reach it is a round-trip for a value already
+        in memory.
+
+        Falls through the inheritance chain the same way the parser does, so a
+        relationship declared on a parent resolves for the child.
+        """
+        self._ensure_version()
+        lookup = self._rel_lookup or {}
+        entry = lookup.get((from_concept, rel_name))
+        if entry is None:
+            for parent in (self._inheritance_lookup or {}).get(from_concept, ()):
+                entry = lookup.get((parent, rel_name))
+                if entry is not None:
+                    break
+        if entry is None:
+            return ""
+        return entry.description or ""
+
+    def outbound_relationships(self, concept: str) -> dict[str, RelationshipMeta]:
+        """Return ``concept``'s outbound relationships without describing it.
+
+        Built from ``sys_concept_relationships`` (one fetch per ontology
+        version) expanded through the inheritance chain: ancestors first, then
+        the concept's own entries, so a child overriding an inherited
+        relationship wins. This is the whole edge set the BFS needs — target,
+        transitivity, is_mtm, is_inverse and description all live in those rows.
+
+        ``additional_properties`` and ``target_properties`` are left empty: they
+        exist only in describe output, and no edge consumer reads them. Use
+        ``get_concept_metadata`` when you need the full picture.
+
+        A row that cannot be turned into a relationship is skipped rather than
+        allowed to abort the concept — one malformed definition must never cost
+        a concept its other relationships.
+        """
+        self._ensure_version()
+        cached = self._outbound_rels.get(concept)
+        if cached is not None:
+            return cached
+        by_concept = self._rel_by_concept or {}
+        chain = (self._inheritance_lookup or {}).get(concept, ())
+        out: dict[str, RelationshipMeta] = {}
+        for source in (*reversed(chain), concept):
+            for rel_name, entry in by_concept.get(source, {}).items():
+                try:
+                    if not entry.target_concept:
+                        continue
+                    out[rel_name] = RelationshipMeta(
+                        name=rel_name,
+                        target_concept=entry.target_concept,
+                        transitivity=entry.transitivity,
+                        is_mtm=entry.is_mtm,
+                        is_inverse=entry.is_inverse,
+                        description=entry.description,
+                        source_join_keys=entry.source_join_keys,
+                        target_join_keys=entry.target_join_keys,
+                        additional_properties=(),
+                        target_properties=(),
+                    )
+                except Exception:
+                    continue
+        self._outbound_rels[concept] = out
+        return out
+
     def cardinality_of(self, concept: str, relationship_name: str) -> str:
         """Return one of 'N:M' | 'N:1' | '1:N' | '1:1' for the relationship.
 
-        Fetches source + target concept metadata (cached after first call).
+        Describes nothing: the relationship comes from
+        ``outbound_relationships`` and both primary-key sets from ``pks_of``,
+        all served by the two bulk fetches done once per ontology version.
         Raises KeyError if the relationship is not present on the source concept.
         """
-        source_meta = self.get_concept_metadata(concept)
-        if relationship_name not in source_meta.relationships:
+        rels = self.outbound_relationships(concept)
+        rel = rels.get(relationship_name)
+        if rel is None:
             raise KeyError(
                 f"Relationship {relationship_name!r} not found on concept {concept!r}"
             )
-        rel = source_meta.relationships[relationship_name]
-        target_meta = self.get_concept_metadata(rel.target_concept)
-        source_pks = {p.name for p in source_meta.properties.values() if p.is_pk}
-        target_pks = {p.name for p in target_meta.properties.values() if p.is_pk}
-        return derive_cardinality(rel, source_pks=source_pks, target_pks=target_pks)
+        return derive_cardinality(
+            rel,
+            source_pks=self.pks_of(concept),
+            target_pks=self.pks_of(rel.target_concept),
+        )
 
     def invalidate(self) -> None:
         """Force a fresh version check + relationship-lookup rebuild on next call."""
         self._version_id = None
-        self._last_version_check = 0.0
         self._cache.clear()
         self._rel_lookup = None
+        self._rel_by_concept = None
+        self._outbound_rels.clear()
         self._inheritance_lookup = None
+        self._pk_lookup = None
         self._filtered_cache.clear()
 
     # ---- side cache for Plan 2 filtered-metadata results -------------------
@@ -230,23 +370,33 @@ class Ontology:
     # ---- internals ---------------------------------------------------------
 
     def _ensure_version(self) -> None:
-        now = time.time()
-        # Throttle SHOW VERSION to once per TTL window; matches the semantics of
-        # cache_with_version_check at timbr_utils.py:96.
-        if (now - self._last_version_check) > self._version_ttl:
-            current = self._client.fetch_version_id()
-            self._last_version_check = now
-            if current != self._version_id:
-                self._cache.clear()
-                self._failed.clear()
-                self._rel_lookup = None
-                self._inheritance_lookup = None
-                self._filtered_cache.clear()
-                self._version_id = current
-        if self._rel_lookup is None:
-            self._rel_lookup = self._build_rel_lookup()
-        if self._inheritance_lookup is None:
-            self._inheritance_lookup = self._build_inheritance_lookup()
+        """Build the lazy lookups on first use.
+
+        No version check happens here any more. This instance belongs to one
+        version and never invalidates itself: when the version moves, the whole
+        instance is replaced in ``shared.get_shared_ontology``. A thread already
+        holding this object therefore finishes its request against a consistent
+        generation, instead of watching its caches emptied underneath it — which
+        could hand ``parse_describe_output`` a half-built relationship lookup and
+        cache the degraded result.
+
+        The build is single-flighted: on a fresh instance every in-flight thread
+        arrives here at once, and without the lock each would run its own
+        ``sys_concept_relationships`` and ``sys_ontology`` fetch.
+        """
+        if self._rel_lookup is not None and self._inheritance_lookup is not None:
+            return
+        with self._build_lock:
+            if self._rel_lookup is None:
+                self._rel_lookup = self._build_rel_lookup()
+                by_concept: dict[str, dict[str, RelationshipLookupEntry]] = {}
+                for (owner, rel_name), entry in self._rel_lookup.items():
+                    by_concept.setdefault(owner, {})[rel_name] = entry
+                self._rel_by_concept = by_concept
+            if self._inheritance_lookup is None:
+                self._inheritance_lookup, self._pk_lookup = (
+                    self._build_ontology_lookups()
+                )
 
     def _build_rel_lookup(self) -> dict[tuple[str, str], RelationshipLookupEntry]:
         rows = self._client.fetch_relationships_meta() or []
@@ -262,34 +412,48 @@ class Ontology:
                 if description_raw is not None
                 else None
             )
+            target = r.get("target_concept")
             lookup[(concept, rel_name)] = RelationshipLookupEntry(
                 is_mtm=_to_bool(r.get("is_mtm")),
                 is_inverse=_to_bool(r.get("is_inverse")),
                 description=description,
                 source_join_keys=tuple(_split_csv(r.get("source_properties"))),
                 target_join_keys=tuple(_split_csv(r.get("target_properties"))),
+                target_concept=str(target) if target else None,
+                transitivity=_normalize_transitivity(r.get("transitivity")),
             )
         return lookup
 
-    def _build_inheritance_lookup(self) -> dict[str, tuple[str, ...]]:
-        """Fetch ``sys_ontology.inheritance`` once per ontology version.
+    def _build_ontology_lookups(
+        self,
+    ) -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[str, ...]]]:
+        """Fetch ``sys_ontology`` once per ontology version.
 
-        Returns ``{concept_name: (parent_1, parent_2, ..., 'thing')}`` where the
-        tuple is the parent chain as timbr emits it (typically root-direction
-        ordered, ending at ``thing``).
+        Returns ``(inheritance_lookup, pk_lookup)``:
+
+        - ``{concept_name: (parent_1, parent_2, ..., 'thing')}`` — the parent
+          chain as timbr emits it (typically root-direction ordered, ending at
+          ``thing``). Concepts with a blank chain are omitted, so callers can
+          treat "absent" and "no inheritance info" identically.
+        - ``{concept_name: (pk_prop, ...)}`` — the concept's *directly declared*
+          primary keys. Blank for a concept that inherits its PK; ``_pks_of``
+          resolves that by walking the chain above.
+
+        Both come from the same row set: one fetch, not two.
 
         Tolerates the absence of ``fetch_inheritance_meta`` on the client —
-        in that case, returns an empty dict (inheritance section in the
+        in that case, returns empty dicts (inheritance section in the
         serializer will degrade to ``(none)``).
         """
         fetcher = getattr(self._client, "fetch_inheritance_meta", None)
         if fetcher is None:
-            return {}
+            return {}, {}
         try:
             rows = fetcher() or []
         except Exception:
-            return {}
+            return {}, {}
         out: dict[str, tuple[str, ...]] = {}
+        pks: dict[str, tuple[str, ...]] = {}
         for r in rows:
             concept = r.get("concept")
             if not concept:
@@ -297,4 +461,5 @@ class Ontology:
             chain = tuple(_split_csv(r.get("inheritance")))
             if chain:
                 out[concept] = chain
-        return out
+            pks[concept] = tuple(_split_csv(r.get("primary_keys")))
+        return out, pks

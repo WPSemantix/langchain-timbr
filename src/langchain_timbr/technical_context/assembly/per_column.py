@@ -202,8 +202,8 @@ def assemble_column_payload(
 
     # Determine starting K. CATEGORICAL_ENUM always starts with the full
     # top_k regardless of mode: the design intent is to let the LLM see the
-    # complete value domain when budget allows, and let the trim_sequence
-    # (200 → 100 → 50 → 20 → 10 → 5) shrink it gracefully under pressure.
+    # complete value domain when budget allows, and let the trimmer shrink it
+    # to whatever the budget does allow.
     if is_show_all:
         k = len(stats.top_k)
     elif sem_type == SemanticType.CATEGORICAL_ENUM:
