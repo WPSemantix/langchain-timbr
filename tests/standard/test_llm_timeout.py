@@ -138,7 +138,10 @@ class TestBedrockReadTimeout:
         assert self._build()["config"].read_timeout == 120
 
     def test_caller_supplied_config_is_left_alone(self):
-        from botocore.config import Config
+        try:
+            from botocore.config import Config
 
-        caller_config = Config(read_timeout=30)
-        assert self._build(config=caller_config)["config"] is caller_config
+            caller_config = Config(read_timeout=30)
+            assert self._build(config=caller_config)["config"] is caller_config
+        except ImportError:
+            pytest.skip("botocore is not installed")
