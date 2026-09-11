@@ -120,16 +120,19 @@ class TestBedrockReadTimeout:
 
     @staticmethod
     def _build(**llm_params):
-        import langchain_aws
-        from unittest.mock import patch
+        try:
+            import langchain_aws
+            from unittest.mock import patch
 
-        from langchain_timbr.llm_wrapper.llm_wrapper import LlmWrapper
+            from langchain_timbr.llm_wrapper.llm_wrapper import LlmWrapper
 
-        with patch.object(langchain_aws, "ChatBedrockConverse") as fake:
-            LlmWrapper.__new__(LlmWrapper)._connect_to_llm(
-                "amazon_bedrock_converse_chat", api_key="k", model="m", **llm_params
-            )
-        return fake.call_args.kwargs
+            with patch.object(langchain_aws, "ChatBedrockConverse") as fake:
+                LlmWrapper.__new__(LlmWrapper)._connect_to_llm(
+                    "amazon_bedrock_converse_chat", api_key="k", model="m", **llm_params
+                )
+            return fake.call_args.kwargs
+        except ImportError:
+            pytest.skip("langchain_aws is not installed")
 
     def test_default_read_timeout_applied(self):
         assert self._build()["config"].read_timeout == 120
