@@ -44,6 +44,8 @@ class AgentLogContext:
     is_follow_up: Optional[bool] = None
     parent_query_id: Optional[str] = None
     verify_ssl: bool = True
+    # Set once the history row is posted (which is what removes the running row).
+    history_logged: bool = False
 
 
 def new_query_id() -> str:
@@ -278,6 +280,39 @@ def log_agent_history(
         post_params["results"] = results
 
     _dispatch(ctx.url, ctx.token, "/timbr-server/log_agent/history", _clean(post_params), verify_ssl=ctx.verify_ssl)
+    ctx.history_logged = True
+
+
+def log_agent_failure(
+    ctx: Optional[AgentLogContext],
+    error: str,
+    llm=None,
+    usage_metadata: Optional[dict] = None,
+) -> None:
+    """Close the running row of an execution that failed before posting its history.
+
+    The running row is only removed by a history post, so a failure that skips
+    it leaves the execution shown as running forever. No-op when there is no
+    context or its history was already posted.
+    """
+    if ctx is None or ctx.history_logged:
+        return
+    log_agent_history(
+        ctx=ctx,
+        ontology=ctx.ontology,
+        schema=ctx.schema,
+        concept=ctx.concept,
+        generated_sql=None,
+        rows_returned=None,
+        status=determine_status(None, error),
+        failed_at_step=ctx.current_step,
+        error=error,
+        reasoning_status=None,
+        usage_metadata=usage_metadata or {},
+        answer_generated=False,
+        llm_type=get_llm_type(llm),
+        llm_model=get_llm_model(llm),
+    )
 
 
 def log_chain_trace(

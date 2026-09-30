@@ -485,7 +485,15 @@ class LlmWrapper(LLM):
   def _call(self, prompt, **kwargs):
     response = self.client.invoke(prompt, **kwargs)
     if hasattr(response, 'content'):
-      return response.content
+      content = response.content
+      # Models with extended thinking (e.g. Claude Sonnet 5) return a list of
+      # content parts; only the text parts are the answer.
+      if isinstance(content, list):
+        content = "".join(
+          part.get("text", "") if isinstance(part, dict) else str(part)
+          for part in content
+        )
+      return content
     return str(response)
 
 

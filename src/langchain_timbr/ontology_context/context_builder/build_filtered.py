@@ -31,6 +31,7 @@ from typing import Any, Dict, List, Optional, Set
 
 from ..ontology.graph import Ontology
 from .concept_prefilter import (
+    _subtype_rules_by_candidate,
     run_concept_prefilter,
     should_trigger_concept_prefilter,
 )
@@ -83,6 +84,60 @@ def _render_relationship_rules_block(rules, edges) -> str:
     if not parts:
         return ""
     return "Relationship selection rules:\n" + "\n".join(parts)
+
+
+# Rule kinds that can tie a term in the question to a concept. VALIDATION rules
+# constrain the SQL, not which concepts it needs.
+_PLANNER_CONCEPT_RULE_KINDS = ("selection", "instruction")
+
+
+def _render_concept_rules_block(rules, concept_names, ontology, anchor=None) -> str:
+    """Render the rules of the concepts the planner is choosing among.
+
+    A rule is often the only link between a term in the question and a concept
+    ("guest means provider"). Without it the planner sees no reason to keep the
+    path to that concept, and the SQL generator then gets neither its columns
+    nor its rules. Rules of a sub-type that is not listed itself are shown under
+    its nearest listed ancestor. Returns "" when nothing applies, keeping the
+    filter prompt byte-identical.
+
+    ``anchor`` and its sub-types are left out: their rules already decided
+    concept selection and say nothing about which joins are needed — shown
+    here, a synonym rule on the anchor made the planner re-anchor away from it.
+    The anchor still takes part in the sub-type lookup, or its rules would be
+    re-attached under its own parent.
+    """
+    if rules is None or rules.is_empty() or not concept_names:
+        return ""
+    names = list(dict.fromkeys(concept_names))
+    subtype_rules = _subtype_rules_by_candidate(
+        names, ontology, rules, kinds=_PLANNER_CONCEPT_RULE_KINDS,
+    )
+    parts: List[str] = []
+    for name in names:
+        if name == anchor:
+            continue
+        lines = [
+            render_object_rules(
+                rules.rules_for(name, ("concept", "view", "cube"), _PLANNER_CONCEPT_RULE_KINDS)
+            ),
+            *subtype_rules.get(name, []),
+        ]
+        txt = "\n".join(filter(None, lines))
+        if txt:
+            indented = "\n".join("  " + line for line in txt.split("\n"))
+            parts.append(f"- `{name}`:\n{indented}")
+    if not parts:
+        return ""
+    return "Concept rules:\n" + "\n".join(parts)
+
+
+def _render_planner_rules_block(rules, edges, concept_names, ontology, anchor=None) -> str:
+    """Relationship + concept rules for the planner prompt ("" when none)."""
+    return "\n\n".join(filter(None, [
+        _render_relationship_rules_block(rules, edges),
+        _render_concept_rules_block(rules, concept_names, ontology, anchor),
+    ]))
 from .validator import split_branching_paths, validate_overrides, validate_paths
 
 # Per-request caps on the planner's non-build_path actions. Enforced via
@@ -279,7 +334,11 @@ def build_filtered_metadata(
                 note=note, allowed_actions=allowed,
                 initial_action_errors=pending_action_errors,
                 memory_context=memory_context,
-                rules_block=_render_relationship_rules_block(rules, edges),
+                rules_block=_render_planner_rules_block(
+                    rules, edges,
+                    [*concepts, *(e.concept for e in menu_entries)],
+                    ontology, anchor=current_anchor,
+                ),
             )
             # Consume any pending errors — they've been delivered to the LLM.
             pending_action_errors = None
@@ -784,6 +843,19 @@ _PARSE_RETRY_ERROR_LINE = (
 )
 
 
+# Re-prompts after an unparseable planner answer (also bounded by the retry budget).
+_MAX_PARSE_RETRIES = 2
+_PARSE_RETRY_OUTPUT_CHARS = 2000
+
+
+def _parse_retry_error_lines(exc: Exception) -> List[str]:
+    lines = [_PARSE_RETRY_ERROR_LINE, f"Parser error: {exc}"]
+    raw = str(getattr(exc, "raw_output", "") or "").strip()
+    if raw:
+        lines.append(f"Your previous answer was:\n{raw[:_PARSE_RETRY_OUTPUT_CHARS]}")
+    return lines
+
+
 def _step1_with_validation_retries(
     *,
     llm,
@@ -835,20 +907,28 @@ def _step1_with_validation_retries(
         # The planner sometimes answers with the finished SQL — or prose —
         # instead of the selection object. Left alone that discards the call
         # AND every relationship in the emitted context, so it costs output
-        # quality as well as the round-trip. Re-prompt once out of the same
-        # retry budget the validation loop uses; a second failure propagates
-        # exactly as before.
-        if retry_budget <= 0:
-            raise
-        retry_budget -= 1
-        stats["parse_retry_used"] = True
-        warnings.append(f"Step 1 output was not valid JSON, re-prompted: {exc}")
-        step1 = run_step1_retry(
-            llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
-            error_lines=[_PARSE_RETRY_ERROR_LINE],
-            note=note, allowed_actions=allowed_actions,
-            memory_context=memory_context, rules_block=rules_block,
-        )
+        # quality as well as the round-trip. Re-prompt out of the same retry
+        # budget the validation loop uses; once it is spent the failure
+        # propagates exactly as before.
+        # Each re-prompt shows the planner its own answer and the parser error.
+        parse_retries = 0
+        while True:
+            if retry_budget <= 0 or parse_retries >= _MAX_PARSE_RETRIES:
+                raise exc
+            retry_budget -= 1
+            parse_retries += 1
+            stats["parse_retry_used"] = True
+            warnings.append(f"Step 1 output was not valid JSON, re-prompted: {exc}")
+            try:
+                step1 = run_step1_retry(
+                    llm=llm, question=question, anchor=anchor, compact_ddl=compact_ddl,
+                    error_lines=_parse_retry_error_lines(exc),
+                    note=note, allowed_actions=allowed_actions,
+                    memory_context=memory_context, rules_block=rules_block,
+                )
+                break
+            except ValueError as retry_exc:
+                exc = retry_exc
 
     # Non-build_path actions have no selected_paths to validate.
     action = getattr(step1, "action", "build_path") or "build_path"

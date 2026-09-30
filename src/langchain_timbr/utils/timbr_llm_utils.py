@@ -3,6 +3,7 @@ from langchain_core.language_models.llms import LLM
 from datetime import datetime
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import re
 from functools import wraps
@@ -121,7 +122,102 @@ def _call_llm_with_timeout(llm: LLM, prompt: Any, timeout: int = 120) -> Any:
     except Exception as e:
         raise e
 
-MEASURES_DESCRIPTION = "The following columns are calculated measures and can only be aggregated with an aggregate function: COUNT/SUM/AVG/MIN/MAX (count distinct is not allowed)"
+
+class LLMOutputError(ValueError):
+    """The model answered, but the answer is unusable (invalid JSON, unknown concept, ...)."""
+
+
+# Re-asks after an unusable answer, on top of the first call.
+LLM_OUTPUT_RETRIES = 2
+
+
+def _response_text(response: Any) -> str:
+    """Plain text of an LLM response across provider shapes.
+
+    Models with extended thinking return ``content`` as a list of parts
+    (``thinking`` + ``text``); only the text parts are the answer.
+    """
+    content = getattr(response, "content", response)
+    if isinstance(content, list):
+        content = "".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    if content is None:
+        return ""
+    return content if isinstance(content, str) else str(content)
+
+
+def _add_usage(total: dict, usage: dict) -> None:
+    for key, val in (usage or {}).items():
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            total[key] = total.get(key, 0) + val
+        else:
+            total.setdefault(key, val)
+
+
+def _with_output_feedback(llm: Any, prompt: Any, response: Any, error: Exception) -> list:
+    """The original request, followed by the model's unusable answer and why it was rejected."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    feedback = [
+        AIMessage(content=_response_text(response).strip() or "(empty response)"),
+        HumanMessage(content=(
+            f"Your previous response could not be used: {error}\n"
+            "Answer the original request again. Return only the corrected output, in exactly "
+            "the format the original instructions require. If JSON was requested: a single "
+            "valid JSON object, every string value in double quotes, no text before or after it."
+        )),
+    ]
+    if "snowflake" in str(getattr(llm, "_llm_type", "")):
+        _clean_snowflake_prompt(feedback)
+    original = [HumanMessage(content=prompt)] if isinstance(prompt, str) else list(prompt)
+    return original + feedback
+
+
+def _call_llm_with_output_retry(
+    llm: Any,
+    prompt: Any,
+    parse,
+    timeout: int = 120,
+    retries: int = LLM_OUTPUT_RETRIES,
+    retry_call_errors: bool = False,
+) -> tuple:
+    """Call the LLM and parse its answer, re-asking when the answer is unusable.
+
+    ``parse(response)`` returns the parsed value or raises ``LLMOutputError``. On that
+    error the model is sent the original request again together with its own answer
+    and the error, and asked for a corrected one — up to ``retries`` times, after which
+    the last ``LLMOutputError`` propagates. Timeouts are never retried; other call
+    failures only when ``retry_call_errors`` is set.
+
+    Returns ``(parsed, response, usage_metadata)`` with usage summed over all attempts.
+    """
+    messages = prompt
+    usage: dict = {}
+    error = None
+    for attempt in range(retries + 1):
+        try:
+            response = _call_llm_with_timeout(llm, messages, timeout=timeout)
+        except TimeoutError:
+            raise
+        except Exception:
+            if not retry_call_errors or attempt == retries:
+                raise
+            continue
+        try:
+            _add_usage(usage, _extract_usage_metadata(response))
+        except Exception:
+            pass  # usage accounting must never fail the call
+        try:
+            return parse(response), response, usage
+        except LLMOutputError as exc:
+            error = exc
+            messages = _with_output_feedback(llm, prompt, response, exc)
+    raise error
+
+
+MEASURES_DESCRIPTION ="The following columns are calculated measures and can only be aggregated with an aggregate function: COUNT/SUM/AVG/MIN/MAX (count distinct is not allowed)"
 TRANSITIVE_RELATIONSHIP_DESCRIPTION = "Transitive relationship columns match pattern \"<relationship>[<concept>*N].<column>\". The *N is a PLACEHOLDER you must rewrite: if the question specifies a depth set N to that number; otherwise keep the schema's N. Use the SAME N across the query. Example: if schema shows `<rel>[<concept>*2].<col>` and the question asks for 3 levels, write `<rel>[<concept>*3].<col>`. Do NOT add `<relationship>_transitivity_level BETWEEN 1 AND N` — *N already bounds traversal. Only filter `<relationship>_transitivity_level` to exclude levels: =1 for direct only, >1 for indirect only."
 
 def _prompt_to_string(prompt: Any) -> str:
@@ -445,6 +541,17 @@ def determine_concept(
                 formatted_ontology_desc += f". Related Domains description: {cleaned_domain_desc}"
             concepts_desc_arr.append(formatted_ontology_desc + "\n")
 
+            # Rules of sub-types that are not candidates, by candidate ancestor.
+            subtype_rules = {}
+            if rules is not None and not rules.is_empty():
+                try:
+                    subtype_rules = identify_concept_context.subtype_selection_rules(
+                        identify_concept_context._load_catalog(ontologies_conn_params[ontology]),
+                        set(concepts_and_views), rules,
+                    )
+                except Exception:
+                    pass
+
             legacy_item_lines = []
             for item in concepts_and_views.values():
                 item_name = item.get('concept')
@@ -475,6 +582,10 @@ def determine_concept(
                         concept_verbose,
                         render_object_rules(rules.rules_for(item_name, _CVC_TYPES, {"selection"})),
                     )
+                    for child, child_rules in subtype_rules.get(item_name, []):
+                        concept_verbose = _append_rules_subblock(
+                            concept_verbose, f"sub-type `{child}` {child_rules}",
+                        )
 
                 legacy_item_lines.append(concept_verbose)
 
@@ -526,81 +637,76 @@ def determine_concept(
         determined_concept_name = list(list(ontologies_concepts_and_views.values())[0].keys())[0]
     else:
         # Use LLM to determine the concept based on the question
-        iteration = 0
-        error = ''
-        while determined_concept_name is None and iteration < retries:
-            iteration += 1
-            err_txt = f"\nLast try got an error: {error}" if error else ""
-            prompt = determine_concept_prompt.format_messages(
-                question=apply_memory_question_expansion(question.strip(), memory_context, preserve_previous_anchor=True),
-                concepts="\n".join(concepts_desc_arr),
-                note=(note or '') + err_txt,
-            )
+        prompt = determine_concept_prompt.format_messages(
+            question=apply_memory_question_expansion(question.strip(), memory_context, preserve_previous_anchor=True),
+            concepts="\n".join(concepts_desc_arr),
+            note=note or '',
+        )
 
-            # temporary fix to old prompts 
-            if len(prompt) == 2:
-                prompt[1].content = prompt[1].content.replace("no quotes", "no backtick quotes")
-            
-            apx_token_count = _calculate_token_count(llm, prompt)
-            if "snowflake" in llm._llm_type:
-                _clean_snowflake_prompt(prompt)
+        # temporary fix to old prompts: "no quotes" makes some models (Claude Sonnet) drop
+        # the JSON string quotes as well and return `"result": customer`.
+        for message in prompt:
+            if isinstance(getattr(message, "content", None), str):
+                message.content = message.content.replace("no quotes", "a JSON string, no backtick quotes")
 
-            try:
-                response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
-            except TimeoutError as e:
-                error = f"LLM call timed out: {str(e)}"
-                raise Exception(error)
-            except Exception as e:
-                error = f"LLM call failed: {str(e)}"
-                continue
-            usage_metadata['determine_concept'] = {
-                "approximate": apx_token_count,
-                **_extract_usage_metadata(response),
-            }
-            if debug:
-                usage_metadata['determine_concept']["p_hash"] = encrypt_prompt(prompt)
+        apx_token_count = _calculate_token_count(llm, prompt)
+        if "snowflake" in llm._llm_type:
+            _clean_snowflake_prompt(prompt)
 
-            # Try to parse as JSON first (with 'result' and 'reason' keys)
-            try:
-                parsed_response = _parse_json_from_llm_response(response)
-                if isinstance(parsed_response, dict) and 'result' in parsed_response:
-                    raw_candidate = parsed_response.get('result')
-                    identify_concept_reason = parsed_response.get('reason', None)
-                    is_metadata_question = parsed_response.get('is_metadata_question', False)
-                else:
-                    # Fallback to plain text if JSON doesn't have expected structure
-                    raw_candidate = _get_response_text(response)
-            except (json.JSONDecodeError, ValueError):
-                # If not JSON, treat as plain text (backwards compatibility)
-                raw_candidate = _get_response_text(response)
+        def _parse_concept(response: Any) -> str:
+            nonlocal identify_concept_reason, is_metadata_question
+            response_text = _get_response_text(response)
+            if "{" in response_text:
+                parsed_response = _extract_json(response_text)
+                if not isinstance(parsed_response, dict) or 'result' not in parsed_response:
+                    raise LLMOutputError("the JSON object must have a 'result' field holding the selected table name.")
+                raw_candidate = parsed_response.get('result')
+                identify_concept_reason = parsed_response.get('reason', None)
+                is_metadata_question = parsed_response.get('is_metadata_question', False)
+            else:
+                # Not JSON: treat as plain text (backwards compatibility)
+                raw_candidate = response_text
 
             # The model returns null/empty result when no concept matches the question, and
-            # some provider response shapes make _get_response_text return None. Treat all of
-            # these as "no concept identified": retry with a clear error instead of crashing
-            # on .strip().
+            # some provider response shapes yield no text at all. Both mean "no concept
+            # identified".
             if not isinstance(raw_candidate, str) or not raw_candidate.strip():
                 reason_txt = f" Reason: {identify_concept_reason}" if identify_concept_reason else ""
-                error = f"The model could not identify a relevant concept for the question.{reason_txt}"
-                continue
+                raise LLMOutputError(f"The model could not identify a relevant concept for the question.{reason_txt}")
 
             candidate = raw_candidate.strip().replace("`", "").replace('"', "").lower()
 
+            if candidate not in candidates and len(ontologies_conn_params) > 1:
+                for existing in candidates:
+                    if existing.endswith("." + candidate):
+                        candidate = existing
+
             if candidate not in candidates:
+                raise LLMOutputError(f"Concept '{candidate}' not found in the list of concepts. 'result' must be exactly one of the listed table names.")
 
-                if len(ontologies_conn_params) > 1:
-                    for existing in candidates:
-                        if existing.endswith("." + candidate):
-                            candidate = existing
+            return candidate
 
-                if candidate not in candidates:            
-                    error = f"Concept '{candidate}' not found in the list of concepts."
-                    continue
-            
-            determined_concept_name = candidate
-            error = ''
+        try:
+            determined_concept_name, response, llm_usage = _call_llm_with_output_retry(
+                llm, prompt, _parse_concept,
+                timeout=timeout,
+                # `retries` counts attempts; the first call is not a retry.
+                retries=max(0, (retries or 1) - 1),
+                retry_call_errors=True,
+            )
+        except TimeoutError as e:
+            raise Exception(f"LLM call timed out: {str(e)}")
+        except LLMOutputError as e:
+            raise Exception(f"Failed to determine concept: {e}")
+        except Exception as e:
+            raise Exception(f"Failed to determine concept: LLM call failed: {str(e)}")
 
-        if determined_concept_name is None and error != '':
-            raise Exception(f"Failed to determine concept: {error}")
+        usage_metadata['determine_concept'] = {
+            "approximate": apx_token_count,
+            **llm_usage,
+        }
+        if debug:
+            usage_metadata['determine_concept']["p_hash"] = encrypt_prompt(prompt)
 
     if enable_ontology_questions and not ontology_metadata.is_metadata_concept(determined_concept_name) and is_metadata_question:
         if "." in determined_concept_name:
@@ -794,6 +900,115 @@ def _rule_meta_items(rules, name, target_types, kinds) -> list:
     ]
 
 
+_ALL_RULE_KINDS = ("selection", "instruction", "validation")
+# How a rule is to be used, stated next to the rules in the SQL-generation
+# prompt and in the reasoning evaluator's appendix.
+KB_RULES_DIRECTIVE = (
+    "The selection_rules / instructions / validation_rules in this context are binding "
+    "knowledge-base rules. When a rule gives another name for something (a synonym, alias "
+    "or abbreviation), the question may be using that other name: the SQL must use the "
+    "name, value or sub-type the rule maps it to, never only the wording of the question "
+    "(when it is unclear which of two names the data holds, match either)."
+)
+_TYPE_FLAG_PREFIX = "_type_of_"
+# One hop of a relationship path: `rel[concept]` / `rel[concept*3]`
+_REL_HOP_RE = re.compile(r"[^.\[\]]+\[([^\]\*]+)(?:\*\d+)?\]")
+
+
+def _subtype_rule_targets(rules, concept: Optional[str], ontology) -> list:
+    """Concept rule targets that are sub-types of ``concept`` (sorted).
+
+    A rule is matched on its exact target name, so a rule on a logic sub-type
+    (``provider``) is invisible to a query that runs on the parent (``party``)
+    — which is every query when logic concepts are not selectable. Only the
+    rule targets are checked, so the hierarchy is never walked.
+    """
+    if rules is None or rules.is_empty() or not concept or ontology is None:
+        return []
+    parent = concept.strip().lower()
+    out = []
+    for target_type, target_name in rules.by_target:
+        if target_type not in _CVC_TYPES or target_name == parent:
+            continue
+        # The chain may hold only the direct parent(s), so walk it upward.
+        frontier, seen = [target_name], {target_name}
+        while frontier:
+            try:
+                parents = {str(c).lower() for c in ontology.inheritance_chain_of(frontier.pop()) or ()}
+            except Exception:
+                break
+            if parent in parents:
+                out.append(target_name)
+                break
+            frontier.extend(parents - seen)
+            seen |= parents
+    return sorted(set(out))
+
+
+def _concept_rule_items(rules, concept, ontology=None, flag_prefix: str = "") -> list:
+    """All-kind rule items for ``concept`` plus those of its sub-types.
+
+    A sub-type's rules are listed with the ``_type_of_<name>`` flag that selects
+    it, because a query on ``concept`` can only reach the sub-type through it.
+    """
+    items = _rule_meta_items(rules, concept, _CVC_TYPES, _ALL_RULE_KINDS)
+    for child in _subtype_rule_targets(rules, concept, ontology):
+        child_items = _rule_meta_items(rules, child, _CVC_TYPES, _ALL_RULE_KINDS)
+        if child_items:
+            items.append(
+                f"sub-type `{child}` (rows where `{flag_prefix}{_TYPE_FLAG_PREFIX}{child}` = 1) "
+                + "; ".join(child_items)
+            )
+    return items
+
+
+def _concepts_in_relationships(relationships: Optional[dict]) -> dict:
+    """``{concept: path}`` for every concept reached through ``relationships``
+    (first path wins), e.g. ``{'party': 'of_contract[contract].has_party[party]'}``."""
+    out: dict = {}
+    for rel_name, rel in (relationships or {}).items():
+        names = [rel_name]
+        if isinstance(rel, dict):
+            for field in ("columns", "measures"):
+                names.extend(c.get("name") or "" for c in rel.get(field) or [] if isinstance(c, dict))
+        for name in names:
+            name = (name or "").removeprefix("measure.")
+            for hop in _REL_HOP_RE.finditer(name):
+                concept = hop.group(1).strip().lower()
+                if concept and concept not in out:
+                    out[concept] = name[:hop.end()]
+    return out
+
+
+def _context_rule_lines(rules, anchor, joined: Optional[dict], ontology=None) -> list:
+    """Concept-rule lines for the SQL-generation prompt: the anchor's own, then
+    one line per concept it joins to. Without the latter the generator never
+    sees a rule attached to a concept the query only reaches through a join."""
+    lines = _concept_rule_items(rules, anchor, ontology)
+    for concept, path in (joined or {}).items():
+        if concept == (anchor or "").strip().lower():
+            continue
+        items = _concept_rule_items(rules, concept, ontology, flag_prefix=f"{path}.")
+        if items:
+            lines.append(f"Rules for `{concept}` (reached through `{path}`): {'; '.join(items)}")
+    return lines
+
+
+def _rule_concepts_in_context(rules, anchor, joined: Optional[dict], ontology=None) -> list:
+    """Every concept whose rules the SQL-generation prompt carries: the anchor,
+    each concept reached through a relationship, and their sub-types that are
+    rule targets. The reasoning evaluator is handed exactly this list, so it
+    never judges the SQL against a rule the generator was not shown."""
+    if rules is None or rules.is_empty():
+        return []
+    out: list = []
+    for concept in [(anchor or "").strip().lower()] + list(joined or {}):
+        for name in [concept] + _subtype_rule_targets(rules, concept, ontology):
+            if name and name not in out:
+                out.append(name)
+    return out
+
+
 def _build_columns_str(
     columns: list[dict],
     columns_tags: Optional[dict] = {},
@@ -851,7 +1066,12 @@ def _build_columns_str(
     return ", ".join(columns_desc_arr) if columns_desc_arr else ''
 
 
-def _build_rel_columns_str(relationships: list[dict], columns_tags: Optional[dict] = {}, exclude_properties: Optional[list] = None, rules=None) -> str:
+def _build_rel_columns_str(
+    relationships: list[dict],
+    columns_tags: Optional[dict] = {},
+    exclude_properties: Optional[list] = None,
+    rules=None,
+) -> str:
     if not relationships:
         return ''
     rel_str_arr = []
@@ -863,16 +1083,17 @@ def _build_rel_columns_str(relationships: list[dict], columns_tags: Optional[dic
         rel_measures = rel.get('measures', [])
 
         if rel_columns:
-            joined_columns_str = _build_columns_str(rel_columns, columns_tags=columns_tags, exclude=exclude_properties)
+            joined_columns_str = _build_columns_str(rel_columns, columns_tags=columns_tags, exclude=exclude_properties, rules=rules, target_type="property")
             rel_str_arr.append(f"- The following columns are part of {rel_name} relationship{rel_description}, and must be used as is wrapped with quotes: {joined_columns_str}")
         if rel_measures:
-            joined_measures_str = _build_columns_str(rel_measures, columns_tags=columns_tags, exclude=exclude_properties)
+            joined_measures_str = _build_columns_str(rel_measures, columns_tags=columns_tags, exclude=exclude_properties, rules=rules, target_type="measure")
             rel_str_arr.append(f"- {MEASURES_DESCRIPTION}, are part of {rel_name} relationship{rel_description}: {joined_measures_str}")
 
         # KB rules (relationship): SELECTION_RULE + INSTRUCTION + VALIDATION,
         # inline per relationship. No-op when the relationship has no rules.
+        # The block is keyed by its path (`a[b].rel[c]`); the rule by `rel`.
         rel_rule_items = _rule_meta_items(
-            rules, rel_name, ("relationship",),
+            rules, rel_name.rsplit('.', 1)[-1].split('[', 1)[0], ("relationship",),
             ("selection", "instruction", "validation"),
         )
         if rel_rule_items:
@@ -900,6 +1121,8 @@ def _parse_sql_and_reason_from_llm_response(response: Any) -> dict:
 
         if isinstance(parsed_json, dict) and 'result' in parsed_json:
             sql = parsed_json.get('result', '')
+            if not isinstance(sql, str) or not sql.strip():
+                raise LLMOutputError("'result' must hold the SQL query as a non-empty JSON string.")
             reason = parsed_json.get('reason', None)
             decisions = parsed_json.get('decisions', None)
 
@@ -917,12 +1140,19 @@ def _parse_sql_and_reason_from_llm_response(response: Any) -> dict:
                    .strip())
 
             return {'sql': sql, 'reason': reason, 'decisions': decisions}
+    except LLMOutputError:
+        # A JSON answer that does not parse is a broken answer, not SQL: running
+        # the raw `{"reason": ..., "result": ...}` text as a query can only fail.
+        if '"result"' in _get_response_text(response):
+            raise
     except (json.JSONDecodeError, ValueError):
         # If not JSON, treat as plain SQL string (backwards compatibility)
         pass
 
     # Fallback to plain text parsing
     response_text = _get_response_text(response)
+    if not response_text.strip():
+        raise LLMOutputError("the response is empty.")
     sql = (response_text
            .replace("```sql", "")
            .replace("```", "")
@@ -949,38 +1179,72 @@ def _parse_json_from_llm_response(response: Any) -> dict:
         dict containing parsed JSON
         
     Raises:
-        json.JSONDecodeError: If response cannot be parsed as JSON
+        LLMOutputError: If response cannot be parsed as JSON
         ValueError: If response format is unexpected
     """
-    response_text = _get_response_text(response)
-    
-    # Remove markdown code block markers if present
-    content = response_text.strip()
-    if content.startswith("```json"):
-        content = content[7:]  # Remove ```json
-    elif content.startswith("```"):
-        content = content[3:]  # Remove ```
-    
-    if content.endswith("```"):
-        content = content[:-3]  # Remove closing ```
-    
-    content = content.strip()
-    
-    # Parse and return JSON
-    return json.loads(content)
+    return _extract_json(_get_response_text(response))
 
 
-def _collect_reasoning_rules(rules, concept: Optional[str], sql: Optional[str]) -> str:
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+# `"result": customer_cube` — a bare identifier where a JSON string belongs.
+_UNQUOTED_VALUE_RE = re.compile(r'("\w+"\s*:\s*)([A-Za-z_][\w.\-]*)(\s*[,}])')
+
+
+def _loads_lenient(text: str) -> Any:
+    """json.loads that tolerates raw newlines inside strings and unquoted identifier values."""
+    try:
+        return json.loads(text, strict=False)
+    except json.JSONDecodeError:
+        repaired = _UNQUOTED_VALUE_RE.sub(
+            lambda m: m.group(0) if m.group(2) in ("true", "false", "null")
+            else f'{m.group(1)}"{m.group(2)}"{m.group(3)}',
+            text,
+        )
+        if repaired == text:
+            raise
+        return json.loads(repaired, strict=False)
+
+
+def _extract_json(text: str) -> Any:
+    """Parse the JSON value out of an LLM answer.
+
+    Handles markdown fences and surrounding prose. When the answer holds several
+    fenced blocks the last one wins: a model that catches its own mistake appends
+    the corrected block after the broken one.
+
+    Raises:
+        LLMOutputError: If no candidate parses as JSON
+    """
+    content = (text or "").strip()
+    candidates = [block.strip() for block in reversed(_JSON_FENCE_RE.findall(content))]
+    candidates.append(content)
+    start, end = content.find("{"), content.rfind("}")
+    if start != -1 and end > start:
+        candidates.append(content[start:end + 1])
+
+    first_error = None
+    for candidate in candidates:
+        try:
+            return _loads_lenient(candidate)
+        except json.JSONDecodeError as exc:
+            first_error = first_error or exc
+    raise LLMOutputError(f"the response is not valid JSON ({first_error})")
+
+
+def _collect_reasoning_rules(
+    rules, concept: Optional[str], sql: Optional[str], context_concepts: Optional[list] = None,
+) -> str:
     """Render the knowledge-base rules the reasoning evaluator needs to see.
 
     Two parts, because the evaluator fails in two different ways without them:
 
-    * the anchor concept's INSTRUCTION + VALIDATION rules, **unconditionally** —
-      an evaluator that cannot see what was mandated reads a rule-compliant
-      query as arbitrary and returns 'partial', which is what creates the
-      regeneration in the first place. Gating this on SQL presence would
-      re-open exactly that hole, since the SQL at risk is the one that dropped
-      the mandated object;
+    * every concept rule the SQL generator was shown (``context_concepts`` — the
+      anchor, the concepts it joins to, and their sub-types; just the anchor when
+      not given), all kinds, **unconditionally** — an evaluator that cannot see
+      what was mandated reads a rule-compliant query as arbitrary and returns
+      'partial', which is what creates the regeneration in the first place.
+      Gating this on SQL presence would re-open exactly that hole, since the SQL
+      at risk is the one that dropped the mandated object;
     * every other rule target named in the SQL under evaluation, all kinds — the
       long tail of property/relationship rules, kept in budget by only carrying
       the ones actually in play.
@@ -999,16 +1263,19 @@ def _collect_reasoning_rules(rules, concept: Optional[str], sql: Optional[str]) 
             blocks.append(f"{label}:\n" + "\n".join(f"  {line}" for line in rendered.splitlines()))
 
     anchor = (concept or "").strip().lower()
-    _emit(
-        f"concept `{concept}`",
-        render_object_rules(rules.rules_for(concept, _CVC_TYPES, ("instruction", "validation"))),
-    )
+    emitted = [anchor] + [c for c in (context_concepts or []) if c != anchor]
+    for name in emitted:
+        _emit(
+            f"concept `{name}`",
+            render_object_rules(rules.rules_for(name, _CVC_TYPES, _ALL_RULE_KINDS)),
+        )
 
     sql_text = (sql or "").lower()
     for target_type, target_name in sorted(rules.by_target):
-        if target_type in _CVC_TYPES and target_name == anchor:
+        if target_type in _CVC_TYPES and target_name in emitted:
             continue  # already emitted above, unconditionally
-        if not re.search(rf"(?<!\w){re.escape(target_name)}(?!\w)", sql_text):
+        # A sub-type is named in SQL through its `_type_of_<name>` flag.
+        if not re.search(rf"(?<!\w)(?:{_TYPE_FLAG_PREFIX})?{re.escape(target_name)}(?!\w)", sql_text):
             continue
         _emit(
             f"{target_type} `{target_name}`",
@@ -1056,7 +1323,7 @@ def _append_reasoning_context_blocks(
         blocks.append(f"**Generated SQL Decision Trace:**\n{decisions_str}")
 
     if kb_rules and kb_rules.strip():
-        blocks.append(f"**Knowledge Base Rules:**\n{kb_rules.strip()}")
+        blocks.append(f"**Knowledge Base Rules:**\n{KB_RULES_DIRECTIVE}\n{kb_rules.strip()}")
 
     if not blocks:
         return
@@ -1090,6 +1357,7 @@ def _evaluate_sql_enable_reasoning(
     memory_context=None,
     rules=None,
     concept: Optional[str] = None,
+    context_concepts: Optional[list] = None,
 ) -> dict:
     """
     Evaluate if the generated SQL correctly answers the business question.
@@ -1114,22 +1382,25 @@ def _evaluate_sql_enable_reasoning(
         note=note,
         generate_sql_reason=generate_sql_reason,
         decisions=decisions,
-        kb_rules=_collect_reasoning_rules(rules, concept, sql_query),
+        kb_rules=_collect_reasoning_rules(rules, concept, sql_query, context_concepts),
     )
 
     apx_token_count = _calculate_token_count(llm, prompt)
     if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
         _clean_snowflake_prompt(prompt)
 
-    response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
-    
-    # Parse JSON response
-    evaluation = _parse_json_from_llm_response(response)
-    
+    def _parse_evaluation(response: Any) -> dict:
+        evaluation = _parse_json_from_llm_response(response)
+        if not isinstance(evaluation, dict):
+            raise LLMOutputError("the response must be a JSON object with 'assessment' and 'reasoning'.")
+        return evaluation
+
+    evaluation, _, llm_usage = _call_llm_with_output_retry(llm, prompt, _parse_evaluation, timeout=timeout)
+
     return {
         "evaluation": evaluation,
         "apx_token_count": apx_token_count,
-        "usage_metadata": _extract_usage_metadata(response),
+        "usage_metadata": llm_usage,
     }
 
 
@@ -1242,6 +1513,29 @@ def _inject_descriptions_into_rebuild(
             _inject_descriptions_into_flat(entries, properties_desc)
 
 
+def _rules_fingerprint(rules) -> str:
+    """Content hash of a RuleSet ("" when there are no rules). ``version`` is not
+    enough: it is a MAX(changed_on), which a deleted rule does not move."""
+    if rules is None or rules.is_empty():
+        return ""
+    return hashlib.sha1(repr(sorted(rules.by_target.items())).encode("utf-8")).hexdigest()
+
+
+def _render_previous_plan(plan: Optional[dict]) -> str:
+    """Planner note block describing the schema selection a previous pass used."""
+    if not plan or not plan.get("anchor"):
+        return ""
+    paths = ", ".join(f"`{p}`" for p in plan.get("relationships") or []) or "none (anchor columns only)"
+    return (
+        "\n\n**Previous schema selection (re-validate):**\n"
+        f"The SQL under review was generated from anchor `{plan['anchor']}` with these "
+        f"relationship paths: {paths}.\n"
+        "Re-validate this selection against the assessment above. Keep it when it still "
+        "covers everything the corrected query needs; add, drop or change paths (or "
+        "re-anchor) only where the assessment requires it."
+    )
+
+
 def _apply_dynamic_metadata_context(
     *,
     mode: str,
@@ -1268,6 +1562,14 @@ def _apply_dynamic_metadata_context(
     # Reports a degraded (relationship-free) build to the caller. Optional and
     # None by default, so existing call sites are unchanged.
     status_sink: Optional[dict] = None,
+    # The plan a previous pass of this same request ended on (see ``plan_sink``).
+    # Shown to the planner so a re-plan re-validates that choice against the
+    # feedback in ``note`` instead of starting from nothing.
+    previous_plan: Optional[dict] = None,
+    # Receives the plan this call ended on: ``anchor``, ``relationships`` (the
+    # path prefixes kept) and ``rule_concepts`` (concepts whose KB rules the
+    # rendered strings carry).
+    plan_sink: Optional[dict] = None,
 ) -> tuple[str, str, str, str | None]:
     """Decide static vs dynamic and return possibly-rebuilt context strings.
 
@@ -1300,19 +1602,25 @@ def _apply_dynamic_metadata_context(
     if cfg.mode != "dynamic":
         return static_columns_str, static_measures_str, static_rel_prop_str, None
 
-    # Memoize the entire pipeline result for this (question, anchor, graph_depth)
-    # within the lifetime of the shared Ontology. This prevents the Step 1 LLM
-    # filter call from running twice when handle_validate_generate_sql retries
-    # SQL generation: both invocations of _build_sql_generation_context use the
-    # same question + anchor, so the second call reuses the cached rebuild.
-    # The cache is automatically invalidated by Ontology when version_id changes.
+    # Memoize the entire pipeline result for one set of planner inputs within
+    # the lifetime of the shared Ontology, so an identical repeat costs no LLM
+    # call. The cache is automatically invalidated by Ontology when version_id
+    # changes.
     ontology = get_shared_ontology(conn_params)
+    planner_note = (note or "") + _render_previous_plan(previous_plan)
     cache_key = (
         "dynamic_rebuild_v1",
         question,
         anchor,
         graph_depth,
         cfg.mode,
+        # Everything else the planner reads. Without the note, a reasoning
+        # regeneration (whose note carries the evaluator's feedback) and a
+        # follow-up with different conversation memory were both served the
+        # first plan; without the rules, a KB edit was ignored until the
+        # ontology version moved.
+        hashlib.sha1(planner_note.encode("utf-8")).hexdigest(),
+        _rules_fingerprint(rules),
         # Bind the cache to the static strings so a different pre-state never
         # serves a stale rebuilt output. Hashing the lengths is enough — the
         # static strings are deterministic for a given (ontology_version,
@@ -1323,6 +1631,10 @@ def _apply_dynamic_metadata_context(
     )
     cached = ontology.get_filtered_cache(cache_key)
     if cached is not None:
+        if len(cached) == 5:
+            if plan_sink is not None:
+                plan_sink.update(cached[4])
+            return cached[:4]  # type: ignore[return-value]
         # Cache entry shape evolved (Part 3): older entries are 3-tuples;
         # newer ones are 4-tuples that include effective_anchor.
         if len(cached) == 4:
@@ -1338,7 +1650,7 @@ def _apply_dynamic_metadata_context(
         llm=llm,
         config=cfg,
         graph_depth=graph_depth,
-        note=note,
+        note=planner_note,
         memory_context=memory_context,
         rules=rules,
     )
@@ -1615,6 +1927,18 @@ def _apply_dynamic_metadata_context(
                 len(result.validated_paths or []),
             )
 
+    # What the strings were built from; cached with them so a hit reports it too.
+    kept_relationships = filtered_relationships if new_rel_prop_str else {}
+    joined = _concepts_in_relationships(kept_relationships)
+    plan = {
+        "anchor": effective_anchor_for_rebuild,
+        "relationships": list(kept_relationships),
+        "joined": joined,
+        "rule_concepts": _rule_concepts_in_context(
+            rules, effective_anchor_for_rebuild, joined, ontology,
+        ),
+    }
+
     # A pipeline failure is never cached. Its lean anchor-only strings are keyed
     # by (question, anchor, graph_depth, ...) in a cache that lives as long as
     # the ontology version, so storing them would pin a transient planner glitch
@@ -1628,7 +1952,9 @@ def _apply_dynamic_metadata_context(
         result.effective_anchor,
     )
     if not result.error:
-        ontology.set_filtered_cache(cache_key, entry)
+        ontology.set_filtered_cache(cache_key, entry + (plan,))
+    if plan_sink is not None:
+        plan_sink.update(plan)
     return entry
 
 
@@ -1691,6 +2017,10 @@ def _build_sql_generation_context(
     # "<feature>_degraded" / "<feature>_error" for metadata_context (relationship-free
     # rebuild) and technical_context (skipped entirely). None ⇒ nobody is asking.
     status_sink: Optional[dict] = None,
+    # The ``metadata_plan`` of the context a previous pass of this request was
+    # generated from. A regeneration hands it back so the dynamic planner
+    # re-validates that selection instead of re-planning blind.
+    previous_plan: Optional[dict] = None,
 ) -> dict:
     """
     Prepare the complete SQL generation context by gathering all necessary metadata.
@@ -1885,6 +2215,22 @@ def _build_sql_generation_context(
                     "technical_context_error", f"{type(_tc_exc).__name__}: {_tc_exc}"[:500]
                 )
 
+    # Sub-type lookups for KB rules attached to a logic child of a concept in
+    # play. Only needed when there are rules; never allowed to break SQL gen.
+    _rules_ontology = None
+    if rules is not None and not rules.is_empty():
+        try:
+            from ..ontology_context.ontology.shared import get_shared_ontology
+            _rules_ontology = get_shared_ontology(conn_params)
+        except Exception:
+            pass
+    # What the prompt ends up carrying; the dynamic pipeline overwrites it.
+    _joined = _concepts_in_relationships(relationships)
+    _metadata_plan: dict = {
+        "joined": _joined,
+        "rule_concepts": _rule_concepts_in_context(rules, concept, _joined, _rules_ontology),
+    }
+
     columns_str = _build_columns_str(columns, columns_tags=tags, exclude=exclude_properties, rules=rules, target_type="property")
     measures_str = _build_columns_str(measures, tags, exclude=exclude_properties, rules=rules, target_type="measure")
     rel_prop_str = _build_rel_columns_str(relationships, columns_tags=tags, exclude_properties=exclude_properties, rules=rules)
@@ -1928,6 +2274,8 @@ def _build_sql_generation_context(
                     include_logic_concepts=include_logic_concepts,
                 ),
                 status_sink=status_sink,
+                previous_plan=previous_plan,
+                plan_sink=_metadata_plan,
             )
             if duration_sink is not None:
                 duration_sink["metadata_context"] = duration_sink.get("metadata_context", 0) + int(
@@ -1986,11 +2334,23 @@ def _build_sql_generation_context(
     ) if relationships else False
     
     concept_description = f"- Description: {concept_metadata.get('description')}\n" if concept_metadata and concept_metadata.get('description') else ""
-    # KB rules (concept/view/cube): INSTRUCTION + VALIDATION only — SELECTION_RULE
-    # was already applied upstream in identify/prefilter. Inline under the concept.
-    for _item in _rule_meta_items(rules, concept, _CVC_TYPES, ("instruction", "validation")):
+    # KB rules (concept/view/cube), all kinds, inline under the concept. A
+    # SELECTION_RULE already steered identify/prefilter, but it is often a
+    # synonym ("guest means provider") that the SQL needs as well. Rules of its
+    # sub-types are listed with it, each naming its `_type_of_*` flag, followed
+    # by the rules of every concept the context joins to.
+    for _item in _context_rule_lines(rules, concept, _metadata_plan.get("joined"), _rules_ontology):
         concept_description += f"- {_item}\n"
-    concept_tags = concept_metadata.get('tags') if concept_metadata and concept_metadata.get('tags') else ""
+    # Said once, and only when the prompt carries a rule. Shown a rule such as
+    # "X is also called Y" and nothing else, the model repeats it in its reason
+    # and still filters on the question's wording.
+    if rules is not None and not rules.is_empty() and any(
+        f"{_label}: " in _text
+        for _, _label in _RULE_META_LABELS
+        for _text in (concept_description, columns_str, measures_str)
+    ):
+        concept_description += f"- {KB_RULES_DIRECTIVE}\n"
+    concept_tags =concept_metadata.get('tags') if concept_metadata and concept_metadata.get('tags') else ""
     
     cur_date = datetime.now().strftime("%Y-%m-%d")
     
@@ -2011,6 +2371,9 @@ def _build_sql_generation_context(
         'transitive_context': transitive_context,
         'sensitivity_txt': sensitivity_txt,
         'max_limit': max_limit,
+        # Not a template input: what this context was built from, for the
+        # reasoning pass (its evaluator's rules and its re-plan).
+        'metadata_plan': _metadata_plan,
     }
 
 
@@ -2057,17 +2420,17 @@ def _generate_sql_with_llm(
     if hasattr(llm, "_llm_type") and "snowflake" in llm._llm_type:
         _clean_snowflake_prompt(prompt)
     
-    response = _call_llm_with_timeout(llm, prompt, timeout=timeout)
-    
     # Parse response which now includes both SQL and reason
-    parsed_response = _parse_sql_and_reason_from_llm_response(response)
+    parsed_response, _, llm_usage = _call_llm_with_output_retry(
+        llm, prompt, _parse_sql_and_reason_from_llm_response, timeout=timeout,
+    )
     
     result = {
         "sql": parsed_response['sql'],
         "generate_sql_reason": parsed_response['reason'],
         "decisions": parsed_response['decisions'],
         "apx_token_count": apx_token_count,
-        "usage_metadata": _extract_usage_metadata(response),
+        "usage_metadata": llm_usage,
         "is_valid": True,
         "error": None,
     }
@@ -2117,16 +2480,31 @@ def handle_generate_sql_reasoning(
     include_logic_concepts: Optional[bool] = None,
     memory_context=None,
     rules=None,
-) -> tuple[str, str, int]:
+    # The context ``sql_query`` was generated from. Gives the evaluator the same
+    # KB rules the generator saw, and the re-plan the selection to re-validate.
+    current_context: Optional[dict] = None,
+) -> tuple[str, str, int, str]:
     """Evaluate the generated SQL and regenerate it while the evaluator objects.
 
     Each regeneration rebuilds the context at the SAME ``graph_depth`` the first
     pass used.
+
+    Returns ``(sql, reason, duration_ms, status)``. ``reason`` always describes
+    the returned ``sql``. ``status`` is 'correct' | 'partial' | 'incorrect':
+    the evaluator's verdict when the returned ``sql`` is the one it judged, and
+    'correct' when that SQL is a rewrite made from its feedback or when no
+    evaluation completed.
     """
     import time as _time
     generate_sql_prompt = get_generate_sql_prompt_template(conn_params, True)
     reasoned_sql = sql_query
-    reasoned_sql_reason = None
+    # The generator's own reason for ``reasoned_sql``. The evaluator's text
+    # replaces it only when it confirms that same SQL: its critique of a query
+    # describes a fix the returned SQL may not contain.
+    sql_reason = generate_sql_reason
+    evaluator_reasoning = None
+    confirmed = False
+    reasoning_status = "correct"
     _reasoning_start = _time.monotonic()
     for step in range(reasoning_steps):
         try:
@@ -2146,25 +2524,27 @@ def handle_generate_sql_reasoning(
                 memory_context=memory_context,
                 rules=rules,
                 concept=concept,
+                context_concepts=((current_context or {}).get('metadata_plan') or {}).get('rule_concepts'),
             )
-            
+
             usage_metadata[f'sql_reasoning_step_{step + 1}'] = {
                 "approximate": eval_result['apx_token_count'],
                 **eval_result['usage_metadata'],
             }
-            
+
             evaluation = eval_result['evaluation']
             reasoning_status = evaluation.get("assessment", "partial").lower()
-            reasoned_sql_reason = evaluation.get("reasoning", "")
-            
-            if reasoning_status == "correct":
+            evaluator_reasoning = evaluation.get("reasoning", "")
+            confirmed = reasoning_status == "correct"
+
+            if confirmed:
                 break
-            
+
             # Step 2: Regenerate SQL with feedback
             # No output-shape instruction here: the response contract belongs to
             # the template, which asks for a 'reason' + 'result' JSON object.
             # Telling the model to return bare SQL contradicted it.
-            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {reasoned_sql_reason or '*could not determine cause*'}. Please provide a corrected SQL query that better answers the question: '{question}'."
+            evaluation_note = note + f"\n\nThe previously generated SQL: `{reasoned_sql}` was assessed as '{evaluation.get('assessment')}' because: {evaluator_reasoning or '*could not determine cause*'}. Please provide a corrected SQL query that better answers the question: '{question}'."
 
             # Build the regeneration context first so a degraded build can be
             # detected BEFORE spending a second SQL-generation call on it.
@@ -2195,6 +2575,7 @@ def handle_generate_sql_reasoning(
                 usage_sink=usage_sink,
                 duration_sink=duration_sink,
                 status_sink=_context_status,
+                previous_plan=(current_context or {}).get('metadata_plan'),
             )
             # The per-step dict drives the control flow below; the caller's sink collects
             # what happened, first occurrence winning.
@@ -2225,15 +2606,20 @@ def handle_generate_sql_reasoning(
                 debug=debug,
                 memory_context=memory_context,
             )
+            current_context = regen_context
             if context_sink is not None:
                 context_sink["current_context"] = regen_context
+                # The validation retry corrects THIS pass's SQL, so it needs the
+                # feedback that produced it — not just the original note.
+                context_sink["note"] = evaluation_note
 
             reasoned_sql = regen_result['sql']
-            reasoned_sql_reason = regen_result['generate_sql_reason']
+            sql_reason = regen_result['generate_sql_reason']
+            reasoning_status = "correct"
             error = regen_result['error']
 
-            if generate_sql_reasons is not None and reasoned_sql_reason:
-                generate_sql_reasons.append({"step": f"generate_sql_reasoning_step_{step + 1}", "reason": reasoned_sql_reason})
+            if generate_sql_reasons is not None and sql_reason:
+                generate_sql_reasons.append({"step": f"generate_sql_reasoning_step_{step + 1}", "reason": sql_reason})
 
             # Refresh generator reason + decision trace so the next iteration's
             # evaluator sees the freshest plan + trace for the SQL it evaluates.
@@ -2259,7 +2645,8 @@ def handle_generate_sql_reasoning(
             break
     
     _reasoning_duration_ms = int((_time.monotonic() - _reasoning_start) * 1000)
-    return reasoned_sql, reasoned_sql_reason, _reasoning_duration_ms
+    reason = evaluator_reasoning if confirmed else sql_reason
+    return reasoned_sql, reason, _reasoning_duration_ms, reasoning_status
 
 def handle_validate_generate_sql(
     sql_query: str,
@@ -2278,6 +2665,10 @@ def handle_validate_generate_sql(
     memory_context=None,
     generate_sql_reasons: Optional[list] = None,
     duration_sink: Optional[dict] = None,
+    # Collects the error behind each regeneration. The retry template returns
+    # no reason of its own, so the caller uses these to say the reported reason
+    # was written for the SQL before the retry.
+    validation_errors: Optional[list] = None,
 ) -> tuple[bool, str, str]:
     """Validate the SQL and, while it is invalid, regenerate from the SAME context.
 
@@ -2307,7 +2698,9 @@ def handle_validate_generate_sql(
 
     while validation_attempt < retries and not is_sql_valid:
         validation_attempt += 1
-        validation_err_txt = f"\nThe generated SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query that achieves the intended result." if error and "snowflake" not in llm._llm_type else ""
+        if validation_errors is not None:
+            validation_errors.append(error)
+        validation_err_txt =f"\nThe generated SQL (`{sql_query}`) was invalid with error: {error}. Please generate a corrected query that achieves the intended result." if error and "snowflake" not in llm._llm_type else ""
 
         if validate_regen_prompt is None:
             validate_regen_prompt = get_generate_sql_prompt_template(
@@ -2581,7 +2974,7 @@ def generate_sql(
         _reasoning_context: dict = {}
 
         if enable_reasoning and sql_query is not None:
-            sql_query, generate_sql_reason, reasoning_duration = handle_generate_sql_reasoning(
+            sql_query, generate_sql_reason, reasoning_duration, reasoning_status = handle_generate_sql_reasoning(
                 sql_query=sql_query,
                 question=question,
                 llm=llm,
@@ -2616,11 +3009,13 @@ def generate_sql(
                 include_logic_concepts=include_logic_concepts,
                 memory_context=memory_context,
                 rules=rules,
+                current_context=sql_gen_context,
             )
 
         if should_validate_sql or enable_reasoning:
             # Validate & regenerate only once if reasoning enabled and validation is disabled
             validate_retries = 1 if not should_validate_sql else retries
+            _validation_errors: list = []
             is_sql_valid, error, sql_query = handle_validate_generate_sql(
                 sql_query=sql_query,
                 question=question,
@@ -2631,11 +3026,19 @@ def generate_sql(
                 timeout=timeout,
                 debug=debug,
                 usage_metadata=usage_metadata,
-                note=note,
+                note=_reasoning_context.get("note", note),
                 memory_context=memory_context,
                 generate_sql_reasons=generate_sql_reasons,
                 duration_sink=_ctx_builder_durations,
+                validation_errors=_validation_errors,
             )
+            if _validation_errors:
+                # The retry returns SQL only, so the reason on hand was written
+                # for the query it replaced. Keep it and say what changed.
+                _adjusted = "Adjusted after validation error: " + "; ".join(
+                    dict.fromkeys(str(e)[:300] for e in _validation_errors if e)
+                )
+                generate_sql_reason = f"{generate_sql_reason}\n\n{_adjusted}" if generate_sql_reason else _adjusted
     except TimeoutError as e:
         error = f"LLM call timed out: {str(e)}"
         raise Exception(error)
@@ -2719,12 +3122,7 @@ def answer_question(
     except Exception as e:
         raise Exception(f"LLM call failed while answering question: {str(e)}")
 
-    if hasattr(response, "content"):
-        response_text = response.content
-    elif isinstance(response, str):
-        response_text = response
-    else:
-        raise ValueError("Unexpected response format from LLM.")
+    response_text = _response_text(response)
     
     usage_metadata = {
         "answer_question": {

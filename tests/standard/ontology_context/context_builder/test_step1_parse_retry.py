@@ -5,9 +5,9 @@ finished SQL query instead. Before the retry existed, that discarded the call
 and dropped every relationship from the emitted context — costing both a
 round-trip and output quality. These tests pin the recovery behaviour:
 
-  - a non-JSON first answer is re-prompted once out of the existing retry budget
-  - the correction actually reaches the planner
-  - a second non-JSON answer still fails, and a zero retry budget does not retry
+  - a non-JSON answer is re-prompted out of the existing retry budget
+  - the correction, the previous answer and the parser error reach the planner
+  - re-prompting stops when the retry budget is spent, and a zero budget does not retry
 """
 
 from __future__ import annotations
@@ -67,9 +67,31 @@ class TestStep1ParseRetry:
         retry_prompt = llm.calls[1]["system"] + llm.calls[1]["user"]
         assert "could not be parsed" in retry_prompt
 
-    def test_second_failure_still_falls_back(self):
-        llm = ScriptedLLM([_SQL_INSTEAD_OF_JSON, _SQL_INSTEAD_OF_JSON])
+    def test_previous_answer_and_parser_error_reach_the_planner(self):
+        llm = ScriptedLLM([_SQL_INSTEAD_OF_JSON, _GOOD])
+        _run(llm, _config(retry=2))
+
+        retry_prompt = llm.calls[1]["system"] + llm.calls[1]["user"]
+        assert "Parser error:" in retry_prompt
+        assert "FROM `dtimbr`.`customer` c" in retry_prompt
+
+    def test_second_failure_is_reprompted_again_and_recovers(self):
+        llm = ScriptedLLM([_SQL_INSTEAD_OF_JSON, _SQL_INSTEAD_OF_JSON, _GOOD])
         result = _run(llm, _config(retry=2))
+
+        assert len(llm.calls) == 3
+        assert result.stats["resolved_by"] == "llm_paths"
+
+    def test_failures_beyond_the_retry_budget_still_fall_back(self):
+        llm = ScriptedLLM([_SQL_INSTEAD_OF_JSON] * 3)
+        result = _run(llm, _config(retry=2))
+
+        assert len(llm.calls) == 3
+        assert result.stats["resolved_by"] != "llm_paths"
+
+    def test_single_retry_budget_reprompts_once(self):
+        llm = ScriptedLLM([_SQL_INSTEAD_OF_JSON, _SQL_INSTEAD_OF_JSON])
+        result = _run(llm, _config(retry=1))
 
         assert len(llm.calls) == 2
         assert result.stats["resolved_by"] != "llm_paths"

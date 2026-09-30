@@ -507,21 +507,23 @@ def classify_follow_up(
             logger.debug("Memory: classifier prompt formatting failed: %s", exc2)
             return None
 
-    # Call LLM
+    # Call LLM (an answer that is not a JSON object is sent back for correction)
     try:
-        from .timbr_llm_utils import _call_llm_with_timeout
-        response = _call_llm_with_timeout(llm, formatted_prompt, timeout=timeout)
+        from .timbr_llm_utils import (
+            LLMOutputError, _call_llm_with_output_retry, _extract_json, _response_text,
+        )
+
+        def _parse_classifier(response) -> str:
+            text = _response_text(response)
+            if not isinstance(_extract_json(text), dict):
+                raise LLMOutputError("the response must be a single JSON object.")
+            return text
+
+        response_text, _, _ = _call_llm_with_output_retry(
+            llm, formatted_prompt, _parse_classifier, timeout=timeout,
+        )
     except Exception as exc:
         logger.debug("Memory: classifier LLM call failed: %s", exc)
-        return None
-
-    # Extract response text
-    if hasattr(response, "content"):
-        response_text = response.content
-    elif isinstance(response, str):
-        response_text = response
-    else:
-        logger.debug("Memory: unexpected classifier response type: %s", type(response))
         return None
 
     # Parse + validate (translate sequential IDs back to real GUIDs)
@@ -607,8 +609,12 @@ def _validate_classifier_output(
     try:
         parsed = json.loads(text)
     except (json.JSONDecodeError, ValueError):
-        logger.debug("Memory: classifier returned invalid JSON: %s", raw_text[:500])
-        return None
+        try:
+            from .timbr_llm_utils import _extract_json
+            parsed = _extract_json(raw_text)
+        except ValueError:
+            logger.debug("Memory: classifier returned invalid JSON: %s", raw_text[:500])
+            return None
 
     if not isinstance(parsed, dict):
         logger.debug("Memory: classifier returned non-dict JSON: %s", raw_text[:500])
@@ -843,7 +849,8 @@ def format_memory_note_for_sql(memory_context: MemoryContext) -> str:
             parts.append("\nPrior SQL queries (chronological):")
             for idx, entry in enumerate(memory_context.sql_context, start=1):
                 question = entry.get("question", "")
-                sql = entry.get("sql", "")
+                # A turn that failed is in the history with no SQL.
+                sql = entry.get("sql") or "(no SQL was generated for this question)"
                 parts.append(f'--- [{idx}] Q: "{question}" ---')
                 parts.append(sql)
                 parts.append("--- End ---")

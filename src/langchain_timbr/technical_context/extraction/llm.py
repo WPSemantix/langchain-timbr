@@ -47,6 +47,10 @@ logger = logging.getLogger(__name__)
 _CACHE_MAXSIZE = extraction_cache_size  # env: TIMBR_EXTRACTION_CACHE_SIZE
 _EXTRACTION_CACHE: "OrderedDict[str, list[str]]" = OrderedDict()
 
+# Re-asks after an answer that is not valid JSON, on top of the first call.
+_OUTPUT_RETRIES = 2
+_RETRY_OUTPUT_CHARS = 2000
+
 
 def _extraction_cache_clear() -> None:
     """Drop every cached extraction. Used by tests for isolation; also handy
@@ -113,12 +117,28 @@ def extract_candidates_with_llm(
 
     prompt_text = _build_candidate_extraction_prompt(question)
 
-    try:
-        response_text = _call_llm(llm, prompt_text, timeout=timeout)
-    except Exception as e:
-        logger.warning("LLM candidate extraction call failed: %s", e)
-        # Intentionally NOT cached — a future retry should re-invoke.
-        return []
+    # An answer that is not the requested JSON object is sent back to the model,
+    # with the parser's complaint, for correction.
+    attempt_prompt = prompt_text
+    for attempt in range(_OUTPUT_RETRIES + 1):
+        try:
+            response_text = _call_llm(llm, attempt_prompt, timeout=timeout)
+        except Exception as e:
+            logger.warning("LLM candidate extraction call failed: %s", e)
+            # Intentionally NOT cached — a future retry should re-invoke.
+            return []
+        if _loads_candidates_json(response_text) is not None:
+            break
+        if attempt == _OUTPUT_RETRIES:
+            logger.warning("LLM candidate extraction returned invalid JSON")
+            # NOT cached either: an unusable answer is not an answer.
+            return []
+        attempt_prompt = (
+            f"{prompt_text}\n\n"
+            f"Your previous response was:\n{response_text[:_RETRY_OUTPUT_CHARS]}\n\n"
+            "It could not be parsed as the requested JSON object. "
+            'Return ONLY the corrected valid JSON: {"candidates": [{"literal": str, "synonyms": [str, ...]}]}'
+        )
 
     result = _parse_candidates_response(response_text)
     # Cache the successful invocation (empty result still counts as a real
@@ -173,8 +193,33 @@ def _call_llm(llm: Any, prompt_text: str, *, timeout: int = 30) -> str:
 
     # Handle different response types
     if hasattr(response, "content"):
-        return str(response.content)
+        content = response.content
+        # Models with extended thinking return a list of content parts; only
+        # the text parts are the answer.
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        return str(content)
     return str(response)
+
+
+def _loads_candidates_json(response_text: str) -> Any:
+    """The JSON value in an LLM response, or None when it is not valid JSON."""
+    if not response_text:
+        return None
+
+    # Strip markdown code fences if present
+    text = response_text.strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+    text = text.strip()
+
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
 
 
 def _parse_candidates_response(response_text: str) -> list[str]:
@@ -186,15 +231,8 @@ def _parse_candidates_response(response_text: str) -> list[str]:
     if not response_text:
         return []
 
-    # Strip markdown code fences if present
-    text = response_text.strip()
-    text = re.sub(r"^```(?:json)?\s*", "", text)
-    text = re.sub(r"\s*```$", "", text)
-    text = text.strip()
-
-    try:
-        parsed = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    parsed = _loads_candidates_json(response_text)
+    if parsed is None:
         logger.warning("LLM candidate extraction returned invalid JSON")
         return []
 

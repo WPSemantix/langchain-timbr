@@ -46,7 +46,7 @@ def run_step1_filter(
         rules_block=rules_block,
     )
     raw = _invoke_llm(llm, messages, timeout=timeout)
-    return _parse_step1(raw)
+    return _parse_step1_keeping_raw(raw)
 
 
 def run_step1_retry(
@@ -92,7 +92,7 @@ def run_step1_retry(
         rules_block=rules_block,
     )
     raw = _invoke_llm(llm, messages, timeout=timeout)
-    return _parse_step1(raw)
+    return _parse_step1_keeping_raw(raw)
 
 
 # ---------------------------------------------------------------------------
@@ -105,6 +105,16 @@ def _format_errors_for_retry(errors: Iterable[ValidationError]) -> List[str]:
         seg_part = f"segment {e.segment_index}" if e.segment_index >= 0 else "path-level"
         out.append(f"Path {e.path_id}, {seg_part}: {e.reason_code} — {e.detail}")
     return out
+
+
+def _parse_step1_keeping_raw(raw: str) -> Step1Output:
+    """``_parse_step1``, with the unparseable answer attached to the error so
+    the caller can show it back to the planner when it re-prompts."""
+    try:
+        return _parse_step1(raw)
+    except ValueError as exc:
+        exc.raw_output = raw
+        raise
 
 
 def _invoke_llm(llm, messages: List[dict], *, timeout: int) -> str:
@@ -123,11 +133,14 @@ def _invoke_llm(llm, messages: List[dict], *, timeout: int) -> str:
     ]
 
     # Use the same timeout helper the rest of the codebase uses where possible.
+    # A failed or timed-out call propagates: re-invoking here would repeat it
+    # with no timeout at all.
     try:
         from ...utils.timbr_llm_utils import _call_llm_with_timeout
-        response = _call_llm_with_timeout(llm, langchain_messages, timeout=timeout)
-    except Exception:
+    except ImportError:
         response = llm.invoke(langchain_messages)
+    else:
+        response = _call_llm_with_timeout(llm, langchain_messages, timeout=timeout)
 
     content = getattr(response, "content", response)
     if isinstance(content, list):

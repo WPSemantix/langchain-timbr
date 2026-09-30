@@ -37,7 +37,7 @@ from langchain_timbr.utils.timbr_llm_utils import (
     _build_columns_str,
     _build_rel_columns_str,
     _collect_reasoning_rules,
-    _rule_meta_items,
+    _concept_rule_items,
 )
 
 
@@ -288,7 +288,7 @@ def test_filter_messages_carry_rules_block_in_both_builders():
 
 
 # --------------------------------------------------------------------------- #
-# Stage: generate_sql — property/measure/relationship + concept, NO concept selection
+# Stage: generate_sql — property/measure/relationship + concept, all kinds
 # --------------------------------------------------------------------------- #
 def test_generate_sql_property_measure_relationship_rules_inline():
     rs = _sample_ruleset()
@@ -314,13 +314,14 @@ def test_generate_sql_property_measure_relationship_rules_inline():
     assert "validation_rules: one per order" in rel
 
 
-def test_generate_sql_concept_gets_instruction_validation_not_selection():
+def test_generate_sql_concept_gets_every_rule_kind():
     rs = _sample_ruleset()
-    items = _rule_meta_items(rs, "orders", ("concept", "view", "cube"), ("instruction", "validation"))
-    joined = "; ".join(items)
+    joined = "; ".join(_concept_rule_items(rs, "orders"))
     assert "use gross amount" in joined       # instruction
     assert "reject cancelled" in joined       # validation
-    assert "only recent orders" not in joined  # SELECTION_RULE never re-injected here
+    # SELECTION_RULE too: it is often a synonym the SQL needs, not only a
+    # concept-choice hint (see test_kb_rules_propagation.py).
+    assert "only recent orders" in joined
 
 
 def test_generate_sql_backward_compat_without_rules():
