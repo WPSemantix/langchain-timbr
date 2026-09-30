@@ -499,6 +499,7 @@ class TestFormatMemoryNoteForSql:
         assert "[CONVERSATION MEMORY]" in result
         assert "Prior SQL" not in result
 
+    def test_failed_turn_without_sql_does_not_crash(self):
         """A failed turn is stored in the history with a null SQL."""
         ctx = MemoryContext(
             is_follow_up=True,
