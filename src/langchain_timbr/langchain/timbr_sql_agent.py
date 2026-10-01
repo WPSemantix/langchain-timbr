@@ -285,6 +285,18 @@ class TimbrSqlAgent(Runnable):
 
         return _log_ctx, _delegated_ctx
 
+    def _close_log_on_error(self, error, log_ctx, delegated_ctx) -> None:
+        """Post the failure when the run ended with an error and no chain posted the
+        history row — otherwise the execution stays in 'running' forever."""
+        if not error or log_ctx is None:
+            return
+        try:
+            from ..utils.chain_logger import log_agent_failure
+            # The delegated context carries the step/concept the chains reached.
+            log_agent_failure(delegated_ctx or log_ctx, str(error), llm=self._chain._llm)
+        except Exception:
+            pass
+
     def _build_result(self, result: dict, conversation_id: str, log_ctx, delegated_ctx) -> dict:
         """Build the final result dictionary."""
         exec_meta = result.get("execute_timbr_usage_metadata", {})
@@ -347,8 +359,10 @@ class TimbrSqlAgent(Runnable):
                 _log_ctx.is_follow_up = True
                 _log_ctx.parent_query_id = _mem.parent_message_id
 
+            self._close_log_on_error(result.get("error"), _log_ctx, _delegated_ctx)
             return self._build_result(result, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
+            self._close_log_on_error(e, _log_ctx, _delegated_ctx)
             return self._get_error_response(str(e), _conversation_id)
 
     async def ainvoke(
@@ -388,8 +402,10 @@ class TimbrSqlAgent(Runnable):
                 _log_ctx.is_follow_up = True
                 _log_ctx.parent_query_id = _mem.parent_message_id
 
+            self._close_log_on_error(result.get("error"), _log_ctx, _delegated_ctx)
             return self._build_result(result, _conversation_id, _log_ctx, _delegated_ctx)
         except Exception as e:
+            self._close_log_on_error(e, _log_ctx, _delegated_ctx)
             return self._get_error_response(str(e), _conversation_id)
 
 

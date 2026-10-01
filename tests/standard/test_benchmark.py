@@ -221,6 +221,36 @@ class TestBenchmarkScorer:
         assert result["scoring_method"] == "llm_judge"
         assert "reasoning" in result
 
+    def test_llm_judge_invalid_json_is_sent_back_for_correction(self):
+        mock_llm = MagicMock()
+        mock_llm._llm_type = "test"
+        mock_llm.side_effect = [
+            "The answer looks right to me.",
+            '{"assessment": "correct", "reasoning": "ok"}',
+        ]
+
+        scorer = self._make_scorer(use_llm_judge=True, llm=mock_llm)
+
+        with patch(
+            "langchain_timbr.utils.benchmark.get_benchmark_judge_prompt_template"
+        ) as mock_template_getter:
+            mock_template = MagicMock()
+            mock_template.format_messages.return_value = ["system", "user"]
+            mock_template_getter.return_value = mock_template
+
+            result = scorer.score_result(
+                question="How many policies?",
+                generated_sql="SELECT COUNT(*) FROM Policy",
+                answer="There are 42 policies.",
+            )
+
+        assert result["assessment"] == "correct"
+        assert mock_llm.call_count == 2
+        retry_messages = mock_llm.call_args_list[1].args[0]
+        assert retry_messages[:2] == ["system", "user"]
+        assert retry_messages[2].content == "The answer looks right to me."
+        assert "not valid JSON" in retry_messages[3].content
+
     def test_llm_judge_fallback_on_error(self):
         mock_llm = MagicMock()
         mock_llm.side_effect = Exception("LLM unavailable")

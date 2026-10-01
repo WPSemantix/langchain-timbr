@@ -4,11 +4,13 @@ Both the static and dynamic SQL-generation paths benefit from a single shared
 ``Ontology`` per (url, token, ontology) triple — concept describes and
 relationship-lookup fetches are then cached across every SQL-gen call inside
 one process. This also makes the Plan 2 filtered-metadata cache
-(``Ontology._filtered_cache``) reusable across the reasoning-retry loop in
-``handle_generate_sql_reasoning`` — without it, each retry would re-run the
-Step 1 LLM filter, doubling token spend per attempt. (The validation-retry loop
-in ``handle_validate_generate_sql`` no longer rebuilds the context at all — it
-regenerates from the context the invalid SQL came from.)
+(``Ontology._filtered_cache``) reusable across calls: a repeat with identical
+planner inputs costs no LLM call. The reasoning-retry loop in
+``handle_generate_sql_reasoning`` is deliberately NOT such a repeat — its note
+carries the evaluator's feedback, so it re-plans (re-validating the previous
+selection). (The validation-retry loop in ``handle_validate_generate_sql`` does
+not rebuild the context at all — it regenerates from the context the invalid
+SQL came from.)
 """
 
 from __future__ import annotations

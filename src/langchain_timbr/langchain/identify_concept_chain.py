@@ -242,6 +242,7 @@ class IdentifyTimbrConceptChain(Chain):
                 verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, self._ontology, None)
+            self._owned_log_ctx = _log_ctx
 
         if _log_ctx:
             _log_ctx.current_step = "identifying_concept"

@@ -363,14 +363,17 @@ def test_validation_retry_uses_the_after_validate_template(harness):
 
 
 def test_validation_retry_carries_the_error_but_no_stale_reason(harness):
-    """The retry note must name the validation error, and the run's reported
-    reason stays the first pass's (the retry template no longer emits one)."""
+    """The retry note must name the validation error. The retry template emits
+    no reason, so the run keeps the first pass's and appends that the SQL was
+    adjusted — a reason that silently described the replaced query was stale."""
     llm = _FakeLLM()
 
     result = _run(harness, llm, rules=_ruleset(), validate=[(False, "syntax error near DATE")])
 
     assert "syntax error near DATE" in _gen_renders(harness)[1]["note"]
-    assert result["generate_sql_reason"] == "because"
+    assert result["generate_sql_reason"] == (
+        "because\n\nAdjusted after validation error: syntax error near DATE"
+    )
     steps = [entry["step"] for entry in result["generate_sql_reasons"]]
     assert steps == ["generate_sql"], f"retry should not append a re-derived reason, got {steps}"
 

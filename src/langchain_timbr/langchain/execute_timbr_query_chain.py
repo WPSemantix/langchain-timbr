@@ -428,6 +428,7 @@ class ExecuteTimbrQueryChain(Chain):
                 verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, ontology_name, schema_name)
+            self._owned_log_ctx = _log_ctx
         elif _log_ctx is not None:
             _log_ctx.retry_count = 0
             _log_ctx.no_results_retry_count = 0

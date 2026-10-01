@@ -87,6 +87,7 @@ def _gather_candidates(
     ontology: Ontology,
     rules=None,
 ) -> List[_Candidate]:
+    subtype_rules = _subtype_rules_by_candidate(concepts, ontology, rules)
     out: List[_Candidate] = []
     for name in concepts:
         try:
@@ -96,10 +97,50 @@ def _gather_candidates(
             desc = ""
         rules_text = ""
         if rules is not None:
-            rules_text = render_object_rules(
-                rules.rules_for(name, ("concept", "view", "cube"), {"selection"})
-            )
+            rules_text = "\n".join(filter(None, [
+                render_object_rules(
+                    rules.rules_for(name, ("concept", "view", "cube"), {"selection"})
+                ),
+                *subtype_rules.get(name, []),
+            ]))
         out.append(_Candidate(name=name, description=desc, rules_text=rules_text))
+    return out
+
+
+def _subtype_rules_by_candidate(
+    concepts: Sequence[str], ontology: Ontology, rules, kinds=("selection",),
+) -> dict:
+    """``{candidate -> [rendered rules]}`` for rules (``kinds``) on a concept that
+    is not a candidate itself (a logic sub-type, when those are excluded): they
+    are shown under its nearest candidate ancestor, or they are shown nowhere."""
+    out: dict = {}
+    if rules is None or rules.is_empty():
+        return out
+    names = set(concepts)
+    for target_type, target in sorted(rules.by_target):
+        if target_type != "concept" or target in names:
+            continue
+        txt = render_object_rules(rules.rules_for(target, ("concept",), kinds))
+        if not txt:
+            continue
+        # The chain may hold only the direct parent(s), so walk it upward.
+        frontier, seen, parent = [target], {target}, None
+        while frontier and parent is None:
+            nxt = []
+            for name in frontier:
+                try:
+                    chain = ontology.inheritance_chain_of(name)
+                except Exception:
+                    chain = ()
+                for c in chain or ():
+                    if c in names:
+                        parent = parent or c
+                    elif c not in seen:
+                        seen.add(c)
+                        nxt.append(c)
+            frontier = nxt
+        if parent:
+            out.setdefault(parent, []).append(f"sub-type `{target}` {txt}")
     return out
 
 
@@ -295,19 +336,33 @@ def _invoke_prefilter_llm(llm, messages: List[dict], *, timeout: int) -> str:
         role_to_cls.get(m["role"], HumanMessage)(content=m["content"])
         for m in messages
     ]
-    try:
-        from ...utils.timbr_llm_utils import _call_llm_with_timeout
-        response = _call_llm_with_timeout(llm, lc_messages, timeout=timeout)
-    except Exception:
-        response = llm.invoke(lc_messages)
+    def _content(response) -> str:
+        content = getattr(response, "content", response)
+        if isinstance(content, list):
+            content = "".join(
+                part.get("text", "") if isinstance(part, dict) else str(part)
+                for part in content
+            )
+        return str(content)
 
-    content = getattr(response, "content", response)
-    if isinstance(content, list):
-        content = "".join(
-            part.get("text", "") if isinstance(part, dict) else str(part)
-            for part in content
-        )
-    return str(content)
+    try:
+        from ...utils.timbr_llm_utils import LLMOutputError, _call_llm_with_output_retry
+    except ImportError:
+        return _content(llm.invoke(lc_messages))
+
+    def _parse(response) -> str:
+        # An answer naming no concept at all is sent back for correction; after
+        # the retries the caller falls back to the full candidate set.
+        raw = _content(response)
+        if not _parse_relevant_concepts(raw):
+            raise LLMOutputError(
+                "the response must be a JSON object with a non-empty "
+                "'relevant_concepts' list of concept names."
+            )
+        return raw
+
+    raw, _, _ = _call_llm_with_output_retry(llm, lc_messages, _parse, timeout=timeout)
+    return raw
 
 
 @dataclass

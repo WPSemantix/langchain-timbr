@@ -285,6 +285,42 @@ def _tags_str(name: str, is_view: bool, tags: Optional[dict]) -> str:
     return str(val).replace("{", "").replace("}", "").replace("'", "")
 
 
+def subtype_selection_rules(catalog, filtered, rules) -> dict:
+    """``{candidate -> [(sub_type, rendered_rules), ...]}`` for SELECTION_RULEs on
+    a concept that is not itself a candidate.
+
+    With logic concepts left out of the candidates, a rule attached to a logic
+    sub-type is never shown on its own line. It is listed under the nearest
+    candidate ancestor instead — the concept such a question is answered from.
+    """
+    out: dict = {}
+    if rules is None or rules.is_empty():
+        return out
+    for target_type, target in sorted(rules.by_target):
+        node = catalog.nodes.get(target)
+        if target_type != "concept" or target in filtered or node is None:
+            continue
+        txt = render_object_rules(rules.rules_for(target, ("concept",), {"selection"}))
+        if not txt:
+            continue
+        frontier, seen = list(node.parents), set(node.parents)
+        while frontier:
+            hits = [p for p in frontier if p in filtered]
+            if hits:
+                for parent in hits:
+                    out.setdefault(parent, []).append((target, txt))
+                break
+            nxt = []
+            for p in frontier:
+                pn = catalog.nodes.get(p)
+                for gp in (pn.parents if pn else []):
+                    if gp not in seen:
+                        seen.add(gp)
+                        nxt.append(gp)
+            frontier = nxt
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # builder entry point
 # --------------------------------------------------------------------------- #
@@ -299,17 +335,20 @@ def build_catalog_lines(question, conn_params, concepts_and_views, tags=None, pr
 
     `rules` is an optional `kbclient.RuleSet`; when present, concept/view/cube
     SELECTION_RULE text is appended as an indented sub-block under each node
-    (outside the token-budget cascade — rules are never trimmed).
+    (outside the token-budget cascade — rules are never trimmed). Rules of a
+    sub-type that is not a candidate are listed under its candidate ancestor.
     """
     def _rules_lines(name, indent):
         if rules is None:
             return []
         txt = render_object_rules(rules.rules_for(name, ("concept", "view", "cube"), {"selection"}))
-        if not txt:
-            return []
-        return [f"{indent}    {line}" for line in txt.split("\n")]
+        lines = [f"{indent}    {line}" for line in txt.split("\n")] if txt else []
+        for child, child_txt in subtype_rules.get(name, []):
+            lines.extend(f"{indent}    sub-type `{child}` {line}" for line in child_txt.split("\n"))
+        return lines
     catalog = _load_catalog(conn_params)
     filtered = set(concepts_and_views.keys())
+    subtype_rules = subtype_selection_rules(catalog, filtered, rules)
     q_tri = trigram.to_trigram_set(question)
     q_padded = trigram.pad_question(question)
     thr = config.identify_concept_context_trigram_threshold

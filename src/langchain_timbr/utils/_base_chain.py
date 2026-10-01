@@ -42,6 +42,9 @@ class Chain(Runnable):
     def __init__(self, **kwargs):
         self._received_log_ctx = None
         self._received_chain_context = None
+        # Log context this chain created itself (standalone run). The chain that
+        # opens a running-log row is the one responsible for closing it.
+        self._owned_log_ctx = None
 
     @property
     def input_keys(self) -> List[str]:
@@ -109,6 +112,31 @@ class Chain(Runnable):
         if owns_scope:
             _question_scope.active = False
 
+    def _close_owned_log_on_error(self, error) -> None:
+        """Post the failure for a running-log row this chain opened and never closed."""
+        ctx = getattr(self, "_owned_log_ctx", None)
+        if not error or ctx is None:
+            return
+        try:
+            from .chain_logger import log_agent_failure
+
+            log_agent_failure(ctx, str(error), llm=getattr(self, "_llm", None))
+        except Exception:
+            pass
+
+    def _call_with_log_closure(self, input: Dict[str, Any]) -> Dict[str, Any]:
+        """Run ``_call``; a failure — raised or returned as ``error`` — is written
+        to the log so the execution does not stay in 'running'."""
+        self._owned_log_ctx = None
+        try:
+            result = self._call(input)
+        except Exception as exc:
+            self._close_owned_log_on_error(exc)
+            raise
+        self._close_owned_log_on_error(result.get("error"))
+        result["chain_context"] = self._received_chain_context
+        return result
+
     def invoke(self, input: Dict[str, Any], config=None, log_ctx=None, **kwargs) -> Dict[str, Any]:
         self._received_log_ctx = log_ctx
         self._received_chain_context = _init_chain_context(input.get("chain_context"))
@@ -116,13 +144,10 @@ class Chain(Runnable):
         try:
             if _LANGSMITH_AVAILABLE:
                 with ls_trace(name=self.__class__.__name__, run_type="chain", inputs={"input": input}) as rt:
-                    result = self._call(input)
-                    result["chain_context"] = self._received_chain_context
+                    result = self._call_with_log_closure(input)
                     rt.end(outputs=result)
                     return result
-            result = self._call(input)
-            result["chain_context"] = self._received_chain_context
-            return result
+            return self._call_with_log_closure(input)
         finally:
             self._exit_question_scope(owns_scope)
 
@@ -133,12 +158,9 @@ class Chain(Runnable):
         try:
             if _LANGSMITH_AVAILABLE:
                 with ls_trace(name=self.__class__.__name__, run_type="chain", inputs={"input": input}) as rt:
-                    result = self._call(input)
-                    result["chain_context"] = self._received_chain_context
+                    result = self._call_with_log_closure(input)
                     rt.end(outputs=result)
                     return result
-            result = self._call(input)
-            result["chain_context"] = self._received_chain_context
-            return result
+            return self._call_with_log_closure(input)
         finally:
             self._exit_question_scope(owns_scope)

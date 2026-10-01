@@ -332,6 +332,7 @@ class GenerateAnswerChain(Chain):
                 verify_ssl=self._verify_ssl,
             )
             log_agent_start(_log_ctx, _log_ctx.ontology, _log_ctx.schema)
+            self._owned_log_ctx = _log_ctx
 
         # ---- memory resolution (once per top-level invocation) ----
         _memory_usage = {}
@@ -362,7 +363,9 @@ class GenerateAnswerChain(Chain):
                     "conversation_id": conversation_id,
                     "chain_context": _chain_ctx,
                 },
-                log_ctx=self._received_log_ctx,
+                # The context in use, not only a received one: standalone, passing None
+                # made the execute chain open a second running row nobody closed.
+                log_ctx=_log_ctx,
             )
             # Sync chain_context updates made by the execute chain back into our context
             if execute_result.get("chain_context"):

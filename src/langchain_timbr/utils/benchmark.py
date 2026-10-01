@@ -41,6 +41,9 @@ from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .general import to_boolean
 from .prompt_service import get_benchmark_judge_prompt_template
 from .timbr_utils import get_timbr_agent_options, get_timbr_benchmark_info, build_server_url
+from .timbr_llm_utils import (
+    LLM_OUTPUT_RETRIES, LLMOutputError, _extract_json, _response_text, _with_output_feedback,
+)
 
 try:
     # from .._version import __version__ as _langchain_timbr_version
@@ -437,18 +440,21 @@ class BenchmarkScorer:
                 expected_answer_context="",
             )
 
-            response = self.llm(messages)
+            # A verdict that is not a JSON object is sent back to the judge, with
+            # the parser error, for correction.
+            attempt_messages = messages
+            for attempt in range(LLM_OUTPUT_RETRIES + 1):
+                response = self.llm(attempt_messages)
+                try:
+                    evaluation = _extract_json(_response_text(response))
+                    if not isinstance(evaluation, dict):
+                        raise LLMOutputError("the response must be a JSON object with 'assessment' and 'reasoning'.")
+                    break
+                except LLMOutputError as exc:
+                    if attempt == LLM_OUTPUT_RETRIES:
+                        raise
+                    attempt_messages = _with_output_feedback(self.llm, messages, response, exc)
 
-            content = response if isinstance(response, str) else response.content.strip()
-            # Strip markdown code fences if present
-            for fence in ("```json", "```"):
-                if content.startswith(fence):
-                    content = content[len(fence):]
-            if content.endswith("```"):
-                content = content[:-3]
-            content = content.strip()
-
-            evaluation = json.loads(content)
             assessment = evaluation.get("assessment", "incorrect").lower()
             if assessment not in ("correct", "partial", "incorrect"):
                 assessment = "incorrect"
