@@ -128,12 +128,21 @@ class TestServicePrincipalFromEnv:
         post.assert_not_called()
 
     def test_partial_spn_env_lists_missing_vars(self, monkeypatch):
-        monkeypatch.setattr(config, "jwt_client_id", "client-1")
+        monkeypatch.setattr(config, "jwt_client_secret", "s3cret")
         with pytest.raises(ValueError) as exc_info:
             resolve_timbr_auth(URL, None, False)
         message = str(exc_info.value)
-        assert "JWT_TENANT_ID" in message and "JWT_CLIENT_SECRET" in message and "JWT_SCOPE" in message
-        assert "JWT_CLIENT_ID" not in message.split(":")[-1]
+        assert "JWT_TENANT_ID" in message and "JWT_CLIENT_ID" in message and "JWT_SCOPE" in message
+        assert "JWT_CLIENT_SECRET" not in message
+        assert "s3cret" not in message
+
+    def test_spn_vars_without_secret_are_ignored(self, monkeypatch, show_token):
+        # e.g. CI sets JWT_TENANT_ID / JWT_CLIENT_ID / JWT_SCOPE for another JWT flow
+        monkeypatch.setattr(config, "jwt_tenant_id", "tenant-1")
+        monkeypatch.setattr(config, "jwt_client_id", "client-1")
+        monkeypatch.setattr(config, "jwt_scope", "api://timbr-app/.default")
+        assert resolve_timbr_auth(URL, None, False) == (None, False)
+        show_token.assert_not_called()
 
     def test_aad_failure_raises_without_secret(self, spn_env):
         body = {"error": "invalid_client", "error_description": "AADSTS7000215: Invalid client secret provided."}

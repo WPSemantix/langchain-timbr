@@ -90,7 +90,9 @@ def resolve_timbr_auth(
         if is_jwt:
             return exchange_jwt(url, token, jwt_tenant_id, verify_ssl), False
         return token, is_jwt
-    if not (config.jwt_client_id or config.jwt_client_secret):
+    # Only the secret turns the service principal on: JWT_TENANT_ID, JWT_CLIENT_ID
+    # and JWT_SCOPE are often set for other JWT setups too.
+    if not config.jwt_client_secret:
         return token, is_jwt
 
     spn = {
