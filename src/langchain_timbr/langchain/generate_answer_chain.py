@@ -5,6 +5,7 @@ from langchain_core.language_models.llms import LLM
 from langchain_timbr.utils.timbr_utils import get_timbr_agent_options, build_server_url
 
 from ..utils.general import to_boolean, to_integer, parse_list, validate_timbr_connection_params, sanitize_results
+from ..utils.timbr_auth import resolve_timbr_auth, resolve_conn_params_auth
 from ..utils.timbr_llm_utils import answer_question, _wrap_llm_usage
 from ..llm_wrapper.llm_wrapper import LlmWrapper
 from .. import config
@@ -135,15 +136,17 @@ class GenerateAnswerChain(Chain):
         
         self._url = url if url is not None else config.url
         self._token = token if token is not None else config.token
+        self._verify_ssl = to_boolean(verify_ssl)
+        self._is_jwt = to_boolean(is_jwt)
+        self._jwt_tenant_id = jwt_tenant_id
+        # A JWT is exchanged for the caller's Timbr token, which is used from here on
+        self._token, self._is_jwt = resolve_timbr_auth(self._url, self._token, self._is_jwt, self._jwt_tenant_id, self._verify_ssl)
         
         # Validate required parameters
         validate_timbr_connection_params(self._url, self._token)
         
-        self._verify_ssl = to_boolean(verify_ssl)
-        self._is_jwt = to_boolean(is_jwt)
-        self._jwt_tenant_id = jwt_tenant_id
         self._debug = to_boolean(debug)
-        self._conn_params = conn_params or {}
+        self._conn_params = resolve_conn_params_auth(conn_params or {}, self._url, self._jwt_tenant_id, self._verify_ssl)
 
         self._agent = agent
         if self._agent:

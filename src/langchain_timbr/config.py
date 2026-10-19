@@ -11,6 +11,11 @@ thrift_port = to_integer(os.environ.get('THRIFT_PORT', 11000))
 # OPTIONAL VARIABLES
 is_jwt = to_boolean(os.environ.get('IS_JWT', 'false'))
 jwt_tenant_id = os.environ.get('JWT_TENANT_ID', None)
+# Service principal (Azure AD / Entra ID), used only when no token is provided: its
+# client-credentials JWT is exchanged for the service principal's Timbr token.
+jwt_client_id = os.environ.get('JWT_CLIENT_ID', None)
+jwt_client_secret = os.environ.get('JWT_CLIENT_SECRET', None)
+jwt_scope = os.environ.get('JWT_SCOPE', None)  # e.g. "api://<timbr-app-id>/.default"
 
 cache_timeout = to_integer(os.environ.get('CACHE_TIMEOUT', 120))
 # Force one ontology-version refresh at the start of each question, so an
