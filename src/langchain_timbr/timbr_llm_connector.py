@@ -4,6 +4,7 @@ from langchain_core.language_models.llms import LLM
 from langgraph.graph import StateGraph, END
 
 from .utils.general import to_boolean, to_integer
+from .utils.timbr_auth import resolve_timbr_auth, resolve_conn_params_auth
 from .llm_wrapper.llm_wrapper import LlmWrapper
 from .utils.timbr_utils import get_ontologies, get_concepts
 from .langchain import IdentifyTimbrConceptChain, GenerateTimbrSqlChain, ValidateTimbrSqlChain, ExecuteTimbrQueryChain, create_timbr_sql_agent
@@ -86,7 +87,9 @@ class TimbrLlmConnector:
         self.verify_ssl = to_boolean(verify_ssl)
         self.is_jwt = to_boolean(is_jwt)
         self.jwt_tenant_id = jwt_tenant_id
-        self.conn_params = conn_params or {}
+        # A JWT is exchanged for the caller's Timbr token, which is used from here on
+        self.token, self.is_jwt = resolve_timbr_auth(self.url, self.token, self.is_jwt, self.jwt_tenant_id, self.verify_ssl)
+        self.conn_params = resolve_conn_params_auth(conn_params or {}, self.url, self.jwt_tenant_id, self.verify_ssl)
         
         if llm is not None:
             self._llm = llm

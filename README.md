@@ -75,6 +75,9 @@ The SDK uses environment variables for configuration. All configurations are opt
 - **`TIMBR_ONTOLOGY`** - The ontology to use (also accepts `ONTOLOGY` as an alias)
 - **`IS_JWT`** - Whether the token is a JWT token (true/false)
 - **`JWT_TENANT_ID`** - Tenant ID for JWT authentication
+- **`JWT_CLIENT_ID`** - Service principal client ID (used only when no token is provided)
+- **`JWT_CLIENT_SECRET`** - Service principal client secret (used only when no token is provided)
+- **`JWT_SCOPE`** - Service principal token scope, e.g. `api://<timbr-app-id>/.default`
 
 #### Cache and Data Processing
 
@@ -120,6 +123,12 @@ agent_executor = create_timbr_sql_agent(
 
 result = agent_executor.invoke("What are the total sales for last month?")
 ```
+
+The JWT is exchanged once, when the chain is created, for the user's Timbr token, and that token is used for every request after that, so the JWT expiring later does not matter. If Timbr rejects the JWT (invalid, expired, wrong audience or tenant), creating the chain raises a `ValueError` that explains why.
+
+### Service principal (Azure AD / Entra ID)
+
+When no token is provided (no `token` parameter and no `TIMBR_TOKEN`), set `JWT_TENANT_ID`, `JWT_CLIENT_ID`, `JWT_CLIENT_SECRET` and `JWT_SCOPE` to authenticate as a service principal. A token is requested from Azure AD with the client-credentials flow and exchanged for the service principal's Timbr token. The service principal needs Timbr permissions (ontologies, agents) like any other user.
 
 ### Impersonating a user
 
