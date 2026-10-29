@@ -388,9 +388,9 @@ class LlmWrapper(LLM):
         client = anthropic.Anthropic(api_key=self.client.anthropic_api_key._secret_value)
         models = [model.id for model in client.models.list()]
       elif is_llm_type(self._llm_type, LlmTypes.Google):
-        import google.generativeai as genai
-        genai.configure(api_key=self.client.google_api_key._secret_value)
-        models = [m.name.replace('models/', '') for m in genai.list_models()]
+        from google import genai
+        client = genai.Client(api_key=self.client.google_api_key._secret_value)
+        models = [m.name.replace('models/', '') for m in client.models.list()]
       elif is_llm_type(self._llm_type, LlmTypes.AzureOpenAI):
         from openai import AzureOpenAI
         # Get Azure-specific attributes from the client
