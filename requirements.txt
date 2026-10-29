@@ -24,11 +24,14 @@ pyOpenSSL~=26.4.0
 pytest~=9.2.0
 pytest-rerunfailures~=16.7
 pytimbr-api~=2.2.0
-snowflake~=1.14.0
+snowflake~=1.14.0; python_version >= "3.11"
+snowflake~=1.13.2; python_version < "3.11"
 snowflake-snowpark-python~=1.55.3
-snowflake-connector-python[pandas]~=4.8.1
+snowflake-connector-python[pandas]~=4.8.1; python_version >= "3.11"
+snowflake-connector-python[pandas]~=4.8.0; python_version < "3.11"
 tiktoken~=0.14.0
-transformers~=5.21.1
+transformers~=5.21.1; python_version >= "3.11"
+transformers~=5.20.2; python_version < "3.11"
 uuid6~=2025.0.1
 uvicorn~=0.54.0
 rapidfuzz~=3.14
