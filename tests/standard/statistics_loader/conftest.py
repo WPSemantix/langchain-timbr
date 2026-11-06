@@ -15,6 +15,20 @@ from langchain_timbr.technical_context.statistics_loader.types import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_own_mappings():
+    """The loader's relationship / multi-value mapping lookups query the backend;
+    stub them empty unless a test sets its own."""
+    with patch(
+        "langchain_timbr.technical_context.statistics_loader.loader.load_relationship_mappings",
+        return_value={},
+    ) as rel, patch(
+        "langchain_timbr.technical_context.statistics_loader.loader.load_multivalue_mappings",
+        return_value={},
+    ) as mv:
+        yield rel, mv
+
+
 @pytest.fixture
 def default_config():
     """Default StatisticsLoaderConfig."""

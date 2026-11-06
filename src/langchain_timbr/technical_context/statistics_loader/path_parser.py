@@ -1,10 +1,13 @@
 """Parse column names into structured ColumnPath objects.
 
-Handles three shapes:
+Handles these shapes:
   - Direct:    "customer_id"           → hops=[], final_property="customer_id"
   - Single-hop: "orders[order].total"  → hops=[("orders","order")], final_property="total"
   - Multi-hop:  "orders[order].items[order_item].quantity"
                 → hops=[("orders","order"),("items","order_item")], final_property="quantity"
+  - Relationship property: "has_employee[person]_title"
+                → hops=[("has_employee","person")], final_property="title",
+                  relationship_property=True
 
 A ``*N`` transitive-depth marker on the concept is stripped:
   - "has_parent[work_item*1].label" → hops=[("has_parent","work_item")]
@@ -29,6 +32,10 @@ _HOP_RE = re.compile(r"(\w+)\[([^\]]+)\]")
 # positional: the concept is still ``work_item``, so it must come off before the
 # name is used for ontology lookups. ``raw`` keeps the original spelling.
 _TRANSITIVITY_MARKER_RE = re.compile(r"\*\d+$")
+
+# A property of the last relationship (many-to-many additional property):
+# ``rel[concept]_prop`` — an underscore, not a dot, right after the bracket.
+_REL_PROPERTY_RE = re.compile(r"\]_([^.\[\]]+)$")
 
 
 class ColumnPathParseError(Exception):
@@ -69,6 +76,17 @@ def parse_column_path(column_name: str, selected_table: str) -> ColumnPath:
             hops=[],
             final_property=final_property,
             owning_concept=selected_table,
+        )
+
+    # A property of the relationship itself: ``has_employee[person]_title``.
+    rel_prop = _REL_PROPERTY_RE.search(column_name)
+    if rel_prop:
+        return ColumnPath(
+            raw=column_name,
+            hops=hops,
+            final_property=rel_prop.group(1),
+            owning_concept=hops[-1][1],
+            relationship_property=True,
         )
 
     # Remove all hop segments from the string to find the final property

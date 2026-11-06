@@ -737,8 +737,11 @@ def validate_sql(sql: str, conn_params: dict) -> tuple[bool, str, str]:
         is_valid = _validate(sql, conn_params)
     except Exception as e:
         error = str(getattr(e, 'doc', e))
-        if not sql.upper().startswith("SELECT") and not sql.upper().startswith("WITH"):
-            test_sql = sql[sql.upper().index("SELECT"):]
+        select_pos = sql.upper().find("SELECT")
+        # No SELECT at all (e.g. the LLM answered in prose): report it as invalid so the
+        # caller's validation retry can regenerate, instead of raising ValueError here.
+        if select_pos > 0 and not sql.upper().startswith("WITH"):
+            test_sql = sql[select_pos:]
             try:
                 is_valid = _validate(test_sql, conn_params)
                 if is_valid:
@@ -1081,6 +1084,21 @@ def get_properties_description(conn_params: dict) -> dict:
     return properties_desc
 
 
+def split_relationship_column(col_name: str) -> tuple[str, str]:
+    """Split a relationship column into ``(path, property)``.
+
+    ``rel[c].prop``     -> (``rel[c]``, ``prop``)  — a property of the target concept
+    ``rel[c]_prop``     -> (``rel[c]``, ``prop``)  — a property of the relationship
+                                                   itself (many-to-many additional property)
+    ``a[x].rel[c]_prop`` -> (``a[x].rel[c]``, ``prop``)
+    """
+    path, sep, prop = col_name.rpartition(']_')
+    if sep and '.' not in prop and '[' not in prop:
+        return path + ']', prop
+    path, _, prop = col_name.rpartition('.')
+    return path, prop
+
+
 def _add_relationship_column(
     relationship_name: str,
     relationship_desc: str,
@@ -1155,7 +1173,7 @@ def get_concept_properties(
 
             if '[' in col_name:
                 # This is a relationship column
-                rel_path, rel_col_name = col_name.rsplit('.', 1) if '.' in col_name else col_name.rsplit('_', 1) if '_' in col_name else col_name
+                rel_path, rel_col_name = split_relationship_column(col_name)
                 rel_name = rel_path.split('[', 1)[0]
 
                 if rel_name:

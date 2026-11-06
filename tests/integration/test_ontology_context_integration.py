@@ -311,8 +311,10 @@ class TestCrunchbaseSqlGenCardinality:
         assert hop1_cols, "hop-1 must have person's direct cols"
         assert hop2_cols, "hop-2 must have degree's direct cols"
         for n in hop1_cols:
-            assert n.startswith("has_employee[person]."), n
+            # person's columns, plus the relationship's own (``_title``)
+            assert n.startswith(("has_employee[person].", "has_employee[person]_")), n
             assert "has_degree[degree]" not in n, n
+        assert "has_employee[person]_title" in hop1_cols
         for n in hop2_cols:
             assert n.startswith(
                 "has_employee[person].has_degree[degree]."

@@ -21,7 +21,7 @@ except ImportError:
     _LANGSMITH_AVAILABLE = False
 
 from .general import parse_list, format_results_for_prompt
-from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, encrypt_prompt, get_ontology_description
+from .timbr_utils import get_datasources, get_tags, get_concepts, get_concept_properties, validate_sql, get_properties_description, get_relationships_description, encrypt_prompt, get_ontology_description, split_relationship_column
 from .prompt_service import (
     get_determine_concept_prompt_template,
     get_generate_sql_prompt_template,
@@ -840,9 +840,8 @@ def _partition_static_relationships_by_prefix(
     for _top_rel, top_bucket in top_level_dict.items():
         for col in top_bucket.get("columns", []) or []:
             name = col.get("name") or col.get("col_name", "")
-            if "." not in name:
-                continue
-            prefix = name.rsplit(".", 1)[0]
+            # ``rel[c].prop`` and the relationship's own ``rel[c]_prop`` share a bucket.
+            prefix = split_relationship_column(name)[0]
             if not prefix:
                 continue
             _bucket(prefix)["columns"].append(col)

@@ -301,3 +301,79 @@ class TestSelfReferencingRelationshipColumns:
         for col in ("assigned_work[work_item*1].label", "assigned_work[work_item*3].label"):
             assert result[col].distinct_count == 37, col
             assert result[col].total_source_rows == 4200, col
+
+
+class TestOwnMappings:
+    """Columns whose statistics live under a mapping sys_concept_mappings does not
+    list: a relationship's own properties and multi-value properties."""
+
+    _LOADER = "langchain_timbr.technical_context.statistics_loader.loader"
+
+    @staticmethod
+    def _row(prop, mapping, distinct):
+        from langchain_timbr.technical_context.statistics_loader.types import RawStatsRow, TopKEntry
+
+        return RawStatsRow(
+            property_name=prop, target_name=mapping, target_type="mapping",
+            distinct_count=distinct, non_null_count=10,
+            top_k=[TopKEntry("CEO", 3)], min_value=None, max_value=None,
+            raw_stats=None, updated_at=datetime(2024, 3, 1),
+        )
+
+    def _load(self, columns, ontology, mappings, fetched, conn_params, table="company"):
+        with patch(f"{self._LOADER}.load_ontology_concepts", return_value=ontology), \
+             patch(f"{self._LOADER}.load_concept_mappings", return_value=mappings), \
+             patch(f"{self._LOADER}.fetch_stats_for_mappings", return_value=fetched) as fetch:
+            result = load_column_statistics(
+                schema="dtimbr", table_name=table, columns=columns, conn_params=conn_params,
+            )
+        return result, fetch.call_args.kwargs["mapping_names"]
+
+    def test_relationship_property_reads_inherited_relationship_mapping(self, conn_params, _no_own_mappings):
+        rel_loader, _ = _no_own_mappings
+        # has_employee is declared on organization; company inherits it.
+        rel_loader.return_value = {("organization", "has_employee"): "map_works_at"}
+        ontology = {
+            "organization": OntologyConceptRow("organization", "", None),
+            "company": OntologyConceptRow("company", "organization", None),
+            "person": OntologyConceptRow("person", "", None),
+        }
+        mappings = {"person": [ConceptMappingRow("person", "map_person", 100)]}
+        result, fetched_names = self._load(
+            [{"name": "has_employee[person]_title", "type": "varchar"}],
+            ontology, mappings, [self._row("title", "map_works_at", 7)], conn_params,
+        )
+        assert "map_works_at" in fetched_names
+        assert result["has_employee[person]_title"].distinct_count == 7
+        assert result["has_employee[person]_title"].contributing_mappings == ["map_works_at"]
+
+    def test_unmapped_relationship_property_gets_no_stats(self, conn_params):
+        ontology = {
+            "company": OntologyConceptRow("company", "", None),
+            "person": OntologyConceptRow("person", "", None),
+        }
+        mappings = {"person": [ConceptMappingRow("person", "map_person", 100)]}
+        result, _ = self._load(
+            [{"name": "has_employee2[person]_title", "type": "varchar"}],
+            ontology, mappings, [self._row("title", "map_person", 7)], conn_params,
+        )
+        assert result["has_employee2[person]_title"].distinct_count == -1
+
+    def test_multi_value_property_reads_its_own_mapping(self, conn_params, _no_own_mappings):
+        _, mv_loader = _no_own_mappings
+        mv_loader.return_value = {("company", "t1"): ["map_company_t1"]}
+        ontology = {
+            "company": OntologyConceptRow("company", "", None),
+            "software_company": OntologyConceptRow("software_company", "company", None),
+        }
+        mappings = {"software_company": [ConceptMappingRow("software_company", "map_software", 1000)]}
+        # Queried on a child concept: the property is inherited from company.
+        result, fetched_names = self._load(
+            [{"name": "t1", "type": "varchar"}, {"name": "status", "type": "varchar"}],
+            ontology, mappings,
+            [self._row("t1", "map_company_t1", 4), self._row("status", "map_software", 2)],
+            conn_params, table="software_company",
+        )
+        assert "map_company_t1" in fetched_names
+        assert result["t1"].distinct_count == 4
+        assert result["status"].distinct_count == 2

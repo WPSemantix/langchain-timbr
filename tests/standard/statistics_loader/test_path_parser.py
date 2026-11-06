@@ -153,3 +153,24 @@ class TestTransitivityMarker:
         path = parse_column_path("orders[order].total", "customer")
         assert path.hops == [("orders", "order")]
         assert path.owning_concept == "order"
+
+
+class TestRelationshipProperty:
+    """A property of the relationship itself: ``rel[concept]_prop``."""
+
+    def test_single_hop(self):
+        path = parse_column_path("has_employee[person]_title", "organization")
+        assert path.hops == [("has_employee", "person")]
+        assert path.final_property == "title"
+        assert path.relationship_property is True
+
+    def test_nested_transitive(self):
+        path = parse_column_path("a[x].has_acquired[company*2]_acquisition_id", "org")
+        assert path.hops == [("a", "x"), ("has_acquired", "company")]
+        assert path.final_property == "acquisition_id"
+        assert path.relationship_property is True
+
+    def test_target_type_flag_is_not_a_relationship_property(self):
+        path = parse_column_path("has_employee[person]._type_of_usa_person", "organization")
+        assert path.final_property == "_type_of_usa_person"
+        assert path.relationship_property is False

@@ -380,10 +380,12 @@ def _render(
 
         # outgoing relationships — MANDATORY for detail blocks (Fix 2 sentinel).
         # Self-refs inlined with `# recursive`; descriptions inline when present.
+        # A relationship's own properties ride on its line, cascade-gated like props.
         rels_block = _build_rels_block(
             outgoing_by_concept.get(c, []),
             with_descriptions=True,
             sentinel_when_empty=True,
+            rel_props=_relationship_props(c, ontology) if include_props else None,
         )
         out.extend(rels_block)
 
@@ -533,6 +535,20 @@ def _build_props_block(
     return lines
 
 
+def _relationship_props(concept: str, ontology: Ontology) -> Dict[str, List[str]]:
+    """Relationship name -> its own properties (``has_employee`` -> ``title``,
+    selected as ``has_employee[person]_title``). Empty on any failure."""
+    try:
+        rels = ontology.get_concept_metadata(concept).relationships
+        return {
+            name: sorted(ap.name for ap in rel.additional_properties)
+            for name, rel in rels.items()
+            if rel.additional_properties
+        }
+    except Exception:
+        return {}
+
+
 def _concept_has_selectable_props(concept: str, ontology: Ontology) -> bool:
     """True if the concept has any property the serializer would emit at stage 1.
 
@@ -585,6 +601,7 @@ def _build_rels_block(
     *,
     with_descriptions: bool = True,
     sentinel_when_empty: bool = False,
+    rel_props: Dict[str, List[str]] | None = None,
 ) -> List[str]:
     """Build the ``rels:`` block listing outgoing edges (including self-refs).
 
@@ -606,6 +623,8 @@ def _build_rels_block(
             blocks (Fix 2 — sentinel makes "leaf" distinguishable from
             "missing data") and minimal blocks (the same distinction
             matters for expand_to-promoted concepts).
+        rel_props: relationship name -> the relationship's own properties
+            (many-to-many additional properties), annotated as ``props: ...``.
 
     Returns ``[]`` when the concept has no outgoing rels AND
     ``sentinel_when_empty=False`` — matches legacy behavior for callers
@@ -627,6 +646,8 @@ def _build_rels_block(
             annotations.append("recursive")
         if with_descriptions and e.description:
             annotations.append(e.description)
+        if rel_props and rel_props.get(e.relationship_name):
+            annotations.append(f"props: {', '.join(rel_props[e.relationship_name])}")
         if annotations:
             line += "  # " + " | ".join(annotations)
         lines.append(line)
