@@ -216,6 +216,18 @@ def build_relationships_from_paths(
                     ),
                 )
 
+            # The relationship's own properties (many-to-many additional
+            # properties): ``has_employee[person]_title``.
+            for ap in _lookup_additional_properties(
+                ontology, current_from, seg.relationship_name,
+            ):
+                bucket["columns"].append({
+                    "name": f"{prefix_str}_{ap.name}",
+                    "col_name": ap.name,
+                    "data_type": ap.data_type,
+                    "description": None,
+                })
+
             meta = _safe_get_concept_metadata(ontology, target)
             if meta is None:
                 current_from = target
@@ -321,6 +333,15 @@ def _lookup_transitivity(ontology, from_concept: str, rel_name: str) -> int:
         return int(getattr(rel_meta, "transitivity", 1) or 1)
     except (TypeError, ValueError):
         return 1
+
+
+def _lookup_additional_properties(ontology, from_concept: str, rel_name: str) -> tuple:
+    """The relationship's own properties, or ``()`` on any failure."""
+    try:
+        rel_meta = _safe_get_concept_metadata(ontology, from_concept).relationships.get(rel_name)
+        return tuple(getattr(rel_meta, "additional_properties", None) or ())
+    except Exception:
+        return ()
 
 
 def _lookup_relationship_description(

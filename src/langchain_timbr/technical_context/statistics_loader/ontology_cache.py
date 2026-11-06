@@ -3,6 +3,8 @@
 Loads full tables from:
   - timbr.sys_ontology (concepts with inheritance and query fields)
   - timbr.sys_concept_mappings (concept-to-mapping relationships)
+  - timbr.sys_concept_relationships (mappings of relationships, for their properties)
+  - timbr.sys_concept_properties (mappings of multi-value properties)
   - timbr.sys_views (view row counts)
 
 Only sys_ontology is shared across callers; the mapping list, the view list and
@@ -89,6 +91,66 @@ def load_concept_mappings(conn_params: dict) -> dict[str, list[ConceptMappingRow
             result[concept] = []
         result[concept].append(mapping_row)
 
+    return result
+
+
+@cache_with_version_check(per_user=True)
+def load_relationship_mappings(conn_params: dict) -> dict[tuple[str, str], str]:
+    """Load the mapping behind each mapped relationship from
+    timbr.sys_concept_relationships.
+
+    A many-to-many relationship's own properties (``has_employee[person]_title``)
+    are mapped, and their statistics recorded, under the relationship's mapping,
+    which sys_concept_mappings does not list. Per-user tier, like the mapping list.
+    A failure returns an empty dict: those columns then carry no statistics.
+
+    Returns:
+        Dict of (concept, relationship_name) -> mapping_name.
+    """
+    query = (
+        "SELECT concept, relationship_name, mapping_name "
+        "FROM timbr.sys_concept_relationships WHERE mapping_name IS NOT NULL"
+    )
+    try:
+        rows = _timbr_utils.run_query(query, conn_params)
+    except Exception as e:
+        logger.warning("Could not load relationship mappings: %s", e)
+        return {}
+    return {
+        (row["concept"], row["relationship_name"]): row["mapping_name"]
+        for row in rows
+        if row.get("concept") and row.get("relationship_name") and row.get("mapping_name")
+    }
+
+
+@cache_with_version_check(per_user=True)
+def load_multivalue_mappings(conn_params: dict) -> dict[tuple[str, str], list[str]]:
+    """Load the mappings of multi-value properties from timbr.sys_concept_properties.
+
+    A multi-value property is mapped, and its statistics recorded, under a mapping
+    of its own, which sys_concept_mappings does not list. Only multi-value rows
+    carry a mapping_name. Per-user tier, like the mapping list. A failure returns
+    an empty dict: those columns then carry no statistics.
+
+    Returns:
+        Dict of (concept, property_name) -> list of mapping names.
+    """
+    query = (
+        "SELECT concept, property_name, mapping_name "
+        "FROM timbr.sys_concept_properties WHERE mapping_name IS NOT NULL"
+    )
+    try:
+        rows = _timbr_utils.run_query(query, conn_params)
+    except Exception as e:
+        logger.warning("Could not load multi-value property mappings: %s", e)
+        return {}
+    result: dict[tuple[str, str], list[str]] = {}
+    for row in rows:
+        concept = row.get("concept")
+        prop = row.get("property_name")
+        mapping_name = row.get("mapping_name")
+        if concept and prop and mapping_name:
+            result.setdefault((concept, prop), []).append(mapping_name)
     return result
 
 

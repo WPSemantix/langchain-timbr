@@ -15,6 +15,9 @@ class ColumnPath:
     hops: list[tuple[str, str]]  # [(relationship_name, target_concept), ...]
     final_property: str
     owning_concept: str  # last concept in hops, or selected_table if no hops
+    # True for a property of the last relationship itself (``rel[concept]_prop``),
+    # whose statistics live under the relationship's mapping, not the concept's.
+    relationship_property: bool = False
 
 
 @dataclass

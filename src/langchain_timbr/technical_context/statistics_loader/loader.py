@@ -13,10 +13,18 @@ from .types import (
     ColumnPath,
     ColumnStatistics,
     ConceptMappingSet,
+    MappingRef,
+    OntologyConceptRow,
     RawStatsRow,
 )
 from .path_parser import parse_column_path, ColumnPathParseError
-from .ontology_cache import load_ontology_concepts, load_concept_mappings, load_view_row_counts
+from .ontology_cache import (
+    load_ontology_concepts,
+    load_concept_mappings,
+    load_multivalue_mappings,
+    load_relationship_mappings,
+    load_view_row_counts,
+)
 from .inheritance import build_descendants_map
 from .mapping_resolver import resolve_concept_mappings
 from .stats_fetcher import fetch_stats_for_mappings, fetch_stats_for_view
@@ -210,15 +218,24 @@ def _load_dtimbr(
         concept_mapping_sets[concept] = mapping_set
         all_mapping_names.update(m.mapping_name for m in mapping_set.mappings)
 
+    # A.5b — Columns whose statistics live under a mapping of their own rather
+    # than the concept's: relationship properties (the relationship's mapping)
+    # and multi-value properties (the property's mapping).
+    path_mapping_sets = _resolve_own_mapping_sets(
+        paths, table_name, ontology, descendants, concept_mapping_sets, conn_params,
+    )
+    for mapping_set in path_mapping_sets.values():
+        all_mapping_names.update(m.mapping_name for m in mapping_set.mappings)
+
     # A.6 — Build type map and fetch stats (batched)
     columns_type_map = _build_type_map(columns)
     # Also add final_property -> type for relationship columns
     for col in columns:
         col_name = col.get("name", "")
         col_type = col.get("type", "")
-        if "[" in col_name and "." in col_name:
+        if "[" in col_name and ("." in col_name or "]_" in col_name):
             # Extract final property name
-            final_prop = col_name.rsplit(".", 1)[-1] if "." in col_name else col_name
+            final_prop = col_name.rsplit("]_", 1)[-1] if "]_" in col_name else col_name.rsplit(".", 1)[-1]
             if final_prop and final_prop not in columns_type_map:
                 columns_type_map[final_prop] = col_type
 
@@ -244,7 +261,7 @@ def _load_dtimbr(
     result: dict[str, ColumnStatistics] = {}
 
     for path in paths:
-        mapping_set = concept_mapping_sets.get(path.owning_concept)
+        mapping_set = path_mapping_sets.get(path.raw) or concept_mapping_sets.get(path.owning_concept)
         if not mapping_set:
             result[path.raw] = _sentinel(-1, config)
             continue
@@ -265,6 +282,81 @@ def _load_dtimbr(
         result[col_name] = _sentinel(-1, config)
 
     return result
+
+
+def _ancestors(concept: str, ontology: dict[str, OntologyConceptRow]) -> list[str]:
+    """All concepts ``concept`` inherits from, nearest first."""
+    out: list[str] = []
+    frontier = [concept]
+    while frontier:
+        row = ontology.get(frontier.pop(0))
+        for parent in (row.inheritance.split(",") if row and row.inheritance else []):
+            parent = parent.strip()
+            if parent and parent != concept and parent not in out:
+                out.append(parent)
+                frontier.append(parent)
+    return out
+
+
+def _resolve_own_mapping_sets(
+    paths: list[ColumnPath],
+    table_name: str,
+    ontology: dict[str, OntologyConceptRow],
+    descendants: dict[str, set[str]],
+    concept_mapping_sets: dict[str, ConceptMappingSet],
+    conn_params: dict,
+) -> dict[str, ConceptMappingSet]:
+    """Mapping sets, keyed by raw column name, for the columns whose statistics are
+    recorded under a mapping that sys_concept_mappings does not list:
+
+    - A relationship property (``has_employee[person]_title``) reads the mapping of
+      that relationship, looked up on the concept the hop starts from or the
+      ancestor that declares it.
+    - A multi-value property reads its own mapping(s), declared on the owning
+      concept, an ancestor it inherits the property from, or a descendant whose
+      rows it includes. They are added to the concept's own mappings.
+    """
+    out: dict[str, ConceptMappingSet] = {}
+    rel_mappings = (
+        load_relationship_mappings(conn_params=conn_params)
+        if any(p.relationship_property for p in paths) else {}
+    )
+    mv_mappings = load_multivalue_mappings(conn_params=conn_params)
+
+    for path in paths:
+        if path.relationship_property:
+            from_concept = path.hops[-2][1] if len(path.hops) > 1 else table_name
+            rel_name = path.hops[-1][0]
+            refs: list[MappingRef] = []
+            for concept in [from_concept] + _ancestors(from_concept, ontology):
+                mapping_name = rel_mappings.get((concept, rel_name))
+                if mapping_name:
+                    refs.append(MappingRef(mapping_name, concept, -1, "direct"))
+                    break
+            out[path.raw] = ConceptMappingSet(concept=from_concept, mappings=refs, total_rows=-1)
+        elif mv_mappings:
+            owner = path.owning_concept
+            related = (
+                [owner]
+                + _ancestors(owner, ontology)
+                + sorted(descendants.get(owner, set()))
+            )
+            base = concept_mapping_sets.get(owner)
+            base_refs = list(base.mappings) if base else []
+            known = {r.mapping_name for r in base_refs}
+            extra: list[MappingRef] = []
+            for concept in related:
+                for mapping_name in mv_mappings.get((concept, path.final_property), []):
+                    if mapping_name not in known:
+                        known.add(mapping_name)
+                        extra.append(MappingRef(mapping_name, concept, -1, "direct"))
+            if extra:
+                out[path.raw] = ConceptMappingSet(
+                    concept=owner,
+                    mappings=base_refs + extra,
+                    total_rows=base.total_rows if base else -1,
+                )
+    return out
 
 
 def _build_type_map(columns: list[dict]) -> dict[str, str]:
