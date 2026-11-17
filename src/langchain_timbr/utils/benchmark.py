@@ -1,9 +1,9 @@
 """
 LLM Benchmark utility for evaluating Timbr SQL agent performance.
 
-Runs a set of questions through a Timbr agent and scores the generated SQL and
-answers using deterministic row-comparison, an LLM-as-judge approach, or the
-combined full mode.
+Runs a set of questions through a Timbr agent and scores each result with an
+LLM judge. When the expected rows are available, the judge compares the agent's
+rows with them blind, in a fresh context, without knowing which set is which.
 
 Usage::
 
@@ -26,10 +26,12 @@ import base64
 import copy
 import json
 import logging
+import random
+import re
 import uuid
+import warnings
 from datetime import datetime
 from time import perf_counter
-from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 import requests
@@ -39,8 +41,10 @@ from pytimbr_api import timbr_http_connector
 from .. import config
 from langchain_timbr import create_timbr_sql_agent, GenerateTimbrSqlChain
 from ..llm_wrapper.llm_wrapper import LlmWrapper
-from .general import to_boolean
-from .prompt_service import get_benchmark_judge_prompt_template
+from .prompt_service import (
+    get_benchmark_judge_prompt_template,
+    get_benchmark_judge_results_prompt_template,
+)
 from .timbr_utils import get_timbr_agent_options, get_timbr_benchmark_info, build_server_url
 from .timbr_llm_utils import (
     LLM_OUTPUT_RETRIES, LLMOutputError, _extract_json, _response_text, _with_output_feedback,
@@ -59,7 +63,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Result comparison helpers (ported from LLM Benchmark utils.py)
+# Expected-value helpers (concept / ontology checks)
 # ---------------------------------------------------------------------------
 
 def _normalize_value(value: Any) -> Any:
@@ -73,23 +77,6 @@ def _normalize_value(value: Any) -> Any:
     return value
 
 
-def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize a row by lowercasing keys and normalizing values."""
-    return {
-        k.lower().strip().replace(' ', '_'): _normalize_value(v)
-        for k, v in row.items()
-    }
-
-
-def _normalize_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Normalize a list of rows and sort them for order-independent comparison."""
-    if not results:
-        return []
-    normalized = [_normalize_row(r) for r in results]
-    normalized.sort(key=lambda r: str(sorted(r.items())))
-    return normalized
-
-
 def _matches_expected_value(expected_value: Any, selected_value: Any) -> Optional[bool]:
     """Compare expected and selected values using normalization.
 
@@ -101,70 +88,39 @@ def _matches_expected_value(expected_value: Any, selected_value: Any) -> Optiona
     return _normalize_value(expected_value) == _normalize_value(selected_value)
 
 
-def _compare_results(
-    llm_results: List[Dict[str, Any]],
-    correct_results: List[Dict[str, Any]],
-) -> Tuple[bool, str]:
-    """
-    Compare LLM result rows with expected rows.
-
-    Column names do not need to match – only the *values* must match.
-    Rows may appear in any order.
-
-    Returns:
-        Tuple of (is_match: bool, error_message: str)
-    """
-    try:
-        norm_llm = _normalize_results(llm_results)
-        norm_correct = _normalize_results(correct_results)
-
-        if len(norm_llm) != len(norm_correct):
-            return (
-                False,
-                f"Row count mismatch: LLM returned {len(norm_llm)} rows, expected {len(norm_correct)} rows",
-            )
-
-        if len(norm_llm) == 0 and len(norm_correct) == 0:
-            return True, ""
-
-        used_llm_rows: set = set()
-        for i, correct_row in enumerate(norm_correct):
-            correct_values = list(correct_row.values())
-            row_matched = False
-            for j, llm_row in enumerate(norm_llm):
-                if j in used_llm_rows:
-                    continue
-                llm_values = list(llm_row.values())
-                if all(cv in llm_values for cv in correct_values):
-                    used_llm_rows.add(j)
-                    row_matched = True
-                    break
-            if not row_matched:
-                return (
-                    False,
-                    f"No matching row found for correct row {i + 1} with values: "
-                    f"{dict(zip(list(correct_row.keys()), correct_values))}",
-                )
-
-        return True, ""
-    except Exception as exc:
-        return False, f"Error during comparison: {str(exc)}"
-
-
 # ---------------------------------------------------------------------------
-# SQL normalization helpers
+# Judge helpers
 # ---------------------------------------------------------------------------
 
-# Similarity threshold for SQL-to-SQL partial match (generate_sql_only mode)
-SQL_PARTIAL_MATCH_THRESHOLD = 0.85
+_DEPRECATED_MECHANISM_MESSAGE = (
+    "Benchmark scoring always uses the LLM judge; '{name}' is deprecated and ignored."
+)
+
+# "Result A" / "result B" in the judge's reasoning, mapped back to the real origin.
+_RESULT_LABEL_RE = re.compile(r"\bresult\s+([AB])\b", re.IGNORECASE)
 
 
-def _normalize_sql(sql: str) -> str:
-    """Normalise SQL for comparison: lowercase, collapse all whitespace to single
-    spaces, and strip trailing semicolons."""
-    if not sql:
-        return ""
-    return " ".join(sql.lower().split()).rstrip(";").strip()
+def _warn_deprecated_mechanism(name: str, stacklevel: int = 3) -> None:
+    warnings.warn(
+        _DEPRECATED_MECHANISM_MESSAGE.format(name=name),
+        DeprecationWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _rows_to_json(rows: List[Dict[str, Any]]) -> str:
+    """Serialize result rows for the judge. Non-JSON values (dates, decimals) become strings."""
+    return json.dumps(rows, default=str, ensure_ascii=False)
+
+
+def _restore_result_labels(reasoning: str, labels: Dict[str, str]) -> str:
+    """Rewrite the blind "Result A/B" labels in the judge's reasoning to the real origins."""
+    def _replace(match: "re.Match[str]") -> str:
+        label = labels[match.group(1).upper()]
+        before = reasoning[:match.start()].rstrip()
+        sentence_start = not before or before.endswith((".", "!", "?", ":"))
+        return label[0].upper() + label[1:] if sentence_start else label
+    return _RESULT_LABEL_RE.sub(_replace, reasoning)
 
 
 # ---------------------------------------------------------------------------
@@ -173,39 +129,48 @@ def _normalize_sql(sql: str) -> str:
 
 class BenchmarkScorer:
     """
-    Score benchmark results using a configurable combination of:
+    Score benchmark results with an LLM judge.
 
-    * **deterministic** – row comparison between LLM and expected results
-    * **llm_judge** – LLM evaluates the SQL + answer quality
-    * **full** – deterministic and llm_judge together (deterministic assessment wins)
+    Every verdict is a fresh, stateless LLM call with no chain or memory context.
 
-    When both *deterministic* and *llm_judge* are enabled the deterministic
-    assessment takes priority and the scoring method is reported as ``"full"``.
+    * When both the agent's rows and the expected rows (from ``correct_sql``) are
+      available, the judge compares the two JSON row sets **blind**: they are
+      labelled "Result A" / "Result B" in random order, with no SQL and no hint of
+      which set came from the agent.
+    * Otherwise (``generate_sql_only`` execution, no ``correct_sql``, or the
+      expected query failed) the judge evaluates the candidate SQL against the
+      question, alongside the reference SQL when one exists.
     """
 
     def __init__(
         self,
         conn_params: Dict[str, Any],
         llm: Optional[Any] = None,
-        use_deterministic: bool = False,
-        use_llm_judge: bool = False,
+        use_deterministic: Optional[bool] = None,
+        use_llm_judge: Optional[bool] = None,
+        rng: Optional[random.Random] = None,
     ):
         """
         Args:
             conn_params: Timbr connection parameters (url, token, ontology, …).
-                         Used to fetch the benchmark-judge prompt template from the API.
-            llm: An LlmWrapper instance (or compatible LangChain LLM).
-                 Required only when *use_llm_judge* is ``True``.
-            use_deterministic: Enable deterministic row comparison scoring.
-            use_llm_judge: Enable LLM-as-judge scoring (requires *llm*).
+                         Used to fetch the benchmark-judge prompt templates from the API.
+            llm: An LlmWrapper instance (or compatible LangChain LLM) used as the judge.
+            use_deterministic: Deprecated and ignored.
+            use_llm_judge: Deprecated and ignored.
+            rng: Random source for the blind A/B ordering (injectable for tests).
         """
+        if use_deterministic is not None:
+            _warn_deprecated_mechanism("use_deterministic")
+        if use_llm_judge is not None:
+            _warn_deprecated_mechanism("use_llm_judge")
         self.conn_params = conn_params
-        self.use_deterministic = use_deterministic
-        self.use_llm_judge = use_llm_judge
-        self.llm = llm if use_llm_judge else None
+        self.llm = llm
+        self._rng = rng or random.Random()
 
-        # Lazy-loaded template wrapper (fetched on first judge call)
-        self._judge_prompt_template = None
+        # Lazy-loaded template wrappers (fetched on first judge call)
+        self._results_prompt_template: Optional[Any] = None
+        self._sql_prompt_template: Optional[Any] = None
+        self._results_template_warned = False
 
     # ------------------------------------------------------------------
     # Public scoring entry-point
@@ -215,306 +180,172 @@ class BenchmarkScorer:
         self,
         question: str,
         generated_sql: str,
-        answer: str,
+        answer: str = "",
         generated_rows: Optional[List[Dict[str, Any]]] = None,
         expected_sql: Optional[str] = None,
         expected_answer: Optional[str] = None,
         expected_rows: Optional[List[Dict[str, Any]]] = None,
         execution_error: Optional[str] = None,
         execution_mode: str = "full",
+        expected_rows_error: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Score a single benchmark result.
 
+        ``answer`` and ``expected_answer`` are accepted for compatibility; the judge
+        evaluates result rows or SQL, never answer text.
+
+        Args:
+            expected_rows: Rows returned by ``correct_sql``; ``None`` when unavailable.
+            expected_rows_error: Why ``correct_sql`` could not be executed, if it failed.
+
         Returns a dict with keys:
             ``assessment``    – ``"correct"``, ``"partial"``, or ``"incorrect"``
-            ``breakdown``     – method-specific detail (populated by deterministic mode)
-            ``scoring_method``– one of ``"deterministic"``, ``"llm_judge"``,
-                                ``"full"``, ``"error"``
-            ``reasoning``     – optional human-readable explanation string
+            ``scoring_method``– ``"llm_judge"``, or ``"error"`` when no verdict was produced
+            ``reasoning``     – human-readable explanation string
         """
         if not generated_sql or not generated_sql.strip():
-            return {
-                "assessment": "incorrect",
-                "breakdown": {},
-                "reasoning": "No SQL query was generated",
-                "scoring_method": "error",
-            }
+            return _error_result("No SQL query was generated")
 
-        methods_to_use: List[str] = []
-        if self.use_deterministic:
-            methods_to_use.append("deterministic")
-        if self.use_llm_judge:
-            methods_to_use.append("llm_judge")
+        if execution_mode == "full" and execution_error:
+            return _error_result(f"Query failed to execute: {execution_error}"[:5000])
 
-        if not methods_to_use:
-            return {
-                "assessment": "incorrect",
-                "breakdown": {},
-                "reasoning": "No scoring method enabled",
-                "scoring_method": "error",
-            }
+        if self.llm is None:
+            return _error_result("No LLM is configured for the benchmark judge")
 
-        all_assessments: List[Dict[str, Any]] = []
-        combined_breakdown: Dict[str, Any] = {}
-        combined_reasoning: List[str] = []
-
-        if "deterministic" in methods_to_use:
-            det_result = self._deterministic_score(
-                generated_sql,
-                answer,
-                generated_rows,
-                expected_sql,
-                expected_answer,
-                expected_rows,
-                execution_error,
-                execution_mode=execution_mode,
-            )
-            all_assessments.append(det_result)
-            combined_breakdown.update(
-                {f"det_{k}": v for k, v in det_result["breakdown"].items()}
-            )
-            if det_result.get("reasoning"):
-                combined_reasoning.append(f"[Deterministic] {det_result['reasoning']}")
-
-        if "llm_judge" in methods_to_use:
-            llm_result = self._llm_judge_score(question, generated_sql, answer, execution_mode=execution_mode)
-            all_assessments.append(llm_result)
-            combined_breakdown.update(
-                {f"llm_{k}": v for k, v in llm_result["breakdown"].items()}
-            )
-            if llm_result.get("reasoning"):
-                combined_reasoning.append(f"[LLM Judge] {llm_result['reasoning']}")
-
-        if len(all_assessments) > 1:
-            # Filter out skipped/error assessments — they carry no signal
-            meaningful = [a for a in all_assessments if a["scoring_method"] not in ("skipped", "error")]
-            if not meaningful:
-                # Nothing produced a real result; fall back to incorrect
-                final_assessment = "incorrect"
-                scoring_method = "error"
-            elif len(meaningful) == 1:
-                final_assessment = meaningful[0]["assessment"]
-                scoring_method = meaningful[0]["scoring_method"]
-            else:
-                # Deterministic takes priority when it produced a meaningful result
-                det_results = [a for a in meaningful if a["scoring_method"] == "deterministic"]
-                if det_results:
-                    final_assessment = det_results[0]["assessment"]
-                else:
-                    assessments = [a["assessment"] for a in meaningful]
-                    if "incorrect" in assessments:
-                        final_assessment = "incorrect"
-                    elif "partial" in assessments:
-                        final_assessment = "partial"
-                    else:
-                        final_assessment = "correct"
-                scoring_method = "full"
-        else:
-            final_assessment = all_assessments[0]["assessment"]
-            scoring_method = all_assessments[0]["scoring_method"]
-
-        result: Dict[str, Any] = {
-            "assessment": final_assessment,
-            "breakdown": combined_breakdown,
-            "scoring_method": scoring_method,
-        }
-        if combined_reasoning:
-            result["reasoning"] = " | ".join(combined_reasoning)
-
-        return result
-
-    # ------------------------------------------------------------------
-    # Private scoring implementations
-    # ------------------------------------------------------------------
-
-    def _deterministic_score(
-        self,
-        generated_sql: str,
-        answer: str,
-        generated_rows: Optional[List[Dict[str, Any]]],
-        expected_sql: Optional[str],
-        expected_answer: Optional[str],
-        expected_rows: Optional[List[Dict[str, Any]]],
-        execution_error: Optional[str],
-        execution_mode: str = "full",
-    ) -> Dict[str, Any]:
-        breakdown: Dict[str, Any] = {}
-        reasoning_parts: List[str] = []
-
-        # ---- SQL-only mode: compare generated SQL against expected SQL directly ----
-        if execution_mode == "generate_sql_only":
-            if not expected_sql:
-                return {
-                    "assessment": "skipped",
-                    "breakdown": {},
-                    "reasoning": "No expected SQL provided for SQL comparison",
-                    "scoring_method": "skipped",
-                }
-            norm_generated = _normalize_sql(generated_sql)
-            norm_expected = _normalize_sql(expected_sql)
-            ratio = round(SequenceMatcher(None, norm_expected, norm_generated).ratio(), 4)
-            breakdown["sql_similarity"] = ratio
-            if ratio == 1.0:
-                breakdown["sql_match"] = "exact"
-                assessment = "correct"
-                reasoning_parts.append("SQL matches expected exactly")
-            elif ratio >= SQL_PARTIAL_MATCH_THRESHOLD:
-                breakdown["sql_match"] = "partial"
-                assessment = "partial"
-                reasoning_parts.append(f"SQL partially matches expected (similarity: {ratio:.2f})")
-            else:
-                breakdown["sql_match"] = "none"
-                assessment = "incorrect"
-                reasoning_parts.append(f"SQL does not match expected (similarity: {ratio:.2f})")
-            return {
-                "assessment": assessment,
-                "breakdown": breakdown,
-                "scoring_method": "deterministic",
-                "reasoning": " | ".join(reasoning_parts),
-            }
-
-        # ---- Full mode: row-comparison scoring ----
-        assessment = "correct"
-
-        if execution_error:
-            breakdown["execution_success"] = "failed"
-            assessment = "incorrect"
-            reasoning_parts.append("Query failed to execute")
-        else:
-            breakdown["execution_success"] = "passed"
-
-        if generated_rows is not None and expected_rows is not None:
-            is_match, error_message = _compare_results(generated_rows, expected_rows)
-            if is_match:
-                breakdown["result_accuracy"] = "matched"
-                assessment = "correct"
-                reasoning_parts.append("Results match expected output")
-            else:
-                breakdown["result_accuracy"] = "mismatched"
-                assessment = "incorrect"
-                reasoning_parts.append(f"Results mismatch: {error_message}")
-
-        if expected_sql:
-            breakdown["query_similarity"] = round(
-                self._score_query_similarity(generated_sql, expected_sql), 2
-            )
-
-        if expected_answer:
-            breakdown["answer_similarity"] = round(
-                self._score_answer_similarity(answer, expected_answer), 2
-            )
-
-        return {
-            "assessment": assessment,
-            "breakdown": breakdown,
-            "scoring_method": "deterministic",
-            "reasoning": " | ".join(reasoning_parts) if reasoning_parts else "Deterministic comparison",
-        }
-
-    def _llm_judge_score(
-        self,
-        question: str,
-        generated_sql: str,
-        answer: str,
-        execution_mode: str = "full",
-    ) -> Dict[str, Any]:
-        """Use LLM (via the benchmark-judge template from timbr-api) to score the result."""
         try:
-            if self._judge_prompt_template is None:
-                self._judge_prompt_template = get_benchmark_judge_prompt_template(
-                    conn_params=self.conn_params
+            if execution_mode == "full" and expected_rows is not None:
+                verdict = self._judge_results_blind(question, generated_rows or [], expected_rows)
+                if verdict is not None:
+                    return verdict
+                note = "The results judge prompt is unavailable, so the SQL was judged against the question."
+            elif execution_mode == "full" and expected_rows_error:
+                note = (
+                    f"The reference SQL failed to execute ({expected_rows_error}), "
+                    "so the SQL was judged against the question."
                 )
-
-            # In SQL-only mode there is no executed answer; pass an empty context so
-            # the template section is absent and the judge evaluates SQL alone.
-            if execution_mode == "generate_sql_only":
-                answer_context = ""
+            elif execution_mode == "full":
+                note = "No reference SQL was provided, so the SQL was judged against the question."
             else:
-                answer_context = f"**Generated Answer:**\n{answer or '(no answer generated)'}\n\n"
+                note = ""
 
-            messages = self._judge_prompt_template.format_messages(
-                question=question,
-                generated_sql=generated_sql,
-                answer_context=answer_context,
-                expected_sql_context="",
-                expected_answer_context="",
-            )
-
-            # A verdict that is not a JSON object is sent back to the judge, with
-            # the parser error, for correction.
-            attempt_messages = messages
-            for attempt in range(LLM_OUTPUT_RETRIES + 1):
-                response = self.llm(attempt_messages)
-                try:
-                    evaluation = _extract_json(_response_text(response))
-                    if not isinstance(evaluation, dict):
-                        raise LLMOutputError("the response must be a JSON object with 'assessment' and 'reasoning'.")
-                    break
-                except LLMOutputError as exc:
-                    if attempt == LLM_OUTPUT_RETRIES:
-                        raise
-                    attempt_messages = _with_output_feedback(self.llm, messages, response, exc)
-
-            assessment = evaluation.get("assessment", "incorrect").lower()
-            if assessment not in ("correct", "partial", "incorrect"):
-                assessment = "incorrect"
-
-            return {
-                "assessment": assessment,
-                "breakdown": {},
-                "reasoning": str(evaluation.get("reasoning", ""))[:5000],
-                "scoring_method": "llm_judge",
-            }
+            verdict = self._judge_sql(question, generated_sql, expected_sql)
+            if note:
+                verdict["reasoning"] = f"{verdict['reasoning']} ({note})".strip()
+            return verdict
 
         except Exception as exc:
             logger.warning(f"LLM judge scoring failed: {exc}")
-            return {
-                "assessment": "incorrect",
-                "breakdown": {},
-                "reasoning": f"LLM judge scoring failed: {str(exc)}",
-                "scoring_method": "error",
-            }
+            return _error_result(f"LLM judge scoring failed: {str(exc)}")
 
     # ------------------------------------------------------------------
-    # Similarity helpers
+    # Judge implementations
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _score_query_similarity(query1: str, query2: str) -> float:
-        if not query1 or not query2:
-            return 0.0
-        q1 = " ".join(query1.lower().split())
-        q2 = " ".join(query2.lower().split())
-        if q1 == q2:
-            return 10.0
-        return round(SequenceMatcher(None, q1, q2).ratio() * 10, 2)
+    def _judge_results_blind(
+        self,
+        question: str,
+        generated_rows: List[Dict[str, Any]],
+        expected_rows: List[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Compare the two row sets blind. Returns ``None`` when the template is unavailable."""
+        generated_first = self._rng.random() < 0.5
+        if generated_first:
+            rows_a, rows_b = generated_rows, expected_rows
+            labels = {"A": "agent result", "B": "expected result"}
+        else:
+            rows_a, rows_b = expected_rows, generated_rows
+            labels = {"A": "expected result", "B": "agent result"}
 
-    @staticmethod
-    def _score_answer_similarity(answer1: str, answer2: str) -> float:
-        if not answer1 or not answer2:
-            return 0.0
-        a1 = answer1.strip().lower()
-        a2 = answer2.strip().lower()
-        if a1 == a2:
-            return 10.0
+        if self._results_template_warned:
+            return None
+
         try:
-            num1 = float(a1.replace(",", ""))
-            num2 = float(a2.replace(",", ""))
-            pct = abs(num1 - num2) / num2 * 100 if num2 != 0 else 100
-            if pct < 0.01:
-                return 10.0
-            elif pct < 1:
-                return 9.0
-            elif pct < 5:
-                return 7.0
-            elif pct < 10:
-                return 5.0
-            else:
-                return max(3.0, 10.0 - pct / 10)
-        except ValueError:
-            pass
-        return round(SequenceMatcher(None, a1, a2).ratio() * 10, 2)
+            if self._results_prompt_template is None:
+                self._results_prompt_template = get_benchmark_judge_results_prompt_template(
+                    conn_params=self.conn_params
+                )
+            messages = self._results_prompt_template.format_messages(
+                question=question,
+                result_a=_rows_to_json(rows_a),
+                result_a_row_count=len(rows_a),
+                result_b=_rows_to_json(rows_b),
+                result_b_row_count=len(rows_b),
+            )
+        except Exception as exc:
+            # An older platform does not serve this template; judge the SQL instead.
+            if not self._results_template_warned:
+                logger.warning(f"Benchmark results judge template unavailable, judging SQL instead: {exc}")
+                self._results_template_warned = True
+            return None
+
+        assessment, reasoning = self._ask_judge(messages)
+        return {
+            "assessment": assessment,
+            "reasoning": _restore_result_labels(reasoning, labels),
+            "scoring_method": "llm_judge",
+        }
+
+    def _judge_sql(
+        self,
+        question: str,
+        generated_sql: str,
+        expected_sql: Optional[str],
+    ) -> Dict[str, Any]:
+        """Judge the candidate SQL against the question (and the reference SQL, when given)."""
+        if self._sql_prompt_template is None:
+            self._sql_prompt_template = get_benchmark_judge_prompt_template(
+                conn_params=self.conn_params
+            )
+
+        expected_sql_context = (
+            f"**Reference SQL Query:**\n```sql\n{expected_sql}\n```\n\n" if expected_sql else ""
+        )
+        messages = self._sql_prompt_template.format_messages(
+            question=question,
+            generated_sql=generated_sql,
+            answer_context="",
+            expected_sql_context=expected_sql_context,
+            expected_answer_context="",
+        )
+        assessment, reasoning = self._ask_judge(messages)
+        return {
+            "assessment": assessment,
+            "reasoning": reasoning,
+            "scoring_method": "llm_judge",
+        }
+
+    def _ask_judge(self, messages: List[Any]) -> Tuple[str, str]:
+        """Send *messages* to the judge in a single fresh call; returns (assessment, reasoning).
+
+        A verdict that is not a JSON object is sent back to the judge, with the
+        parser error, for correction.
+        """
+        attempt_messages = messages
+        for attempt in range(LLM_OUTPUT_RETRIES + 1):
+            response = self.llm(attempt_messages)
+            try:
+                evaluation = _extract_json(_response_text(response))
+                if not isinstance(evaluation, dict):
+                    raise LLMOutputError("the response must be a JSON object with 'assessment' and 'reasoning'.")
+                break
+            except LLMOutputError as exc:
+                if attempt == LLM_OUTPUT_RETRIES:
+                    raise
+                attempt_messages = _with_output_feedback(self.llm, messages, response, exc)
+
+        assessment = str(evaluation.get("assessment", "incorrect")).strip().lower()
+        if assessment not in ("correct", "partial", "incorrect"):
+            assessment = "incorrect"
+        return assessment, str(evaluation.get("reasoning", ""))[:5000]
+
+
+def _error_result(reasoning: str) -> Dict[str, Any]:
+    return {
+        "assessment": "incorrect",
+        "reasoning": reasoning,
+        "scoring_method": "error",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -607,12 +438,8 @@ def run_benchmark(
         token: Timbr authentication token.  Defaults to ``TIMBR_TOKEN``.
         ontology: Ontology / knowledge-graph name.  Defaults to
             ``TIMBR_ONTOLOGY`` / ``ONTOLOGY`` environment variable.
-        use_deterministic: Enable deterministic row-comparison scoring.
-            Overrides the agent option ``use_deterministic_scoring``.
-            Defaults to ``False``.
-        use_llm_judge: Enable LLM-as-judge scoring.
-            Overrides the agent option ``use_llm_judge_scoring``.
-            Defaults to ``True``.
+        use_deterministic: Deprecated and ignored. Scoring always uses the LLM judge.
+        use_llm_judge: Deprecated and ignored. Scoring always uses the LLM judge.
         verify_ssl: Whether to verify SSL certificates when connecting to Timbr.
             Defaults to ``False``.
         is_jwt: Whether to use JWT authentication. Defaults to ``None``.
@@ -625,13 +452,14 @@ def run_benchmark(
         execution: Execution method. One of:
 
             * ``"full"`` *(default)* – run the full Timbr SQL agent (concept
-              identification → SQL generation → execution → answer generation)
-              and score using row comparison and/or LLM judge.
+              identification → SQL generation → execution → answer generation).
+              When ``correct_sql`` is given it is executed too, and the LLM judge
+              compares the two JSON row sets blind. Without ``correct_sql`` (or
+              when it fails to execute) the judge evaluates the SQL against the
+              question.
             * ``"generate_sql_only"`` – use GenerateTimbrSqlChain to generate
-              SQL without executing it. Deterministic scoring compares the generated SQL
-              against ``correct_sql`` (exact match → *correct*, similarity ≥
-              :data:`SQL_PARTIAL_MATCH_THRESHOLD` → *partial*, else → *incorrect*).
-              LLM-judge scoring evaluates whether the SQL looks correct for the question.
+              SQL without executing it. The LLM judge evaluates the SQL against
+              the question, alongside ``correct_sql`` when it is given.
 
     Returns:
         A dictionary with one entry per question ID (matching the input *queries*
@@ -651,10 +479,9 @@ def run_benchmark(
           question, averaged across iterations (each iteration's own time is in
           ``iterations_detail``). Scoring time is not included.
         * ``status`` – ``"correct"``, ``"partial"``, or ``"incorrect"``
-        * ``score_breakdown`` – method-specific detail dict
-        * ``scoring_method`` – ``"deterministic"``, ``"llm_judge"``, ``"full"``,
-                    or ``"error"``
-        * ``score_reasoning`` – (optional) human-readable scoring explanation
+        * ``scoring_method`` – ``"llm_judge"``, or ``"error"`` when no verdict
+          was produced (no SQL, a failed query, or a judge failure)
+        * ``score_reasoning`` – human-readable scoring explanation
 
         A special ``"_summary"`` key contains aggregate statistics and the run
         configuration.
@@ -770,19 +597,13 @@ def run_benchmark(
         raise ValueError("No questions to benchmark.")
 
     # ------------------------------------------------------------------
-    # Resolve scoring modes
-    # param > agent option > default (False)
+    # Scoring always uses the LLM judge. The old mechanism params and agent
+    # options (use_deterministic_scoring / use_llm_judge_scoring) are ignored.
     # ------------------------------------------------------------------
-    def _resolve_flag(param_val: Optional[bool], option_key: str, default: bool) -> bool:
-        if param_val is not None:
-            return param_val
-        raw = agent_options.get(option_key)
-        if raw is not None:
-            return to_boolean(raw)
-        return default
-
-    resolved_use_deterministic = _resolve_flag(use_deterministic, "use_deterministic_scoring", False)
-    resolved_use_llm_judge = _resolve_flag(use_llm_judge, "use_llm_judge_scoring", True)
+    if use_deterministic is not None:
+        _warn_deprecated_mechanism("use_deterministic")
+    if use_llm_judge is not None:
+        _warn_deprecated_mechanism("use_llm_judge")
 
     # ------------------------------------------------------------------
     # Resolve ontology and agent-level connection details
@@ -828,33 +649,27 @@ def run_benchmark(
             llm_params.update(additional_params)
 
     # ------------------------------------------------------------------
-    # Build LLM wrapper for judge scoring (if needed)
+    # Build the judge LLM. It is its own wrapper, called with stateless
+    # one-shot prompts, so the judge never shares the agent's context.
     # ------------------------------------------------------------------
-    judge_llm: Optional[Any] = None
-    if resolved_use_llm_judge:
-        judge_llm = LlmWrapper(
-            llm_type=llm_type,
-            model=llm_model,
-            api_key=llm_api_key,
-            **(llm_params or {}),
-        )
+    judge_llm = LlmWrapper(
+        llm_type=llm_type,
+        model=llm_model,
+        api_key=llm_api_key,
+        **(llm_params or {}),
+    )
 
     # ------------------------------------------------------------------
     # Instantiate scorer and agent executor / SQL-only chain
     # ------------------------------------------------------------------
-    scorer = BenchmarkScorer(
-        conn_params=agent_conn_params,
-        llm=judge_llm,
-        use_deterministic=resolved_use_deterministic,
-        use_llm_judge=resolved_use_llm_judge,
-    )
+    scorer = BenchmarkScorer(conn_params=agent_conn_params, llm=judge_llm)
 
     agent_executor = None
     sql_chain = None
 
     if execution == "generate_sql_only":
-        # Build an LLM for the chain (same config as judge LLM; create separately so
-        # generate_sql_only mode works even when use_llm_judge is False)
+        # Build an LLM for the chain (same config as the judge LLM, but a separate
+        # instance so the chain and the judge never share state)
         sql_chain_llm: Optional[Any] = None
         if llm_type and llm_api_key:
             sql_chain_llm = LlmWrapper(
@@ -941,10 +756,12 @@ def run_benchmark(
 
         logger.info(f"  [{question_id}] {question_text[:100]}…")
 
-        # Execute correct SQL once (outside iteration loop) for deterministic full-mode scoring.
-        # In generate_sql_only mode we never execute SQL, so skip this.
+        # Execute correct SQL once (outside iteration loop) so the judge can compare
+        # the agent's rows with the expected rows. In generate_sql_only mode we never
+        # execute SQL, so skip this. On failure the judge falls back to judging SQL.
         expected_rows: Optional[List[Dict[str, Any]]] = None
-        if execution == "full" and correct_sql and resolved_use_deterministic:
+        expected_rows_error: Optional[str] = None
+        if execution == "full" and correct_sql:
             try:
                 expected_rows = timbr_http_connector.run_query(
                     query=correct_sql.replace(";", ""),
@@ -957,7 +774,8 @@ def run_benchmark(
                 ) or []
             except Exception as exc:
                 logger.warning(f"  [{question_id}] Failed to execute correct SQL: {exc}")
-                expected_rows = []
+                expected_rows = None
+                expected_rows_error = str(exc)[:500]
 
         # ------------------------------------------------------------------
         # Iterations inner loop
@@ -1026,6 +844,7 @@ def run_benchmark(
                 expected_rows=expected_rows,
                 execution_error=llm_result.get("error"),
                 execution_mode=execution,
+                expected_rows_error=expected_rows_error,
             )
 
             iter_status: str = score_result["assessment"]
@@ -1034,7 +853,6 @@ def run_benchmark(
                 "generated_sql": generated_sql,
                 "status": iter_status,
                 "scoring_method": score_result["scoring_method"],
-                "score_breakdown": score_result["breakdown"],
                 "tokens_used": iter_tokens,
                 "duration_ms": iter_duration_ms,
             }
@@ -1083,7 +901,6 @@ def run_benchmark(
         benchmark_results[question_id]["status"] = result_status
         if last_llm_result.get("error"):
             benchmark_results[question_id]["error"] = last_llm_result.get("error")
-        benchmark_results[question_id]["score_breakdown"] = last_score_result.get("breakdown", {})
         benchmark_results[question_id]["scoring_method"] = last_score_result.get("scoring_method", "error")
         if "reasoning" in last_score_result:
             benchmark_results[question_id]["score_reasoning"] = last_score_result["reasoning"]
@@ -1167,8 +984,7 @@ def run_benchmark(
             "agent_name": agent_name,
             "ontology": resolved_ontology,
             "timbr_url": resolved_url,
-            "use_deterministic_scoring": resolved_use_deterministic,
-            "use_llm_judge_scoring": resolved_use_llm_judge,
+            "scoring_method": "llm_judge",
             "execution": execution,
             "number_of_iterations": number_of_iterations,
         },

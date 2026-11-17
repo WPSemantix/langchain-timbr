@@ -316,8 +316,6 @@ results = run_benchmark(
     ontology="your_ontology",
     execution="full",             # "full" or "generate_sql_only"
     number_of_iterations=1,
-    use_deterministic=True,       # Row-comparison scoring
-    use_llm_judge=False,          # LLM-as-judge scoring
     llm_params={                  # Optional: override LLM at runtime
         "llm_type": "openai",
         "llm_model": "gpt-4o",
@@ -329,3 +327,5 @@ results = run_benchmark(
 The `llm_params` dict accepts: `llm_type`, `llm_model` / `model`, `llm_api_key` / `api_key`. Temperature and timeout are managed automatically.
 
 Results are returned as a dict keyed by question ID, with a `"_summary"` key containing aggregate statistics. Each result includes a `selected_entity` field identifying which ontology entity was used.
+
+Every result is scored by an LLM judge in a fresh, stateless call. With `execution="full"` and a `correct_sql` on the question, the judge compares the agent's rows with the expected rows as two anonymous JSON result sets (in random order, without any SQL), so it doesn't know which set came from the agent. Without `correct_sql`, or with `execution="generate_sql_only"`, the judge evaluates the SQL against the question. The `use_deterministic` / `use_llm_judge` parameters are deprecated and ignored.
