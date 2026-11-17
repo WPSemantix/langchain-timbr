@@ -68,9 +68,11 @@ vertex_ai = [
   "pyarrow~=25.0.1; python_version<'3.14'",
 ]
 # snowflake 1.14+ and snowflake-connector-python 4.8.1+ require Python 3.11+
+# Python 3.10 stays on snowflake-connector-python 4.8.0, which is affected by CVE-2026-123859
+# (write_pandas SQL injection, non-default config only). langchain-timbr never calls write_pandas.
 snowflake = [
-  "opentelemetry-api~=1.45.1; python_version<'3.12'",
-  "opentelemetry-sdk~=1.45.1; python_version<'3.12'",
+  "opentelemetry-api~=1.45.2; python_version<'3.12'",
+  "opentelemetry-sdk~=1.45.2; python_version<'3.12'",
   "snowflake~=1.14.0; python_version>='3.11' and python_version<'3.14'",
   "snowflake~=1.13.2; python_version<'3.11'",
   "snowflake-snowpark-python~=1.55.3; python_version<'3.14'",
@@ -115,8 +117,8 @@ all = [
   "langchain-tests~=1.1.9; python_version<'3.14'",
   "langsmith>=0.8.0; python_version<'3.14'",
   "openai~=3.41.0; python_version<'3.14'",
-  "opentelemetry-api~=1.45.1; python_version<'3.12'",
-  "opentelemetry-sdk~=1.45.1; python_version<'3.12'",
+  "opentelemetry-api~=1.45.2; python_version<'3.12'",
+  "opentelemetry-sdk~=1.45.2; python_version<'3.12'",
   "pyarrow~=25.0.1; python_version<'3.14'",
   "pytest~=9.2.0; python_version<'3.14'",
   "pytest-rerunfailures~=16.7; python_version<'3.14'",
