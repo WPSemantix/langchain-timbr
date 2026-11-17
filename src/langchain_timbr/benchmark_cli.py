@@ -2,22 +2,11 @@ import argparse
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Union
 
 from langchain_timbr import run_benchmark
 
 logger = logging.getLogger(__name__)
-
-
-def _resolve_mechanism_flags(mechanism: str) -> Tuple[bool, bool]:
-    normalized = (mechanism or "full").strip().lower()
-    if normalized == "deterministic":
-        return True, False
-    if normalized == "llm_judge":
-        return False, True
-    if normalized == "full":
-        return True, True
-    raise ValueError("Invalid mechanism. Use one of: full, deterministic, llm_judge.")
 
 
 def _resolve_token(explicit_token: Optional[str]) -> Optional[str]:
@@ -32,12 +21,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--url", required=True, help="Timbr API base URL")
     parser.add_argument("--token", help="Timbr token (prefer TIMBR_BENCHMARK_TOKEN env var)")
     parser.add_argument("--ontology", help="Optional ontology override")
-    parser.add_argument(
-        "--mechanism",
-        default="full",
-        choices=["full", "deterministic", "llm_judge"],
-        help="Scoring mechanism",
-    )
+    # Deprecated: scoring always uses the LLM judge. Still accepted (and ignored)
+    # so older callers that pass it keep working.
+    parser.add_argument("--mechanism", help=argparse.SUPPRESS)
     parser.add_argument(
         "--execution",
         default="full",
@@ -79,7 +65,10 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        use_deterministic, use_llm_judge = _resolve_mechanism_flags(args.mechanism)
+        if args.mechanism is not None:
+            logger.warning(
+                "--mechanism is deprecated and ignored; benchmarks always use the LLM judge."
+            )
         resolved_token = _resolve_token(args.token)
 
         if not resolved_token:
@@ -99,8 +88,6 @@ def main() -> int:
             url=args.url,
             token=resolved_token,
             ontology=args.ontology,
-            use_deterministic=use_deterministic,
-            use_llm_judge=use_llm_judge,
             execution=args.execution,
             number_of_iterations=args.number_of_iterations,
             verify_ssl=args.verify_ssl,

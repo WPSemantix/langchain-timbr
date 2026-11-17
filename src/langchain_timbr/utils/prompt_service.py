@@ -228,6 +228,19 @@ class PromptService:
         return self._fetch_template("llm_prompts/benchmark_judge")
 
 
+    def get_benchmark_judge_results_template(self) -> ChatPromptTemplate:
+        """
+        Get the blind benchmark results judge template from API service (cached).
+
+        The judge compares two JSON row sets ("Result A" / "Result B") without
+        knowing which one came from the agent.
+
+        Returns:
+            ChatPromptTemplate object
+        """
+        return self._fetch_template("llm_prompts/benchmark_judge_results")
+
+
     def get_memory_classifier_template(self) -> ChatPromptTemplate:
         """
         Get memory classifier template from API service (cached)
@@ -371,6 +384,22 @@ def get_benchmark_judge_prompt_template(
     """
     prompt_service = PromptService(conn_params=conn_params)
     return PromptTemplateWrapper(prompt_service, "get_benchmark_judge_template")
+
+
+def get_benchmark_judge_results_prompt_template(
+    conn_params: Optional[dict] = None
+) -> PromptTemplateWrapper:
+    """
+    Get the blind benchmark results judge prompt template wrapper
+
+    Args:
+        conn_params: Connection parameters including url, token, is_jwt, and jwt_tenant_id
+
+    Returns:
+        PromptTemplateWrapper for comparing two JSON result sets blind
+    """
+    prompt_service = PromptService(conn_params=conn_params)
+    return PromptTemplateWrapper(prompt_service, "get_benchmark_judge_results_template")
 
 
 def get_memory_classifier_prompt_template(
