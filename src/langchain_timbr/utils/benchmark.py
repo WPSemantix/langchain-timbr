@@ -257,6 +257,9 @@ class BenchmarkScorer:
             rows_a, rows_b = expected_rows, generated_rows
             labels = {"A": "expected result", "B": "agent result"}
 
+        if self._results_template_warned:
+            return None
+
         try:
             if self._results_prompt_template is None:
                 self._results_prompt_template = get_benchmark_judge_results_prompt_template(
