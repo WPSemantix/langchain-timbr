@@ -1330,3 +1330,115 @@ class TestRunBenchmarkIterations:
         assert results["Q1"]["consistent"] is True
         assert results["Q1"]["tokens_used"] == 240  # 80 × 3
 
+
+
+class TestRunBenchmarkDuration:
+    """Per-question completion time (duration_ms) in run_benchmark results."""
+
+    def setup_method(self, method):
+        from unittest.mock import patch as _patch
+        self._patches = [
+            _patch("langchain_timbr.utils.benchmark.get_timbr_benchmark_info"),
+            _patch("langchain_timbr.utils.benchmark._log_benchmark_running"),
+            _patch("langchain_timbr.utils.benchmark._log_benchmark_update_completed"),
+            _patch("langchain_timbr.utils.benchmark._log_benchmark_history"),
+            _patch("langchain_timbr.utils.benchmark.perf_counter"),
+        ]
+        self.mock_get_bm_info = self._patches[0].start()
+        self.mock_get_bm_info.return_value = SAMPLE_BENCHMARK_INFO.copy()
+        self._patches[1].start()
+        self._patches[2].start()
+        self.mock_log_history = self._patches[3].start()
+        self.mock_perf_counter = self._patches[4].start()
+
+    def teardown_method(self, method):
+        for p in self._patches:
+            p.stop()
+
+    def _set_clock(self, *iteration_seconds):
+        """Make perf_counter yield (start, end) pairs giving the given per-iteration durations."""
+        ticks, now = [], 0.0
+        for secs in iteration_seconds:
+            ticks.extend([now, now + secs])
+            now += secs + 100.0  # gap between iterations must not be counted
+        self.mock_perf_counter.side_effect = ticks
+
+    def _make_agent_result(self):
+        return {
+            "sql": "SELECT * FROM Policy",
+            "rows": [{"count": 1}],
+            "answer": "One policy.",
+            "concept": "Policy",
+            "ontology": MOCK_ONTOLOGY,
+            "error": None,
+            "usage_metadata": {"generate_sql": {"total_tokens": 100}},
+        }
+
+    def _run(self, mock_get_options, mock_create_agent, queries, **kwargs):
+        mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
+        if not isinstance(mock_create_agent.return_value.invoke.side_effect, list):
+            mock_create_agent.return_value.invoke.return_value = self._make_agent_result()
+        return run_benchmark(
+            benchmark_name=MOCK_BENCHMARK_NAME,
+            queries=queries,
+            url=MOCK_URL,
+            token=MOCK_TOKEN,
+            use_llm_judge=False,
+            **kwargs,
+        )
+
+    @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_single_iteration_duration_per_question(self, mock_get_options, mock_create_agent):
+        self._set_clock(1.5, 0.25)
+        results = self._run(
+            mock_get_options, mock_create_agent,
+            {"Q1": {"question": "q1?"}, "Q2": {"question": "q2?"}},
+        )
+        assert results["Q1"]["duration_ms"] == 1500
+        assert results["Q2"]["duration_ms"] == 250
+
+    @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_multiple_iterations_average_and_detail(self, mock_get_options, mock_create_agent):
+        self._set_clock(1.0, 2.0, 4.5)
+        results = self._run(
+            mock_get_options, mock_create_agent,
+            {"Q1": {"question": "q1?"}},
+            number_of_iterations=3,
+        )
+        assert [d["duration_ms"] for d in results["Q1"]["iterations_detail"]] == [1000, 2000, 4500]
+        assert results["Q1"]["duration_ms"] == 2500  # (1000 + 2000 + 4500) / 3
+
+    @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_duration_recorded_when_agent_raises(self, mock_get_options, mock_create_agent):
+        self._set_clock(3.0)
+        mock_create_agent.return_value.invoke.side_effect = [RuntimeError("boom")]
+        results = self._run(mock_get_options, mock_create_agent, {"Q1": {"question": "q1?"}})
+        assert results["Q1"]["error"] == "boom"
+        assert results["Q1"]["duration_ms"] == 3000
+
+    @patch("langchain_timbr.utils.benchmark.GenerateTimbrSqlChain")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_generate_sql_only_duration(self, mock_get_options, mock_chain_cls):
+        self._set_clock(0.75)
+        mock_get_options.return_value = SAMPLE_AGENT_OPTIONS.copy()
+        mock_chain_cls.return_value.invoke.return_value = {"sql": "SELECT 1", "error": None}
+        results = run_benchmark(
+            benchmark_name=MOCK_BENCHMARK_NAME,
+            queries={"Q1": {"question": "q1?"}},
+            url=MOCK_URL,
+            token=MOCK_TOKEN,
+            use_llm_judge=False,
+            execution="generate_sql_only",
+        )
+        assert results["Q1"]["duration_ms"] == 750
+
+    @patch("langchain_timbr.utils.benchmark.create_timbr_sql_agent")
+    @patch("langchain_timbr.utils.benchmark.get_timbr_agent_options")
+    def test_duration_in_log_history_payload(self, mock_get_options, mock_create_agent):
+        self._set_clock(2.0)
+        self._run(mock_get_options, mock_create_agent, {"Q1": {"question": "q1?"}})
+        payload = self.mock_log_history.call_args.kwargs["payload"]
+        assert payload["result"]["Q1"]["duration_ms"] == 2000

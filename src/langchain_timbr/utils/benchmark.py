@@ -28,6 +28,7 @@ import json
 import logging
 import uuid
 from datetime import datetime
+from time import perf_counter
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -646,6 +647,9 @@ def run_benchmark(
         * ``correct_concept`` – ``True``/``False`` if expected concept is provided, else ``None``
         * ``correct_ontology`` – ``True``/``False`` if expected ontology is provided, else ``None``
         * ``tokens_used`` – total tokens consumed for this question
+        * ``duration_ms`` – time (ms) the agent / chain took to complete this
+          question, averaged across iterations (each iteration's own time is in
+          ``iterations_detail``). Scoring time is not included.
         * ``status`` – ``"correct"``, ``"partial"``, or ``"incorrect"``
         * ``score_breakdown`` – method-specific detail dict
         * ``scoring_method`` – ``"deterministic"``, ``"llm_judge"``, ``"full"``,
@@ -960,6 +964,7 @@ def run_benchmark(
         # ------------------------------------------------------------------
         iteration_results: List[Dict[str, Any]] = []
         question_tokens_total: int = 0
+        question_duration_total_ms: int = 0
         had_error_in_any_iteration = False
         last_llm_result: Dict[str, Any] = {}
         last_score_result: Dict[str, Any] = {}
@@ -968,6 +973,9 @@ def run_benchmark(
             iter_label = f"[{question_id}][{iter_num}/{number_of_iterations}]" if number_of_iterations > 1 else f"[{question_id}]"
 
             # ---- Execute via agent or SQL-only chain ----
+            # Only the agent / chain call is timed: expected-SQL execution and
+            # scoring are benchmark overhead, not part of answering the input.
+            iter_start = perf_counter()
             try:
                 if execution == "generate_sql_only":
                     raw = sql_chain.invoke({"prompt": question_text})  # type: ignore[union-attr]
@@ -989,6 +997,8 @@ def run_benchmark(
                     llm_result = agent_executor.invoke({"input": question_text})  # type: ignore[misc]
             except Exception as exc:
                 llm_result = {"sql": None, "rows": [], "error": str(exc), "usage_metadata": {}}
+            iter_duration_ms = int((perf_counter() - iter_start) * 1000)
+            question_duration_total_ms += iter_duration_ms
 
             if llm_result.get("error"):
                 had_error_in_any_iteration = True
@@ -1026,6 +1036,7 @@ def run_benchmark(
                 "scoring_method": score_result["scoring_method"],
                 "score_breakdown": score_result["breakdown"],
                 "tokens_used": iter_tokens,
+                "duration_ms": iter_duration_ms,
             }
             if "reasoning" in score_result:
                 iter_entry["score_reasoning"] = score_result["reasoning"]
@@ -1067,6 +1078,8 @@ def run_benchmark(
         benchmark_results[question_id]["correct_concept"] = _matches_expected_value(expected_concept, selected_concept)
         benchmark_results[question_id]["correct_ontology"] = _matches_expected_value(expected_ontology, selected_ontology)
         benchmark_results[question_id]["tokens_used"] = question_tokens_total
+        # Average across iterations; per-iteration times are in iterations_detail.
+        benchmark_results[question_id]["duration_ms"] = round(question_duration_total_ms / number_of_iterations)
         benchmark_results[question_id]["status"] = result_status
         if last_llm_result.get("error"):
             benchmark_results[question_id]["error"] = last_llm_result.get("error")
